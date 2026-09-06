@@ -124,11 +124,17 @@ func (e *MediaOwnedError) Error() string {
 }
 
 // AddAlbumItems 加入相册：媒体存在且未软删预检 → 跨相册预检（活跃手动相册口径）→ 409；同相册重复幂等（INSERT OR IGNORE）。
+// 预检与插入同事务：并发跨相册归属由事务串行排除预检-插入间隙（TOCTOU），album_items UNIQUE(media_id) 兜底。
 func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs []int64) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	for _, mid := range mediaIDs {
 		// 媒体必须来自动态媒体池且所属动态未软删（媒体无独立软删，随动态进回收站：以 post.deleted_at 为准）
 		var pd sql.NullString
-		err := d.QueryRowContext(ctx, `SELECT p.deleted_at FROM media m JOIN posts p ON p.id = m.post_id WHERE m.id = ?`, mid).Scan(&pd)
+		err := tx.QueryRowContext(ctx, `SELECT p.deleted_at FROM media m JOIN posts p ON p.id = m.post_id WHERE m.id = ?`, mid).Scan(&pd)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("媒体 %d 不存在", mid)
 		}
@@ -139,7 +145,7 @@ func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs 
 			return fmt.Errorf("媒体 %d 所属动态已删除（回收站），不能加入相册", mid)
 		}
 		var owner int64
-		err = d.QueryRowContext(ctx, `SELECT i.album_id FROM album_items i
+		err = tx.QueryRowContext(ctx, `SELECT i.album_id FROM album_items i
 			JOIN albums a ON a.id = i.album_id
 			WHERE i.media_id = ? AND a.type = 'manual' AND a.deleted_at IS NULL`, mid).Scan(&owner)
 		if err == nil && owner != albumID {
@@ -158,8 +164,10 @@ func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs 
 		sb.WriteString("(?,?,?)")
 		args = append(args, albumID, mid, userID)
 	}
-	_, err := d.ExecContext(ctx, `INSERT OR IGNORE INTO album_items (album_id, media_id, added_by) VALUES `+sb.String(), args...)
-	return err
+	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO album_items (album_id, media_id, added_by) VALUES `+sb.String(), args...); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *DB) RemoveAlbumItems(ctx context.Context, albumID int64, mediaIDs []int64) error {
