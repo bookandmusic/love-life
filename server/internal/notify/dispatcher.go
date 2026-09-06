@@ -1,0 +1,206 @@
+// Package notify 通知分发器（DESIGN 4.6）：站内全量入库 + 外部按渠道事件订阅推送。
+package notify
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/bookandmusic/love-life/server/internal/store"
+)
+
+// 站内事件类型 → 外部订阅键（内容删除类仅站内，需求 §4.8）
+var externalEventKey = map[string]string{
+	"post_created":        "new_post",
+	"post_liked":          "like",
+	"post_commented":      "comment",
+	"post_favorited":      "favorite",
+	"anniversary_reminder": "anniversary",
+	"map_point_created":   "footprint",
+	"album_created":       "album",
+}
+
+type Dispatcher struct {
+	db     *store.DB
+	client *http.Client
+}
+
+func New(db *store.DB) *Dispatcher {
+	return &Dispatcher{db: db, client: &http.Client{Timeout: 10 * time.Second}}
+}
+
+// Dispatch 站内通知 recipientIDs（全量）+ 外部推送（订阅对应事件的渠道）。
+func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventType, targetType string, targetID int64, snapshot string, title, content string) {
+	for _, uid := range recipientIDs {
+		_ = d.db.InsertNotification(ctx, uid, eventType, targetType, targetID, snapshot)
+	}
+	key, ok := externalEventKey[eventType]
+	if !ok {
+		return
+	}
+	channels, err := d.db.ListWebhookChannelsByEvent(ctx, key)
+	if err != nil {
+		slog.Warn("list webhook channels failed", "err", err)
+		return
+	}
+	for _, ch := range channels {
+		d.push(ctx, ch, key, title, content)
+	}
+}
+
+// PushTest 「发送测试」按钮：不订阅过滤，直接推测试事件。
+func (d *Dispatcher) PushTest(ctx context.Context, ch *store.WebhookChannel) error {
+	return d.pushErr(ctx, ch, "test", "测试通知", "来自情侣生活记录的测试推送")
+}
+
+func (d *Dispatcher) push(ctx context.Context, ch *store.WebhookChannel, event, title, content string) {
+	if err := d.pushErr(ctx, ch, event, title, content); err != nil {
+		slog.Warn("webhook push failed", "channel", ch.ID, "err", err)
+	}
+}
+
+func (d *Dispatcher) pushErr(ctx context.Context, ch *store.WebhookChannel, event, title, content string) error {
+	vars := map[string]string{
+		"title":   title,
+		"content": content,
+		"time":    time.Now().Format("2006-01-02 15:04:05"),
+		"type":    event,
+	}
+
+	var req *http.Request
+	var err error
+	switch ch.Method {
+	case "GET":
+		q := url.Values{}
+		for k, v := range vars {
+			q.Set(k, v)
+		}
+		req, err = http.NewRequestWithContext(ctx, http.MethodGet, ch.URL+"?"+q.Encode(), nil)
+	default:
+		body := render(ch.BodyTemplate, vars)
+		if body == "" {
+			body = `{"title":"` + jsonEscape(vars["title"]) + `","content":"` + jsonEscape(vars["content"]) + `","time":"` + vars["time"] + `","type":"` + vars["type"] + `"}`
+		}
+		req, err = http.NewRequestWithContext(ctx, ch.Method, ch.URL, strings.NewReader(body))
+		if err == nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+	}
+	if err != nil {
+		return err
+	}
+	for k, v := range ch.Headers {
+		req.Header.Set(k, v)
+	}
+	res, err := d.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode >= 300 {
+		return &httpError{status: res.StatusCode}
+	}
+	return nil
+}
+
+type httpError struct{ status int }
+
+func (e *httpError) Error() string { return "webhook returned non-2xx status" }
+
+// render 模板占位符替换：{{title}}/{{content}}/{{time}}/{{type}}（需求 §4.7）。
+func render(tpl string, vars map[string]string) string {
+	for k, v := range vars {
+		tpl = strings.ReplaceAll(tpl, "{{"+k+"}}", v)
+	}
+	return tpl
+}
+
+func jsonEscape(s string) string {
+	var buf bytes.Buffer
+	for _, r := range s {
+		switch r {
+		case '"', '\\':
+			buf.WriteByte('\\')
+			buf.WriteRune(r)
+		case '\n':
+			buf.WriteString(`\n`)
+		default:
+			buf.WriteRune(r)
+		}
+	}
+	return buf.String()
+}
+
+// CheckMonthlyAlbum 每月 1 日聚合上月照片为月度相册（幂等：已存在跳过；该月无照片不生成）。
+func (d *Dispatcher) CheckMonthlyAlbum(ctx context.Context, now time.Time) {
+	if now.Day() != 1 {
+		return
+	}
+	last := now.AddDate(0, 0, -1)
+	monthKey := last.Format("2006-01")
+	if _, err := d.db.GetMonthlyAlbum(ctx, monthKey); err == nil {
+		return
+	}
+	// 该月是否有照片
+	media, err := d.db.ListTimelineMedia(ctx, last.Format("2006"), monthKey, 1)
+	if err != nil || len(media) == 0 {
+		return
+	}
+	users, _ := d.db.ListUsers(ctx)
+	var uid int64
+	if len(users) > 0 {
+		uid = users[0].ID
+	}
+	name := fmt.Sprintf("%d年%d月", last.Year(), int(last.Month()))
+	if _, err := d.db.CreateMonthlyAlbum(ctx, monthKey, name, uid); err != nil {
+		slog.Warn("create monthly album failed", "month", monthKey, "err", err)
+		return
+	}
+	slog.Info("monthly album created", "month", monthKey)
+
+	// 相册上新：月度相册生成通知双方（站内全量 + 按订阅外推，需求 §4.8）
+	snapshot, _ := json.Marshal(map[string]any{"name": name, "monthly": true})
+	ids := make([]int64, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	d.Dispatch(ctx, ids, "album_created", "album", 0, string(snapshot),
+		"相册上新", "月度相册「"+name+"」已生成")
+}
+
+// CheckAnniversaries 每日提醒检查（cron 幂等：当日已发跳过）。
+func (d *Dispatcher) CheckAnniversaries(ctx context.Context, now time.Time) {
+	list, err := d.db.ListAnniversaries(ctx)
+	if err != nil {
+		slog.Warn("list anniversaries failed", "err", err)
+		return
+	}
+	users, err := d.db.ListUsers(ctx)
+	if err != nil {
+		return
+	}
+	var recipients []int64
+	for _, u := range users {
+		recipients = append(recipients, u.ID)
+	}
+	for _, a := range list {
+		days := a.DaysUntil(now)
+		if days != a.RemindDaysBefore {
+			continue
+		}
+		sent, err := d.db.AnniversaryReminderSentToday(ctx, a.ID, now)
+		if err != nil || sent {
+			continue
+		}
+		d.Dispatch(ctx, recipients, "anniversary_reminder", "anniversary", a.ID,
+			`{"name":"`+jsonEscape(a.Name)+`"}`,
+			"纪念日提醒", a.Name+" 还有 "+strconv.Itoa(days)+" 天（"+a.Date+"）")
+	}
+}
