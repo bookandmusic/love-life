@@ -9,22 +9,8 @@ export interface UserItem {
   nickname: string
 }
 
-export interface CreateUserPayload {
-  username: string
-  nickname: string
-  role: Exclude<UserRole, 'admin'>
-  password: string
-}
-
 export function listUsers(): Promise<UserItem[]> {
   return http<UserItem[]>('/api/v1/admin/users')
-}
-
-export function createUser(payload: CreateUserPayload): Promise<UserItem> {
-  return http<UserItem>('/api/v1/admin/users', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
 }
 
 export function resetPassword(id: number, password: string): Promise<void> {
