@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -424,7 +423,6 @@ func (a *postsAPI) serveFile(w http.ResponseWriter, relPath, contentType string)
 	w.Header().Set("Cache-Control", "private, max-age=900")
 	if _, err := io.Copy(w, f); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
 		// 客户端断开等场景静默
-		_ = fmt.Sprint()
 	}
 }
 

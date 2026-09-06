@@ -30,14 +30,14 @@ type albumResponse struct {
 	CoverURL    string `json:"cover_url,omitempty"`
 }
 
-func (a *albumsAPI) toResponse(al *store.Album) albumResponse {
+func (a *albumsAPI) toResponse(ctx context.Context, al *store.Album) albumResponse {
 	resp := albumResponse{
 		ID: al.ID, Type: al.Type, Name: al.Name, Description: al.Description.String,
 		MonthKey: al.MonthKey.String, IsHidden: al.IsHidden, ItemCount: al.ItemCount,
 	}
 	if al.CoverMediaID.Valid {
 		resp.CoverURL = a.mp.SignedURL(al.CoverMediaID.Int64, "thumb")
-	} else if items, err := a.db.ListAlbumMedia(context.Background(), al.ID); err == nil && len(items) > 0 {
+	} else if items, err := a.db.ListAlbumMedia(ctx, al.ID); err == nil && len(items) > 0 {
 		resp.CoverURL = a.mp.SignedURL(items[0].ID, "thumb")
 	}
 	return resp
@@ -52,7 +52,7 @@ func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]albumResponse, 0, len(list))
 	for _, al := range list {
-		items = append(items, a.toResponse(al))
+		items = append(items, a.toResponse(r.Context(), al))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -113,7 +113,7 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
-	resp := a.toResponse(al)
+	resp := a.toResponse(r.Context(), al)
 	resp.ItemCount = len(items)
 	writeJSON(w, http.StatusOK, map[string]any{"album": resp, "media": items})
 }

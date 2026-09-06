@@ -112,7 +112,7 @@ type PointInput struct {
 func (d *DB) FindOrCreatePoint(ctx context.Context, in PointInput) (*MapPoint, bool, error) {
 	if hit, err := d.FindPointByName(ctx, in.Name); err == nil {
 		return hit, false, nil
-	} else if err != sql.ErrNoRows {
+	} else if !errors.Is(err, sql.ErrNoRows) {
 		return nil, false, err
 	}
 	id, err := d.CreatePoint(ctx, &MapPoint{

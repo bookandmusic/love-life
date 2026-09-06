@@ -76,30 +76,28 @@ func (d *DB) GetInteractions(ctx context.Context, postIDs []int64, viewerID int6
 	if err != nil {
 		return nil, err
 	}
+	defer likedRows.Close()
 	for likedRows.Next() {
 		var pid int64
 		if err := likedRows.Scan(&pid); err != nil {
-			likedRows.Close()
 			return nil, err
 		}
 		out[pid].Liked = true
 	}
-	likedRows.Close()
 
 	favRows, err := d.QueryContext(ctx, `SELECT post_id FROM favorites WHERE user_id = ? AND post_id IN (`+ph+`)`,
 		viewerFilterArgs...)
 	if err != nil {
 		return nil, err
 	}
+	defer favRows.Close()
 	for favRows.Next() {
 		var pid int64
 		if err := favRows.Scan(&pid); err != nil {
-			favRows.Close()
 			return nil, err
 		}
 		out[pid].Favorited = true
 	}
-	favRows.Close()
 	return out, nil
 }
 
