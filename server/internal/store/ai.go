@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// Confirm 卡片流转 sentinel：Confirm 侧按 errors.Is 判断过期/重复，不匹配错误文案。
+var (
+	ErrConfirmExpired  = errors.New("confirm action expired")
+	ErrConfirmResolved = errors.New("confirm action already resolved")
+)
+
 // ---- 模型配置 ----
 
 type ModelConfig struct {
@@ -137,25 +143,13 @@ func (d *DB) ListChatMessages(ctx context.Context, userID int64, limit int) ([]*
 	return list, nil
 }
 
-func (d *DB) GetChatMessage(ctx context.Context, id int64) (*ChatMessage, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, user_id, role, content, card_id, created_at, media FROM chat_messages WHERE id = ?`, id)
-	var m ChatMessage
-	err := row.Scan(&m.ID, &m.UserID, &m.Role, &m.Content, &m.CardID, &m.CreatedAt, &m.Media)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &m, nil
-}
-
 // CleanExpiredChatMessages 按每用户保留时长清理（janitor 每小时）。
 func (d *DB) CleanExpiredChatMessages(ctx context.Context) error {
 	rows, err := d.QueryContext(ctx, `SELECT u.id, u.chat_retention_days FROM users WHERE u.chat_retention_days > 0`)
 	if err != nil {
 		return err
 	}
+	defer rows.Close()
 	type pair struct {
 		id   int64
 		days int
@@ -164,12 +158,10 @@ func (d *DB) CleanExpiredChatMessages(ctx context.Context) error {
 	for rows.Next() {
 		var p pair
 		if err := rows.Scan(&p.id, &p.days); err != nil {
-			rows.Close()
 			return err
 		}
 		pairs = append(pairs, p)
 	}
-	rows.Close()
 	for _, p := range pairs {
 		cutoff := time.Now().AddDate(0, 0, -p.days).UTC().Format(time.RFC3339)
 		if _, err := d.ExecContext(ctx, `DELETE FROM chat_messages WHERE user_id = ? AND created_at < ?`, p.id, cutoff); err != nil {
@@ -231,12 +223,12 @@ func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) erro
 		return err
 	}
 	if a.Status != "pending" {
-		return errors.New("already resolved")
+		return ErrConfirmResolved
 	}
 	if time.Now().After(a.ExpiresAt) && to != "expired" {
 		_, _ = d.ExecContext(ctx, `UPDATE confirm_actions SET status='expired', resolved_at=? WHERE id=?`,
 			time.Now().UTC().Format(time.RFC3339), id)
-		return errors.New("expired")
+		return ErrConfirmExpired
 	}
 	_, err = d.ExecContext(ctx, `UPDATE confirm_actions SET status=?, resolved_at=? WHERE id=? AND status='pending'`,
 		to, time.Now().UTC().Format(time.RFC3339), id)

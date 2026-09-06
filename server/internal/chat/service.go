@@ -274,12 +274,12 @@ func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.db.ResolveConfirmAction(r.Context(), req.ActionID, "confirmed"); err != nil {
-		if strings.Contains(err.Error(), "expired") {
+		if errors.Is(err, store.ErrConfirmExpired) {
 			_ = s.db.ResolveConfirmAction(r.Context(), req.ActionID, "expired")
 			s.writeJSON(w, http.StatusGone, map[string]string{"error": "确认卡片已过期（15 分钟），请重新发起"})
 			return
 		}
-		if strings.Contains(err.Error(), "already resolved") {
+		if errors.Is(err, store.ErrConfirmResolved) {
 			s.writeJSON(w, http.StatusConflict, map[string]string{"error": "卡片已处理过（单次有效）"})
 			return
 		}
