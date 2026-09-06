@@ -4,9 +4,17 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+
+	"modernc.org/sqlite"
 )
 
-var ErrNotFound = errors.New("not found")
+var (
+	ErrNotFound          = errors.New("not found")
+	ErrDuplicateUsername = errors.New("username already exists")
+)
+
+// sqliteUniqueConstraint SQLite 扩展错误码 SQLITE_CONSTRAINT_UNIQUE；modernc 的 Error.Code() 返回扩展码而非主码 19。
+const sqliteUniqueConstraint = 2067
 
 type User struct {
 	ID                int64
@@ -24,6 +32,10 @@ func (d *DB) CreateUser(ctx context.Context, u *User) (int64, error) {
 		`INSERT INTO users (username, password_hash, role, nickname) VALUES (?, ?, ?, ?)`,
 		u.Username, u.PasswordHash, u.Role, u.Nickname)
 	if err != nil {
+		var se *sqlite.Error
+		if errors.As(err, &se) && se.Code() == sqliteUniqueConstraint { // users.username UNIQUE
+			return 0, ErrDuplicateUsername
+		}
 		return 0, err
 	}
 	return res.LastInsertId()

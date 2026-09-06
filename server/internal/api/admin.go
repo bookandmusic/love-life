@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -67,7 +66,7 @@ func (a *adminAPI) createUser(w http.ResponseWriter, r *http.Request) {
 		Username: req.Username, PasswordHash: hash, Role: req.Role, Nickname: req.Nickname,
 	})
 	if err != nil {
-		if strings.Contains(err.Error(), "UNIQUE") {
+		if errors.Is(err, store.ErrDuplicateUsername) {
 			writeError(w, http.StatusConflict, "用户名已存在")
 			return
 		}
