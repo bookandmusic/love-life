@@ -1,0 +1,68 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "服务端 Go (debug)",
+      "type": "go",
+      "request": "launch",
+      "mode": "debug",
+      "program": "${workspaceFolder}/server/cmd/server",
+      "cwd": "${workspaceFolder}/server",
+      "env": {
+        "LISTEN": ":8080",
+        "DATA_DIR": "data",
+        "ADMIN_USER": "admin",
+        "ADMIN_PASS": "admin123456"
+      }
+    },
+    {
+      "name": "后台管理页 (vite)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/admin",
+      "env": {
+        "API_PROXY": "http://localhost:8080"
+      }
+    },
+    {
+      "name": "Mock 服务 (:8787)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "node tools/mock/server.mjs",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "MOCK_PORT": "8787"
+      }
+    },
+    {
+      "name": "APP 前端 (vite)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev --host",
+      "cwd": "${workspaceFolder}/app",
+      "env": {
+        "API_PROXY": "http://localhost:8787"
+      }
+    }
+  ],
+  "compounds": [
+    {
+      "name": "全部启动（服务端 + 后台 + APP）",
+      "configurations": [
+        "服务端 Go (debug)",
+        "后台管理页 (vite)",
+        "APP 前端 (vite)"
+      ],
+      "stopAll": true
+    },
+    {
+      "name": "Mock 开发（Mock + APP）",
+      "configurations": [
+        "Mock 服务 (:8787)",
+        "APP 前端 (vite)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

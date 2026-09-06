@@ -1,0 +1,21 @@
+node_modules/
+dist/
+!server/internal/webui/dist/
+server/internal/webui/dist/*
+!server/internal/webui/dist/index.html
+server/server
+server/data/
+app/src-tauri/target/
+app/src-tauri/gen/
+*.log
+.DS_Store
+*.tsbuildinfo
+.env.local
+.verify/
+demo/
+
+# 本地包管理器与工具目录
+.pnpm-store/
+.impeccable/
+.dsh/
+.gocache/

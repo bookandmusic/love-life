@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "go: build",
+      "type": "shell",
+      "command": "go build ./...",
+      "options": { "cwd": "${workspaceFolder}/server" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": "$go"
+    },
+    {
+      "label": "go: test",
+      "type": "shell",
+      "command": "go test ./...",
+      "options": { "cwd": "${workspaceFolder}/server" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "admin: build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}/admin" },
+      "problemMatcher": []
+    },
+    {
+      "label": "app: build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}/app" },
+      "problemMatcher": []
+    }
+  ]
+}
