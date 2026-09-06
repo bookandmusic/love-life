@@ -1,0 +1,72 @@
+import { createRouter, createWebHistory } from 'vue-router'
+import { getToken, getRole } from '../lib/http'
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    {
+      path: '/login',
+      component: () => import('../views/LoginView.vue'),
+      meta: { title: '登录' },
+    },
+    {
+      path: '/',
+      component: () => import('../views/LayoutView.vue'),
+      children: [
+        { path: '', redirect: '/dashboard' },
+        { path: 'dashboard', component: () => import('../views/DashboardView.vue'), meta: { title: '仪表盘' } },
+        { path: 'space', component: () => import('../views/SpaceManageView.vue'), meta: { title: '空间管理' } },
+        {
+          path: 'ai',
+          component: () => import('../views/AiConfigView.vue'),
+          redirect: '/ai/providers',
+          meta: { title: 'AI 配置' },
+          children: [
+            { path: 'providers', component: () => import('../views/ProviderView.vue'), meta: { title: 'AI 配置 · 接入与模型' } },
+            { path: 'prompts', component: () => import('../views/PromptStyleView.vue'), meta: { title: 'AI 配置 · 提示词与风格' } },
+            { path: 'tools', component: () => import('../views/McpToolsView.vue'), meta: { title: 'AI 配置 · MCP 工具' } },
+            { path: 'tokens', component: () => import('../views/TokensView.vue'), meta: { title: 'AI 配置 · 访问令牌' } },
+          ],
+        },
+        {
+          path: 'integrations',
+          component: () => import('../views/IntegrationsView.vue'),
+          redirect: '/integrations/webhooks',
+          meta: { title: '外部集成' },
+          children: [
+            { path: 'webhooks', component: () => import('../views/WebhooksView.vue'), meta: { title: '外部集成 · 通知渠道' } },
+            { path: 'map', component: () => import('../views/MapConfigView.vue'), meta: { title: '外部集成 · 地图配置' } },
+          ],
+        },
+        { path: 'recycle', component: () => import('../views/RecycleBinView.vue'), meta: { title: '回收站' } },
+        { path: 'audit', component: () => import('../views/AuditLogView.vue'), meta: { title: '审计日志' } },
+        // 旧路径兜底
+        { path: 'settings', redirect: '/ai/providers' },
+        { path: 'settings/models', redirect: '/ai/providers' },
+        { path: 'settings/tools', redirect: '/ai/tools' },
+        { path: 'settings/tokens', redirect: '/ai/tokens' },
+        { path: 'settings/webhooks', redirect: '/integrations/webhooks' },
+        { path: 'settings/map', redirect: '/integrations/map' },
+        { path: 'settings/space', redirect: '/space' },
+        { path: 'models', redirect: '/ai/providers' },
+        { path: 'tools', redirect: '/ai/tools' },
+        { path: 'tokens', redirect: '/ai/tokens' },
+        { path: 'webhooks', redirect: '/integrations/webhooks' },
+        { path: 'map-config', redirect: '/integrations/map' },
+        { path: 'users', redirect: '/space' },
+        { path: 'members', redirect: '/space' },
+        { path: 'security', redirect: '/space' },
+      ],
+    },
+  ],
+})
+
+router.beforeEach((to) => {
+  const authed = !!getToken()
+  const role = getRole()
+  if (to.path !== '/login' && !authed) return '/login'
+  if (to.path !== '/login' && role && role !== 'admin') return '/login'
+  if (to.path === '/login' && authed && role === 'admin') return '/dashboard'
+})
+
+export default router

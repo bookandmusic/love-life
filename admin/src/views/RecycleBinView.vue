@@ -1,0 +1,203 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { recycleApi, securityApi } from '../api'
+import type { RecycleItem, RecycleType, RestoreLogEntry } from '../api/recycle'
+import AppCard from '../components/AppCard.vue'
+import AppButton from '../components/AppButton.vue'
+import AppBadge from '../components/AppBadge.vue'
+import AppAlert from '../components/AppAlert.vue'
+import AppIcon from '../components/AppIcon.vue'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { toast } from '../lib/toast'
+
+const items = ref<RecycleItem[]>([])
+const restoreLog = ref<RestoreLogEntry[]>([])
+const filterType = ref('全部')
+const selected = ref<Set<number>>(new Set())
+
+// 保留期限仅用于提示展示，设置入口在「空间管理 · 数据保留」
+const retentionDays = ref(30)
+
+async function loadRetention() {
+  try {
+    retentionDays.value = (await securityApi.getSecuritySettings()).recycleRetentionDays
+  } catch {
+    // 保留期加载失败不阻塞回收站主功能
+  }
+}
+
+const types: Array<'全部' | RecycleType> = ['全部', '动态', '评论', '照片', '相册', '纪念日', '地图点位']
+const typeVariant: Record<RecycleType, 'info' | 'neutral' | 'warning' | 'success' | 'error'> = {
+  动态: 'info',
+  评论: 'neutral',
+  照片: 'warning',
+  相册: 'warning',
+  纪念日: 'error',
+  地图点位: 'success',
+}
+
+async function load() {
+  try {
+    const [list, log] = await Promise.all([recycleApi.listRecycle(), recycleApi.listRestoreLog()])
+    // DESIGN §9：按删除时间排序（倒序）；前端排序兜底，不依赖后端返回顺序
+    items.value = [...list].sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
+    restoreLog.value = log.items
+    selected.value = new Set()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '回收站加载失败')
+  }
+}
+
+onMounted(() => {
+  load()
+  loadRetention()
+})
+
+const filtered = computed(() =>
+  items.value.filter((i) => filterType.value === '全部' || i.type === filterType.value),
+)
+
+const allChecked = computed(
+  () => filtered.value.length > 0 && filtered.value.every((i) => selected.value.has(i.id)),
+)
+
+function toggleAll() {
+  if (allChecked.value) {
+    selected.value = new Set()
+  } else {
+    selected.value = new Set(filtered.value.map((i) => i.id))
+  }
+}
+
+function toggleOne(id: number) {
+  const next = new Set(selected.value)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  selected.value = next
+}
+
+// 恢复走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈，操作记录审计日志
+const confirmRestore = ref<{ ids: number[]; summary: string } | null>(null)
+const restoring = ref(false)
+
+function restore(item: RecycleItem) {
+  confirmRestore.value = { ids: [item.id], summary: item.summary }
+}
+
+function restoreSelected() {
+  const ids = [...selected.value]
+  if (ids.length === 0) return
+  confirmRestore.value = { ids, summary: `选中的 ${ids.length} 条内容` }
+}
+
+async function doRestore() {
+  const target = confirmRestore.value
+  if (!target) return
+  restoring.value = true
+  try {
+    if (target.ids.length === 1) {
+      await recycleApi.restoreRecycle(target.ids[0])
+      toast.success(`已恢复「${target.summary}」`)
+    } else {
+      await recycleApi.restoreMany(target.ids)
+      toast.success(`已恢复 ${target.ids.length} 条内容`)
+    }
+    confirmRestore.value = null
+    await load()
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : '恢复失败')
+  } finally {
+    restoring.value = false
+  }
+}
+</script>
+
+<template>
+  <div class="page">
+    <AppAlert variant="warning" icon="alert-triangle">
+      回收站中的内容将保留 {{ retentionDays }} 天，超过期限将被系统自动永久删除，仅管理员可恢复；保留期限可在「空间管理 · 数据保留」中调整。
+    </AppAlert>
+
+    <div class="page-section-header">
+      <h2 class="page-section-title">已删除内容</h2>
+      <div class="flex gap-3 items-center">
+        <select v-model="filterType" class="form-select" style="width: auto">
+          <option v-for="t in types" :key="t" :value="t">{{ t }}</option>
+        </select>
+        <AppButton variant="primary" icon="refresh-cw" :disabled="selected.size === 0" @click="restoreSelected">
+          批量恢复{{ selected.size > 0 ? `（${selected.size}）` : '' }}
+        </AppButton>
+        <AppButton variant="secondary" icon="refresh-cw" @click="load">刷新</AppButton>
+      </div>
+    </div>
+
+    <AppCard class="card-fill">
+      <div v-if="filtered.length === 0" class="empty-state">
+        <AppIcon name="trash-2" :size="48" />
+        <div class="empty-state-title">回收站是空的</div>
+      </div>
+      <div v-else class="table-wrapper">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 36px">
+                <input type="checkbox" :checked="allChecked" @change="toggleAll" />
+              </th>
+              <th>内容类型</th><th>内容摘要</th><th>删除时间</th><th>删除者</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="item in filtered" :key="item.id">
+              <td>
+                <input type="checkbox" :checked="selected.has(item.id)" @change="toggleOne(item.id)" />
+              </td>
+              <td><AppBadge :variant="typeVariant[item.type]">{{ item.type }}</AppBadge></td>
+              <td class="text-secondary">{{ item.summary }}</td>
+              <td class="text-secondary">{{ item.deletedAt }}</td>
+              <td>{{ item.deletedBy }}</td>
+              <td class="text-right">
+                <AppButton variant="primary" size="sm" icon="refresh-cw" @click="restore(item)">
+                  恢复
+                </AppButton>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </AppCard>
+
+    <div class="page-section-header">
+      <h2 class="page-section-title">恢复操作审计</h2>
+    </div>
+
+    <AppCard class="card-fixed">
+      <div v-if="restoreLog.length === 0" class="empty-state">
+        <AppIcon name="file-text" :size="40" />
+        <div class="empty-state-title">暂无恢复记录</div>
+      </div>
+      <table v-else class="table-wrapper">
+        <thead>
+          <tr><th>时间</th><th>操作人</th><th>恢复内容</th></tr>
+        </thead>
+        <tbody>
+          <tr v-for="(l, i) in restoreLog" :key="i">
+            <td class="text-secondary">{{ l.time }}</td>
+            <td>{{ l.operator }}</td>
+            <td class="text-secondary">{{ l.summary }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </AppCard>
+
+    <ConfirmDialog
+      v-if="confirmRestore"
+      title="恢复回收站内容"
+      :message="`确认恢复「${confirmRestore.summary}」？该操作会被记录审计日志。`"
+      confirm-label="恢复"
+      :busy="restoring"
+      @close="confirmRestore = null"
+      @confirm="doRestore"
+    />
+  </div>
+</template>
+

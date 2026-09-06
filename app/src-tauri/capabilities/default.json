@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "默认能力集：仅核心权限，按需增补（相机/定位等接入时再声明）",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

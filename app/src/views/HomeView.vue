@@ -1,0 +1,589 @@
+<script setup lang="ts">
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { Cake, PenLine, ChevronRight, RefreshCw, CalendarDays, MapPin, Sparkles } from 'lucide-vue-next'
+import { api, fullUrl } from '../api/client'
+import NavActions from '../components/NavActions.vue'
+import SkeletonState from '../components/SkeletonState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import { useSpace } from '../stores/space'
+
+const router = useRouter()
+const spaceStore = useSpace()
+
+interface PostItem {
+  id: number
+  title?: string
+  content: string
+  mood?: string
+  location_name?: string
+  created_at: string
+  media: Array<{ id: number; kind: string; thumb_url: string }>
+}
+
+const posts = ref<PostItem[]>([])
+const loading = ref(false)
+const error = ref('')
+const space = computed(() => spaceStore.space)
+
+const coupleNames = computed(() => {
+  const names = spaceStore.space?.members.map((m) => m.nickname) ?? []
+  return names.join(' & ') || '我们'
+})
+
+// 回忆标题：优先标题，否则正文截断
+function memoryTitle(m: PostItem): string {
+  const t = (m.title || m.content || '').trim()
+  return t.slice(0, 24) || '一条回忆'
+}
+
+// 回忆精选：随机抽 1 张有图的「杂志封面」+ 若干无图的「文字回忆」
+const shuffleTick = ref(0)
+function shuffle<T>(arr: T[]): T[] {
+  let seed = (shuffleTick.value + 1) * 2654435761 % 2147483647
+  const rand = () => {
+    seed = (seed * 1103515245 + 12345) % 2147483647
+    return seed / 2147483647
+  }
+  const a = [...arr]
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1))
+    ;[a[i], a[j]] = [a[j], a[i]]
+  }
+  return a
+}
+const coverMemory = computed(() => {
+  const withImg = posts.value.filter((p) => p.media.length > 0)
+  return withImg.length ? shuffle(withImg)[0] : null
+})
+const textMemories = computed(() => {
+  const noImg = posts.value.filter((p) => p.media.length === 0)
+  return shuffle(noImg).slice(0, 3)
+})
+function refreshMemories() {
+  shuffleTick.value++
+}
+const todayDD = computed(() => {
+  const d = new Date()
+  return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+})
+// 那年今日：同月同日的历史回忆（有数据才出现，入口卡）
+const memoriesToday = computed(() =>
+  posts.value.filter((x) => `${x.created_at.slice(5, 7)}${x.created_at.slice(8, 10)}` === todayDD.value),
+)
+const nextAnniv = computed(() => {
+  const next = spaceStore.space?.next_anniversary
+  return next && next.name ? next : null
+})
+// 「即将发生」：仅保留「那年今日」（纪念日已内联在头卡，避免重复）
+const upcoming = computed(() => {
+  if (!memoriesToday.value.length) return []
+  return [
+    {
+      key: 'today',
+      icon: 'cal' as const,
+      title: '那年今日',
+      sub: `${memoriesToday.value.length} 篇同月同日`,
+      to: '/posts',
+    },
+  ]
+})
+
+const totallyEmpty = computed(
+  () => spaceStore.space !== null && posts.value.length === 0 && !spaceStore.space?.next_anniversary?.name,
+)
+
+async function load() {
+  loading.value = true
+  error.value = ''
+  try {
+    const [, p] = await Promise.all([
+      spaceStore.load(true),
+      api<{ items: PostItem[] }>('/api/v1/posts?page=1&page_size=50'),
+    ])
+    posts.value = p.items
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : '加载失败'
+  } finally {
+    loading.value = false
+  }
+}
+
+onMounted(load)
+</script>
+
+<template>
+  <div class="home">
+    <!-- 毛玻璃导航栏：标题 + 通知/设置 -->
+    <header class="navbar glass">
+      <span class="title">{{ space?.name || '我们的空间' }}</span>
+      <NavActions />
+    </header>
+
+    <div class="content">
+      <SkeletonState v-if="loading" variant="hero" />
+      <ErrorState v-else-if="error" :error="error" :retry="load" />
+      <template v-else>
+        <!-- 1. 关系头卡：渐变底 + 叠头像 + 昵称 + 超大天数 + 下一纪念日 -->
+        <div class="hero">
+          <div class="hero-top">
+            <div class="hero-couple">
+              <div class="avatar him">{{ space?.members?.[1]?.nickname?.slice(0, 1) || '你' }}</div>
+              <div class="avatar her">{{ space?.members?.[0]?.nickname?.slice(0, 1) || '我' }}</div>
+            </div>
+            <div class="hero-names">{{ coupleNames }}</div>
+          </div>
+          <div class="hero-days">
+            <span class="num">{{ space?.days_together ?? '—' }}</span>
+            <span class="unit">天</span>
+          </div>
+          <div class="hero-sub">
+            在一起
+            <span v-if="space?.love_start_date"> · {{ space.love_start_date.replace(/-/g, '.') }} 开始</span>
+          </div>
+          <div v-if="nextAnniv" class="hero-next" @click="router.push('/anniversaries')">
+            <Cake :size="14" stroke-width="2" />
+            <span>下一个纪念日：{{ nextAnniv.name }}</span>
+            <b>{{ nextAnniv.days_until }} 天后</b>
+          </div>
+        </div>
+
+        <!-- 2. 「即将发生」并排双卡 -->
+        <div v-if="upcoming.length" class="upcoming-grid">
+          <div
+            v-for="u in upcoming"
+            :key="u.key"
+            class="upcoming-card"
+            :class="u.icon"
+            @click="router.push(u.to)"
+          >
+            <span class="u-ic">
+              <CalendarDays :size="18" stroke-width="2" />
+            </span>
+            <span class="u-name">{{ u.title }}</span>
+            <span class="u-sub">{{ u.sub }}</span>
+          </div>
+        </div>
+
+        <!-- 空态 -->
+        <div v-if="totallyEmpty" class="empty">
+          <PenLine :size="30" stroke-width="1.2" class="empty-ic" />
+          <p>这里还没有回忆</p>
+          <p class="empty-sub">点右下角 + 记录第一条吧</p>
+        </div>
+
+        <template v-else>
+          <!-- 3. 回忆精选：杂志主图 + 紧凑文字回忆 -->
+          <div class="section-title">
+            <h2>回忆精选</h2>
+            <div class="row-actions">
+              <button class="btn-refresh" aria-label="换一批" title="换一批" @click="refreshMemories">
+                <RefreshCw :size="15" stroke-width="2" />
+              </button>
+              <a class="more" @click="router.push('/posts')">更多<ChevronRight :size="14" stroke-width="2" /></a>
+            </div>
+          </div>
+
+          <!-- 杂志封面主图卡 -->
+          <div v-if="coverMemory" class="cover-card" @click="router.push(`/posts/${coverMemory.id}`)">
+            <div class="cover-media">
+              <img :src="fullUrl(coverMemory.media[0].thumb_url)" loading="lazy" alt="" />
+              <div class="cover-mask">
+                <div class="cover-tags">
+                  <span v-if="coverMemory.mood" class="cover-tag"><Sparkles :size="12" stroke-width="2" />{{ coverMemory.mood }}</span>
+                  <span v-if="coverMemory.location_name" class="cover-tag"><MapPin :size="12" stroke-width="2" />{{ coverMemory.location_name }}</span>
+                </div>
+                <b class="cover-title">{{ memoryTitle(coverMemory) }}</b>
+                <span class="cover-date">{{ coverMemory.created_at.slice(0, 10) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 文字回忆卡 -->
+          <div v-for="m in textMemories" :key="m.id" class="text-card" @click="router.push(`/posts/${m.id}`)">
+            <span class="tc-bar"></span>
+            <div class="tc-body">
+              <p>{{ m.content || '一条回忆' }}</p>
+              <div class="tc-meta">
+                <span>{{ m.created_at.slice(0, 10) }}</span>
+                <span v-if="m.mood" class="tc-mood">· {{ m.mood }}</span>
+                <span v-if="m.location_name" class="tc-loc">· {{ m.location_name }}</span>
+              </div>
+            </div>
+          </div>
+        </template>
+      </template>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.home {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* 毛玻璃导航栏 */
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+.title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+/* 内容滚动区 */
+.content {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 16px 24px;
+}
+
+/* 1. 关系头卡：柔和渐变底 + 叠头像 + 超大天数 */
+.hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: 20px;
+  padding: 24px 22px 20px;
+  margin-bottom: 16px;
+  background: linear-gradient(150deg, rgba(255, 143, 171, 0.18), rgba(255, 143, 171, 0.04) 55%, transparent);
+  box-shadow: var(--shadow);
+  border: 1px solid var(--rule);
+}
+:root[data-theme='dark'] .hero {
+  background: linear-gradient(150deg, rgba(255, 143, 171, 0.16), rgba(255, 143, 171, 0.03) 55%, transparent);
+}
+.hero-top {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+.hero-couple {
+  display: flex;
+  flex-shrink: 0;
+}
+.avatar {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 19px;
+  font-weight: 600;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
+  border: 2.5px solid rgba(255, 255, 255, 0.85);
+}
+:root[data-theme='dark'] .avatar {
+  border-color: rgba(28, 28, 30, 0.9);
+}
+.avatar.her {
+  background: var(--primary);
+}
+.avatar.him {
+  background: var(--sem-blue);
+}
+.hero-couple .avatar.him {
+  margin-left: -14px;
+  z-index: 1;
+  position: relative;
+}
+.hero-couple .avatar.her {
+  position: relative;
+  z-index: 2;
+}
+.hero-names {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--ink);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hero-days {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 18px;
+}
+.hero-days .num {
+  font-size: 52px;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.hero-days .unit {
+  font-size: 16px;
+  color: var(--muted-ink);
+  font-weight: 500;
+}
+.hero-sub {
+  font-size: 13px;
+  color: var(--muted-ink);
+  margin-top: 6px;
+}
+.hero-next {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  color: var(--muted-ink);
+  cursor: pointer;
+}
+.hero-next svg {
+  color: var(--primary-deep);
+}
+.hero-next b {
+  color: var(--primary-deep);
+  font-weight: 700;
+}
+.hero-next:active {
+  opacity: 0.8;
+}
+
+/* 2. 「即将发生」单卡整宽（仅「那年今日」；纪念日已内联头卡） */
+.upcoming-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.upcoming-card {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+.upcoming-card:active {
+  opacity: 0.85;
+}
+.u-ic {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 122, 255, 0.1);
+  color: var(--ios-blue);
+}
+:root[data-theme='dark'] .u-ic {
+  background: rgba(10, 132, 255, 0.16);
+}
+.u-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+  flex: 1;
+}
+.u-sub {
+  font-size: 12px;
+  color: var(--muted-ink);
+  flex-shrink: 0;
+}
+
+/* 区块标题 */
+.section-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 4px 0 12px;
+}
+.section-title h2 {
+  font-size: 17px;
+  font-weight: 700;
+}
+.more {
+  font-size: 13px;
+  color: var(--muted-ink);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+}
+
+/* 空态 */
+.empty {
+  text-align: center;
+  padding: 60px 0;
+  color: var(--muted-ink);
+}
+.empty-ic {
+  color: var(--primary);
+  opacity: 0.55;
+  margin-bottom: 12px;
+}
+.empty p {
+  font-size: 16px;
+  color: var(--ink);
+}
+.empty-sub {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--muted-ink) !important;
+}
+
+
+/* 3. 回忆精选：杂志主图卡 + 文字回忆卡 */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn-refresh {
+  border: none;
+  background: transparent;
+  color: var(--primary-deep);
+  padding: 4px;
+  border-radius: 50%;
+  display: inline-flex;
+  cursor: pointer;
+}
+.btn-refresh:active {
+  transform: rotate(-90deg);
+  transition: transform 0.15s;
+}
+.cover-card {
+  border-radius: 20px;
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  margin-bottom: 14px;
+}
+.cover-card:active {
+  opacity: 0.92;
+}
+.cover-media {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+}
+.cover-media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.cover-mask {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 16px;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.15) 58%, transparent 82%);
+}
+.cover-tags {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.cover-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  color: #fff;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.cover-title {
+  color: #fff;
+  font-size: 19px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+.cover-date {
+  color: rgba(255, 255, 255, 0.88);
+  font-size: 12px;
+}
+.text-card {
+  display: flex;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  margin-bottom: 10px;
+}
+.text-card:active {
+  opacity: 0.9;
+}
+.tc-bar {
+  width: 3px;
+  align-self: stretch;
+  border-radius: 2px;
+  background: var(--primary);
+  flex-shrink: 0;
+}
+.tc-body {
+  flex: 1;
+  min-width: 0;
+}
+.tc-body p {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.tc-meta {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--muted-ink);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.tc-mood,
+.tc-loc {
+  opacity: 0.85;
+}
+</style>
