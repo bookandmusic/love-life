@@ -151,7 +151,7 @@ func Registry() []*Tool {
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"query": map[string]any{"type": "string"},
 			}, "required": []string{"query"}},
-			Exec: func(ctx context.Context, d *Deps, _ int64, args map[string]any) (*ExecResult, error) {
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
 				q := "%" + str(args, "query") + "%"
 				rows, err := d.DB.QueryContext(ctx, `
 					SELECT p.id, COALESCE(p.title,''), p.content, p.created_at, COALESCE(u.nickname, u.username)
@@ -177,7 +177,7 @@ func Registry() []*Tool {
 					}
 					hits = append(hits, h)
 				}
-				d.audit(ctx, 0, "search_posts", str(args, "query"), "ok")
+				d.audit(ctx, userID, "search_posts", str(args, "query"), "ok")
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -186,12 +186,13 @@ func Registry() []*Tool {
 			Name:        "get_space_summary",
 			Description: "空间概览：在一起天数、动态数、相册数、纪念日数等统计",
 			Params:      map[string]any{"type": "object", "properties": map[string]any{}},
-			Exec: func(ctx context.Context, d *Deps, _ int64, _ map[string]any) (*ExecResult, error) {
+			Exec: func(ctx context.Context, d *Deps, userID int64, _ map[string]any) (*ExecResult, error) {
 				var posts, albums, anniversaries int64
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM posts WHERE deleted_at IS NULL`).Scan(&posts)
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM albums WHERE deleted_at IS NULL AND is_hidden=0`).Scan(&albums)
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM anniversaries WHERE deleted_at IS NULL`).Scan(&anniversaries)
 				summary := map[string]int64{"posts": posts, "albums": albums, "anniversaries": anniversaries}
+				d.audit(ctx, userID, "get_space_summary", "", "ok")
 				b, _ := json.Marshal(summary)
 				return &ExecResult{Content: string(b), Data: summary}, nil
 			},
