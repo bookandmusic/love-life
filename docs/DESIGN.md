@@ -245,7 +245,7 @@ flowchart TD
 
 ## 6. MCP 工具接口清单
 
-### 6.1 动态相关
+### 6.1 动态与评论
 
 | Tool Name | Description | Input Schema |
 |:---|:---|:---|
@@ -253,6 +253,9 @@ flowchart TD
 | delete_post | 删除动态（进入回收站） | {post_id} |
 | search_posts | 语义搜索历史动态 | {query, date_range?, media_type?} |
 | get_today_in_history | 获取那年今日内容 | {years_back?} |
+| create_comment | 发表评论 | {post_id, content} |
+| delete_comment | 删除评论（软删除，进入回收站） | {comment_id} |
+| list_comments | 列出某条动态下的评论（分页） | {post_id, page?, page_size?} |
 
 ### 6.2 相册相关
 
@@ -287,6 +290,8 @@ flowchart TD
 | get_next_anniversary | 获取下一个纪念日信息 | {} |
 | configure_reminder | 配置纪念日提醒（提前天数；提醒站内+外部同发） | {anniversary_id, days_before} |
 
+> 注：`get_next_anniversary` 工具输出含 `next_solar_date`——服务端按 §12 约定复用同一离线算法（`internal/lunar`）**即时换算，不落库**；§12「换算由客户端处理」指展示层，本节「不存」指存储层无冗余字段（AD4 审核 2026-09-05 要求的输出增强）。
+
 ### 6.5 空间与数据
 
 | Tool Name | Description | Input Schema |
@@ -294,18 +299,15 @@ flowchart TD
 | get_space_summary | 空间概览（在一起天数、动态数、相册数、足迹数、纪念日数等聚合统计） | {} |
 | get_timeline_summary | 时间线统计（按月/年统计动态数量分布） | {year?, month?} |
 
-> 工具清单共 26 个，全部为业务数据操作（实体增删/组织/查询/统计）；系统配置、模型、账号、审计、回收站不设工具。回忆摘要生成（get_memory_digest）已移除——属 AI 内容生成而非数据管理。toggle_point_visibility 已移除——地图点位砍掉「显示/隐藏」开关，仅保留查看与删除。delete_photo 已移除——媒体仅随动态存在（见 §6.2），删除照片统一走 delete_post。get_visited_cities 已移除——「去了哪些城市」不做独立工具与城市点亮 UI，由 `GET /api/v1/map/points/cities` 列表自然提供。
-
-### 6.6 互动相关
+### 6.6 互动关系
 
 | Tool Name | Description | Input Schema |
 |:---|:---|:---|
 | toggle_like | 点赞/取消点赞动态（可撤销关系数据，不进回收站） | {post_id} |
 | toggle_favorite | 收藏/取消收藏动态（可撤销关系数据，不进回收站；首版收藏对象仅动态，不含照片） | {post_id} |
 | list_favorites | 列出我收藏的动态（分页） | {page?, page_size?} |
-| create_comment | 发表评论 | {post_id, content} |
-| delete_comment | 删除评论（软删除，进入回收站） | {comment_id} |
-| list_comments | 列出某条动态下的评论（分页） | {post_id, page?, page_size?} |
+
+> 工具清单共 26 个，全部为业务数据操作（实体增删/组织/查询/统计）；系统配置、模型、账号、审计、回收站不设工具。回忆摘要生成（get_memory_digest）已移除——属 AI 内容生成而非数据管理。toggle_point_visibility 已移除——地图点位砍掉「显示/隐藏」开关，仅保留查看与删除。delete_photo 已移除——媒体仅随动态存在（见 §6.2），删除照片统一走 delete_post。get_visited_cities 已移除——「去了哪些城市」不做独立工具与城市点亮 UI，由 `GET /api/v1/map/points/cities` 列表自然提供。评论工具归入 §6.1（评论为挂在动态上的轻量内容实体：双方可删、软删进回收站）；§6.6 仅保留可撤销、不进回收站的赞/藏关系。
 
 ### 6.7 实现要点
 
