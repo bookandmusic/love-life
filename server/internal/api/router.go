@@ -48,6 +48,14 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("POST /api/v1/admin/map-config", mapAPI.create)
 	adminMux.HandleFunc("DELETE /api/v1/admin/map-config/{id}", mapAPI.remove)
 	adminMux.HandleFunc("PUT /api/v1/admin/map-config/{id}/enable", mapAPI.enable)
+	providersAPI := &providersAPI{db: db, key: crypto.KeyFrom(tm.Secret())}
+	adminMux.HandleFunc("GET /api/v1/admin/model-providers", providersAPI.list)
+	adminMux.HandleFunc("POST /api/v1/admin/model-providers", providersAPI.create)
+	adminMux.HandleFunc("POST /api/v1/admin/model-providers/fetch-models", providersAPI.fetchModels)
+	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/order", providersAPI.order)
+	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}/key", providersAPI.updateKey)
+	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}", providersAPI.update)
+	adminMux.HandleFunc("DELETE /api/v1/admin/model-providers/{id}", providersAPI.remove)
 	mux.Handle("/api/v1/admin/", authSvc.RequireAuth(requireAdmin(adminMux)))
 
 	// 地图（登录用户；瓦片走服务端代理，密钥不下发）
