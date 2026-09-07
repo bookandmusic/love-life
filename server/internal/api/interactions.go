@@ -9,6 +9,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/textutil"
 )
 
 type interactionsAPI struct {
@@ -119,7 +120,7 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.notifyPartner(r, "post_commented", id, "收到评论",
-		claims.Username+"："+truncate(req.Content, 50), map[string]any{"content": truncate(req.Content, 50)})
+		claims.Username+"："+textutil.TruncMark(req.Content, 50), map[string]any{"content": textutil.TruncMark(req.Content, 50)})
 	writeJSON(w, http.StatusCreated, map[string]any{"id": commentID})
 }
 
@@ -165,7 +166,7 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 	}
 	// 双方可删任意内容；删对方的评论 → 通知评论作者（自删静默）
 	if c.AuthorID != claims.UserID {
-		snapshot, _ := json.Marshal(map[string]any{"content": truncate(c.Content, 50), "deleted_by": claims.Username})
+		snapshot, _ := json.Marshal(map[string]any{"content": textutil.TruncMark(c.Content, 50), "deleted_by": claims.Username})
 		_ = a.db.InsertNotification(r.Context(), c.AuthorID, "comment_deleted", "comment", id, string(snapshot))
 	}
 	if err := a.db.SoftDeleteComment(r.Context(), id); err != nil {

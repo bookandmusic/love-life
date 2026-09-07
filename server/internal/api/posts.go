@@ -13,6 +13,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/textutil"
 )
 
 type postsAPI struct {
@@ -197,14 +198,14 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 	// 新动态通知另一方（admin 不在情侣里，见 mock partnerIds 口径）+ 外部推送（订阅 new_post 的渠道）
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
 	snapshot, _ := json.Marshal(map[string]any{
-		"title": req.Title, "content": truncate(req.Content, 50), "operator": claims.Username,
+		"title": req.Title, "content": textutil.TruncMark(req.Content, 50), "operator": claims.Username,
 	})
 	pushTitle := req.Title
 	if pushTitle == "" {
 		pushTitle = "新动态"
 	}
 	a.dp.Dispatch(r.Context(), recipients, "post_created", "post", postID, string(snapshot),
-		pushTitle, truncate(req.Content, 100))
+		pushTitle, textutil.TruncMark(req.Content, 100))
 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": postID})
 }
@@ -306,7 +307,7 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 	// 双方可删任意内容（需求 §7.1）；删对方发布的内容 → 站内通知（自删静默）
 	if p.AuthorID != claims.UserID {
 		snapshot, _ := json.Marshal(map[string]any{
-			"title": p.Title.String, "content": truncate(p.Content, 50), "deleted_by": claims.Username,
+			"title": p.Title.String, "content": textutil.TruncMark(p.Content, 50), "deleted_by": claims.Username,
 		})
 		_ = a.db.InsertNotification(r.Context(), p.AuthorID, "post_deleted", "post", id, string(snapshot))
 	}
@@ -315,14 +316,6 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
-}
-
-func truncate(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
 }
 
 // ---- 媒体文件服务（签名 URL，无 Authorization 头） ----

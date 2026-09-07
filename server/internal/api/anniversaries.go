@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bookandmusic/love-life/server/internal/lunar"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
@@ -32,7 +33,7 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	if req.Type == "lunar" {
 		annivType = "lunar"
 	}
-	if !validDateShape(req.Date) {
+	if !lunar.ValidDateShape(req.Date) {
 		writeError(w, http.StatusBadRequest, "日期格式应为 YYYY-MM-DD")
 		return
 	}
@@ -51,23 +52,6 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
-}
-
-// validDateShape 仅校验 YYYY-MM-DD 形状；solar 在调用方追加真实公历日校验，
-// lunar 保持宽容（农历日期可为 2026-02-30 这类公历不存在日，对齐 mock）。
-func validDateShape(s string) bool {
-	if len(s) != 10 || s[4] != '-' || s[7] != '-' {
-		return false
-	}
-	for i, c := range s {
-		if i == 4 || i == 7 {
-			continue
-		}
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
 }
 
 func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
