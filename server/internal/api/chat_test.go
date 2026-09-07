@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/bookandmusic/love-life/server/internal/crypto"
 )
 
 // fakeModel 起 OpenAI 兼容假模型服务，按脚本依次返回响应。
@@ -33,6 +35,20 @@ func newFakeModel(t *testing.T, script ...string) *fakeModel {
 	return f
 }
 
+// seedFakeProvider 直接插库注册假模型供应商（链头 openai-chat）；Key 用服务侧
+// 同一密钥派生加密，与客户端零 AI 配置铁律一致（测试不经管理 API——数据模型重构后
+// 该契约已移除，AD1 会提供新管理接口）。
+func seedFakeProvider(t *testing.T, env *testEnv, baseURL string) {
+	t.Helper()
+	enc, err := crypto.Encrypt(crypto.KeyFrom(env.tm.Secret()), "sk-test")
+	if err != nil {
+		t.Fatalf("encrypt key: %v", err)
+	}
+	if _, err := env.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', 'fake', ?, ?, 'fake-model', 0)`, baseURL, enc); err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+}
+
 func sseBody(t *testing.T, res *http.Response) string {
 	t.Helper()
 	defer res.Body.Close()
@@ -42,7 +58,7 @@ func sseBody(t *testing.T, res *http.Response) string {
 }
 
 func TestChatToolConfirmFlow(t *testing.T) {
-	ts, adminToken, girlToken := newPostTestEnv(t)
+	ts, adminToken, _ := newPostTestEnv(t)
 
 	// 未配置模型 → 423
 	res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "你好"})
@@ -56,33 +72,8 @@ func TestChatToolConfirmFlow(t *testing.T) {
 		`{"message":{"content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"create_post","arguments":"{\"content\":\"今天去看了电影\",\"mood\":\"开心\"}"}}]}}`,
 	)
 
-	// admin 配置模型（指向假服务）
-	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/model-configs", adminToken, map[string]any{
-		"name": "fake", "base_url": fake.server.URL, "api_key": "sk-test", "model": "fake-model", "is_default": true,
-	})
-	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		t.Fatalf("save model config: %d", res.StatusCode)
-	}
-
-	// 非登录渠道与列表脱敏：girl 读不到（非 admin 接口 403）
-	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/model-configs", girlToken, nil)
-	res.Body.Close()
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("girl access model-configs: %d", res.StatusCode)
-	}
-	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/model-configs", adminToken, nil)
-	var cfgs struct {
-		Items []map[string]any `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&cfgs)
-	res.Body.Close()
-	if len(cfgs.Items) != 1 {
-		t.Fatalf("model configs: %+v", cfgs.Items)
-	}
-	if _, has := cfgs.Items[0]["api_key"]; has {
-		t.Fatal("model config list must not leak api_key")
-	}
+	// 假模型供应商直接落库（旧管理契约已删除，AD1 提供新契约后另行覆盖管理面）
+	seedFakeProvider(t, ts, fake.server.URL)
 
 	// 对话 → SSE 收到 card 事件（写工具待确认）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "帮我记一条动态"})
@@ -174,10 +165,7 @@ func TestChatReadToolInline(t *testing.T) {
 		`{"message":{"content":"","tool_calls":[{"id":"s1","type":"function","function":{"name":"search_posts","arguments":"{\"query\":\"海边\"}"}}]}}`,
 		`{"message":{"content":"找到了：海边的日落真美"}}`,
 	)
-	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/model-configs", adminToken, map[string]any{
-		"base_url": fake.server.URL, "api_key": "k", "model": "m", "is_default": true,
-	})
-	res.Body.Close()
+	seedFakeProvider(t, ts, fake.server.URL)
 
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "我们去过海边吗"})
 	body := sseBody(t, res)
@@ -198,10 +186,8 @@ func TestChatMediaFlow(t *testing.T) {
 	fake := newFakeModel(t,
 		`{"message":{"content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"create_post","arguments":"{\"content\":\"去看了海\"}"}}]}}`,
 	)
-	res := doJSON(t, "POST", ts.URL+"/api/v1/admin/model-configs", adminToken, map[string]any{
-		"base_url": fake.server.URL, "api_key": "k", "model": "m", "is_default": true,
-	})
-	res.Body.Close()
+	seedFakeProvider(t, ts, fake.server.URL)
+	var res *http.Response
 
 	// 1) message 携带 media 引用（仅回显用）→ 历史 media 字段回显
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]any{
@@ -284,10 +270,7 @@ func TestChatAlbumTools(t *testing.T) {
 		`{"message":{"content":"","tool_calls":[{"id":"a1","type":"function","function":{"name":"create_album","arguments":"{\"name\":\"旅行\"}"}}]}}`,
 		fakeScript,
 	)
-	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/model-configs", adminToken, map[string]any{
-		"base_url": fake.server.URL, "api_key": "k", "model": "m", "is_default": true,
-	})
-	res.Body.Close()
+	seedFakeProvider(t, ts, fake.server.URL)
 
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "建相册"})
 	body := sseBody(t, res)
@@ -344,10 +327,7 @@ func TestChatAlbumToolsReject(t *testing.T) {
 		`{"message":{"content":"","tool_calls":[{"id":"a1","type":"function","function":{"name":"create_album","arguments":"{\"name\":\"旅行\"}"}}]}}`,
 		script,
 	)
-	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/model-configs", adminToken, map[string]any{
-		"base_url": fake.server.URL, "api_key": "k", "model": "m", "is_default": true,
-	})
-	res.Body.Close()
+	seedFakeProvider(t, ts, fake.server.URL)
 
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "建相册"})
 	body := sseBody(t, res)

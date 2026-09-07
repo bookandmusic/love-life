@@ -158,17 +158,6 @@ CREATE TABLE notifications (
 );
 CREATE INDEX idx_notifications_recipient ON notifications(recipient_id, created_at DESC);
 
-CREATE TABLE model_provider_configs (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    name          TEXT    NOT NULL,
-    base_url      TEXT    NOT NULL,
-    api_key_enc   TEXT    NOT NULL,
-    model         TEXT    NOT NULL,
-    is_default    INTEGER NOT NULL DEFAULT 0,
-    is_backup     INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
-);
-
 CREATE TABLE chat_messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL REFERENCES users(id),
@@ -221,3 +210,50 @@ CREATE TABLE map_sources (
     created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE UNIQUE INDEX idx_map_sources_enabled ON map_sources(enabled) WHERE enabled = 1;
+
+-- 模型供应商（DESIGN §12.1）：api_type 决定协议，sort_order = 故障切换链顺序；
+-- default_model 存模型 ID 字符串（供应商内唯一）；api_key_enc 加密存储。
+CREATE TABLE model_providers (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_type      TEXT    NOT NULL DEFAULT 'openai-chat'
+                  CHECK (api_type IN ('openai-chat', 'openai-responses', 'anthropic', 'gemini')),
+    name          TEXT    NOT NULL,
+    base_url      TEXT    NOT NULL,
+    api_key_enc   TEXT    NOT NULL DEFAULT '',
+    default_model TEXT    NOT NULL DEFAULT '',
+    sort_order    INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 模型级参数（temperature/max_tokens 可空 = 调用不传，用供应商默认）
+CREATE TABLE provider_models (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id INTEGER NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+    model_id    TEXT    NOT NULL,
+    temperature REAL,
+    max_tokens  INTEGER,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (provider_id, model_id)
+);
+
+-- 输出风格库：内置固化（builtin=1）+ 后台自定义；全局默认落 app_settings.default_style_id
+CREATE TABLE output_styles (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT    NOT NULL UNIQUE,
+    prompt     TEXT    NOT NULL,
+    builtin    INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+INSERT INTO output_styles (name, prompt, builtin, sort_order) VALUES
+    ('温暖', '说话温暖贴心，多用鼓励和关心的语气，像伴侣日常聊天一样自然。', 1, 1),
+    ('中性', '语气平和客观，简洁清晰地表达，不刻意煽情。', 1, 2),
+    ('简洁', '回答尽量简短，直给要点，不啰嗦。', 1, 3),
+    ('俏皮', '语气活泼俏皮，可以适当开玩笑，营造轻松氛围。', 1, 4);
+
+-- 全局单值配置（如 default_style_id）
+CREATE TABLE app_settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT INTO app_settings (key, value) VALUES ('default_style_id', '1');

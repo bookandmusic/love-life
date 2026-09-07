@@ -573,8 +573,9 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | Space | id, name, signature, love_start_date | 单行表（单空间部署） |
 | WebhookChannel | id, name, method(GET/POST), url, headers_json, body_template, events_json | 空间级外部通知渠道（admin 后台配置，无用户归属）；events_json = 订阅的事件类型（7 类） |
 | ModelProvider | id, api_type(openai-chat/openai-responses/anthropic/gemini), name, base_url, api_key_encrypted, sort_order | admin 域；Key 加密存储，客户端永不接触；sort_order = 故障切换链顺序 |
-| ProviderModel | provider_id, model_id, temperature?, max_tokens? | 供应商下模型条目，参数挂模型级（可空 = 调用不传）；default_model 为 Provider 上的指针字段 |
-| OutputStyle | id, name, prompt, builtin, sort_order? | 输出风格库：内置固化 + 后台自定义；全局默认风格为单行配置（default_style_id） |
+| ProviderModel | provider_id, model_id, temperature?, max_tokens? | 供应商下模型条目，参数挂模型级（可空 = 调用不传）；default_model 为 Provider 上的指针字段，存模型 ID 字符串（供应商内 UNIQUE，删除供应商时模型条目级联） |
+| OutputStyle | id, name, prompt, builtin, sort_order? | 输出风格库：内置固化 + 后台自定义；全局默认风格为单行配置（default_style_id，存 AppSetting） |
+| AppSetting | key, value | admin 域全局单值配置（如 default_style_id、system_prompt），键值存储，客户端永不接触 |
 
 ### 12.2 内容
 

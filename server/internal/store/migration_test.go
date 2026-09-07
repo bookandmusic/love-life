@@ -8,7 +8,9 @@ import (
 
 // TestFullSchema 验证压缩版 001_init.sql 一次建出的最新库结构：
 // 覆盖 011/012/013 的最终约束（kind 收 audio、一文件一相册、
-// anniversaries.type、chat_messages.media、webhook_channels 空间级）。
+// anniversaries.type、chat_messages.media、webhook_channels 空间级），
+// 以及模型网关数据模型（model_providers/provider_models/output_styles/app_settings，
+// 内置风格种子与全局默认风格）。
 // 压缩后无 002~013 升级路径，此测试确保收敛后的单一迁移仍满足全部最终不变式。
 func TestFullSchema(t *testing.T) {
 	db, err := Open(t.TempDir())
@@ -105,5 +107,40 @@ func TestFullSchema(t *testing.T) {
 		if name == "user_id" {
 			t.Fatal("webhook_channels must not have user_id (space-level)")
 		}
+	}
+
+	// 不变式 6：模型网关表集 + 内置风格种子 + 全局默认风格（LLM 数据模型重构收敛）
+	for _, table := range []string{"model_providers", "provider_models", "output_styles", "app_settings"} {
+		if _, err := db.Exec("SELECT 1 FROM " + table + " LIMIT 0"); err != nil {
+			t.Fatalf("%s must exist: %v", table, err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO model_providers (api_type, name, base_url, default_model, sort_order) VALUES ('openai-chat', 'OpenAI', 'https://api.openai.com/v1', 'gpt-4o', 0)`); err != nil {
+		t.Fatalf("valid provider must be accepted: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO model_providers (api_type, name, base_url) VALUES ('bogus', 'X', 'u')`); err == nil {
+		t.Fatal("invalid api_type must be rejected")
+	}
+	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, model_id, temperature) VALUES (1, 'gpt-4o', 0.7)`); err != nil {
+		t.Fatalf("model entry must be accepted: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, model_id) VALUES (1, 'gpt-4o')`); err == nil {
+		t.Fatal("UNIQUE(provider_id, model_id) must reject duplicate")
+	}
+	// DELETE 供应商级联删除模型条目（FK ON DELETE CASCADE）
+	if _, err := db.Exec("DELETE FROM model_providers WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	var orphan int
+	if err := db.QueryRow("SELECT COUNT(*) FROM provider_models WHERE provider_id = 1").Scan(&orphan); err != nil || orphan != 0 {
+		t.Fatalf("orphan models = %d err=%v, want 0", orphan, err)
+	}
+	var builtinCount int
+	if err := db.QueryRow("SELECT COUNT(*) FROM output_styles WHERE builtin = 1").Scan(&builtinCount); err != nil || builtinCount != 4 {
+		t.Fatalf("builtin styles = %d err=%v, want 4", builtinCount, err)
+	}
+	var defStyle string
+	if err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'default_style_id'").Scan(&defStyle); err != nil || defStyle != "1" {
+		t.Fatalf("default_style_id = %q err=%v, want '1'", defStyle, err)
 	}
 }

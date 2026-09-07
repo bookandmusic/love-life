@@ -18,6 +18,7 @@ import (
 type testEnv struct {
 	*httptest.Server
 	db *store.DB
+	tm *auth.TokenManager
 }
 
 func newTestServer(t *testing.T) *testEnv {
@@ -42,7 +43,7 @@ func newTestServer(t *testing.T) *testEnv {
 	webuiFS := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>placeholder</html>")}}
 	ts := httptest.NewServer(NewRouter(config.Config{}, db, tm, mp, dp, webuiFS))
 	t.Cleanup(ts.Close)
-	return &testEnv{Server: ts, db: db}
+	return &testEnv{Server: ts, db: db, tm: tm}
 }
 
 func doJSON(t *testing.T, method, url, token string, body any) *http.Response {

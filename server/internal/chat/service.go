@@ -47,20 +47,27 @@ func (s *Service) systemPrompt(style string) string {
 	return base
 }
 
-// clientFromConfig 取默认模型配置并解密 Key。
+// clientFromConfig 取对话供应商（链头起首个已配 Key 的 openai-chat）并解密 Key。
 func (s *Service) clientFromConfig(ctx context.Context) (*llm.Client, error) {
-	cfg, err := s.db.DefaultModelConfig(ctx)
+	p, err := s.db.GetChatProvider(ctx)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, errNoModel
 	}
 	if err != nil {
 		return nil, err
 	}
-	apiKey, err := crypto.Decrypt(s.key, cfg.APIKeyEnc)
+	apiKey, err := crypto.Decrypt(s.key, p.APIKeyEnc)
 	if err != nil {
 		return nil, fmt.Errorf("解密模型 Key 失败: %w", err)
 	}
-	return llm.New(cfg.BaseURL, apiKey, cfg.Model), nil
+	model := p.DefaultModel
+	if model == "" && len(p.Models) > 0 {
+		model = p.Models[0].ModelID
+	}
+	if model == "" {
+		return nil, errNoModel
+	}
+	return llm.New(p.BaseURL, apiKey, model), nil
 }
 
 var errNoModel = errors.New("未配置模型——请管理员在后台配置模型服务")
@@ -69,17 +76,21 @@ var errNoModel = errors.New("未配置模型——请管理员在后台配置模
 func (s *Service) Status(w http.ResponseWriter, r *http.Request) {
 	available := true
 	reason := ""
-	cfg, err := s.db.DefaultModelConfig(r.Context())
-	if errors.Is(err, store.ErrNotFound) {
+	p, err := s.db.GetChatProvider(r.Context())
+	switch {
+	case errors.Is(err, store.ErrNotFound):
 		available = false
 		reason = "未配置模型——请管理员在后台配置模型服务"
-	} else if err != nil {
+	case err != nil:
 		available = false
 		reason = "模型配置读取失败"
-	} else {
-		if _, derr := crypto.Decrypt(s.key, cfg.APIKeyEnc); derr != nil {
+	default:
+		if _, derr := crypto.Decrypt(s.key, p.APIKeyEnc); derr != nil {
 			available = false
 			reason = "模型 Key 解密失败，请管理员检查配置"
+		} else if p.DefaultModel == "" && len(p.Models) == 0 {
+			available = false
+			reason = "未配置模型——请管理员在后台配置模型服务"
 		}
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"available": available, "reason": reason})
