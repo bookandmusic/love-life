@@ -1327,4 +1327,100 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/tokens\/\d+\/revoke$/
 } })
 
 
+// ---------- 上游模型服务模拟（L2 联调） ----------
+// 供应商 base_url 指向 http://localhost:8787/upstream/<proto>，服务端在 base 后拼协议路径
+// （openai-chat: /chat/completions · openai-responses: /responses · anthropic: /v1/messages ·
+//  gemini: /v1beta/models/{model}:generateContent）。启发式响应：消息含「记」→ create_post
+// tool_call；含「相册」→ create_album；否则文本回复。开发态不校验 Key。
+
+// 从各协议请求体提取最后一条真实用户输入（tool_result / functionResponse 载荷无文本，天然跳过）
+// 与工具名清单。
+function parseUpstreamIntent(body, apiType) {
+  const b = JSON.parse(body || '{}')
+  let lastUser = ''
+  let toolNames = []
+  if (apiType === 'openai-chat') {
+    toolNames = (b.tools || []).map((t) => t.function && t.function.name).filter(Boolean)
+    for (const m of (b.messages || [])) {
+      if (m.role === 'user' && typeof m.content === 'string') lastUser = m.content
+    }
+  } else if (apiType === 'openai-responses') {
+    toolNames = (b.tools || []).map((t) => t.name).filter(Boolean)
+    for (const item of (b.input || [])) {
+      if (item.role === 'user' && typeof item.content === 'string') lastUser = item.content
+    }
+  } else if (apiType === 'anthropic') {
+    toolNames = (b.tools || []).map((t) => t.name).filter(Boolean)
+    for (const m of (b.messages || [])) {
+      if (m.role !== 'user') continue
+      if (typeof m.content === 'string') lastUser = m.content
+      else if (Array.isArray(m.content)) {
+        const text = m.content.filter((c) => c.type === 'text').map((c) => c.text).join(' ')
+        if (text) lastUser = text
+      }
+    }
+  } else if (apiType === 'gemini') {
+    toolNames = (b.tools || []).flatMap((t) => (t.functionDeclarations || []).map((d) => d.name)).filter(Boolean)
+    for (const c of (b.contents || [])) {
+      if (c.role !== 'user') continue
+      const text = (c.parts || []).filter((p) => p.text).map((p) => p.text).join(' ')
+      if (text) lastUser = text
+    }
+  }
+  return { lastUser, toolNames }
+}
+
+// 启发式决定回复：写工具候选优先
+function decideUpstreamReply(lastUser, toolNames) {
+  const has = (n) => toolNames.includes(n)
+  if (lastUser.includes('相册') && has('create_album')) {
+    return { tool: 'create_album', args: { name: '旅行' } }
+  }
+  if (lastUser.includes('记') && has('create_post')) {
+    return { tool: 'create_post', args: { content: String(lastUser).slice(0, 50), mood: '开心' } }
+  }
+  return { text: '（mock 上游）收到：' + String(lastUser || '').slice(0, 40) }
+}
+
+const upstreamToolCall = (call) => ({
+  'openai-chat': () => ({ choices: [{ message: { content: '', tool_calls: [{ id: 'mock-1', type: 'function', function: { name: call.tool, arguments: JSON.stringify(call.args) } }] }, finish_reason: 'tool_calls' }] }),
+  'openai-responses': () => ({ output: [{ type: 'function_call', call_id: 'call_mock1', name: call.tool, arguments: JSON.stringify(call.args) }] }),
+  'anthropic': () => ({ content: [{ type: 'tool_use', id: 'toolu_mock1', name: call.tool, input: call.args }], stop_reason: 'tool_use' }),
+  'gemini': () => ({ candidates: [{ content: { parts: [{ functionCall: { name: call.tool, args: call.args } }] }, finishReason: 'STOP' }] }),
+})
+
+const upstreamText = (text) => ({
+  'openai-chat': () => ({ choices: [{ message: { content: text }, finish_reason: 'stop' }] }),
+  'openai-responses': () => ({ output: [{ type: 'message', content: [{ type: 'output_text', text }] }] }),
+  'anthropic': () => ({ content: [{ type: 'text', text }], stop_reason: 'end_turn' }),
+  'gemini': () => ({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] }),
+})
+
+// 上游 chat 端点工厂：按协议解析意图并按 native 形状回包
+function upstreamChatHandler(apiType) {
+  return (url, body) => {
+    const { lastUser, toolNames } = parseUpstreamIntent(body, apiType)
+    const call = decideUpstreamReply(lastUser, toolNames)
+    if (call.tool) return ok(upstreamToolCall(call)[apiType]())
+    return ok(upstreamText(call.text)[apiType]())
+  }
+}
+
+// models 列表（fetch-models 的上游形状；AD1 联调用）
+const upstreamModels = (apiType) => {
+  const list = API_PROTOCOLS[apiType] || []
+  if (apiType === 'gemini') return ok({ models: list.map((m) => ({ name: 'models/' + m })) })
+  return ok({ data: list.map((m) => ({ id: m })) })
+}
+
+routes.push({ method: 'GET', pattern: /^\/upstream\/openai-chat\/models$/, handler: () => upstreamModels('openai-chat') })
+routes.push({ method: 'POST', pattern: /^\/upstream\/openai-chat\/chat\/completions$/, handler: upstreamChatHandler('openai-chat') })
+routes.push({ method: 'GET', pattern: /^\/upstream\/openai-responses\/models$/, handler: () => upstreamModels('openai-responses') })
+routes.push({ method: 'POST', pattern: /^\/upstream\/openai-responses\/responses$/, handler: upstreamChatHandler('openai-responses') })
+routes.push({ method: 'GET', pattern: /^\/upstream\/anthropic\/v1\/models$/, handler: () => upstreamModels('anthropic') })
+routes.push({ method: 'POST', pattern: /^\/upstream\/anthropic\/v1\/messages$/, handler: upstreamChatHandler('anthropic') })
+routes.push({ method: 'GET', pattern: /^\/upstream\/gemini\/v1beta\/models$/, handler: () => upstreamModels('gemini') })
+routes.push({ method: 'POST', pattern: /^\/upstream\/gemini\/v1beta\/models\/[^:]+:generateContent$/, handler: upstreamChatHandler('gemini') })
+
+
 export { routes }
