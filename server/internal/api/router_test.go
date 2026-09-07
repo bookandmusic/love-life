@@ -90,45 +90,82 @@ func TestAdminUserManagement(t *testing.T) {
 		t.Fatalf("admin login: %d", code)
 	}
 
-	// 创建 girl
-	res := doJSON(t, "POST", ts.URL+"/api/v1/admin/users", adminToken, map[string]string{
-		"username": "girl", "password": "girl-pw", "role": "girl", "nickname": "她",
+	// couple 原子创建 girl/boy（AD9，契约对齐 mock-check C1-C4）
+	res := doJSON(t, "POST", ts.URL+"/api/v1/admin/users/couple", adminToken, map[string]any{
+		"girl": map[string]string{"username": "girl", "password": "girl-pw", "nickname": "她"},
+		"boy":  map[string]string{"username": "boy", "password": "boy-pw", "nickname": "他"},
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create girl: want 201, got %d", res.StatusCode)
+		t.Fatalf("couple create: want 201, got %d", res.StatusCode)
 	}
 
-	// 重复用户名 → 409
-	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/users", adminToken, map[string]string{
-		"username": "girl", "password": "girl-pw", "role": "girl",
-	})
-	res.Body.Close()
-	if res.StatusCode != http.StatusConflict {
-		t.Fatalf("duplicate username: want 409, got %d", res.StatusCode)
-	}
-
-	// 创建 admin 角色 → 拒绝（admin 只能部署内置）
-	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/users", adminToken, map[string]string{
-		"username": "hacker", "password": "123456", "role": "admin",
+	// C1 用户名长度 → 400（格式校验先于存在性判断）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/users/couple", adminToken, map[string]any{
+		"girl": map[string]string{"username": "a", "password": "pw-123456"},
+		"boy":  map[string]string{"username": "bb", "password": "pw-123456"},
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("create admin role: want 400, got %d", res.StatusCode)
+		t.Fatalf("couple username length: want 400, got %d", res.StatusCode)
 	}
 
-	// 列表
+	// C4 情侣已存在优先于用户名冲突 → 400（不得 409）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/users/couple", adminToken, map[string]any{
+		"girl": map[string]string{"username": "admin", "password": "pw-123456"},
+		"boy":  map[string]string{"username": "b2", "password": "pw-123456"},
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("couple exists precedence: want 400, got %d", res.StatusCode)
+	}
+
+	// 单创接口已随 Q6 删除 → 405（Go 1.22 method pattern 下路径存在但方法不匹配）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/users", adminToken, map[string]string{
+		"username": "solo", "password": "pw-123456", "role": "girl",
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("single create removed: want 405, got %d", res.StatusCode)
+	}
+
+	// 列表：admin + girl + boy = 3
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/users", adminToken, nil)
 	var users []map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&users)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(users) != 2 {
+	if res.StatusCode != http.StatusOK || len(users) != 3 {
 		t.Fatalf("list users: status=%d count=%d", res.StatusCode, len(users))
 	}
 	for _, u := range users {
 		if _, leaked := u["password_hash"]; leaked {
 			t.Fatal("list must not leak password_hash")
 		}
+	}
+
+	// PUT 昵称：仅昵称可改，返回更新后条目
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/users/2", adminToken, map[string]string{"nickname": "她改"})
+	if res.StatusCode != http.StatusOK {
+		res.Body.Close()
+		t.Fatalf("update nickname: want 200, got %d", res.StatusCode)
+	}
+	var updated map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&updated)
+	res.Body.Close()
+	if updated["nickname"] != "她改" || updated["username"] != "girl" || updated["role"] != "girl" {
+		t.Fatalf("update nickname response: %+v", updated)
+	}
+
+	// PUT 昵称：空昵称 → 400；用户不存在 → 404
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/users/2", adminToken, map[string]string{"nickname": "  "})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("blank nickname: want 400, got %d", res.StatusCode)
+	}
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/users/999", adminToken, map[string]string{"nickname": "x"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("nickname unknown user: want 404, got %d", res.StatusCode)
 	}
 
 	// 重置密码后新密码可登录

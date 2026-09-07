@@ -35,7 +35,8 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	modelAPI := &modelConfigAPI{db: db, key: crypto.KeyFrom(tm.Secret())}
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("GET /api/v1/admin/users", adminAPI.listUsers)
-	adminMux.HandleFunc("POST /api/v1/admin/users", adminAPI.createUser)
+	adminMux.HandleFunc("POST /api/v1/admin/users/couple", adminAPI.createCouple)
+	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}", adminAPI.updateNickname)
 	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/reset-password", adminAPI.resetPassword)
 	adminMux.HandleFunc("GET /api/v1/admin/model-configs", modelAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/model-configs", modelAPI.save)

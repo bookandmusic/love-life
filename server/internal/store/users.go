@@ -32,8 +32,7 @@ func (d *DB) CreateUser(ctx context.Context, u *User) (int64, error) {
 		`INSERT INTO users (username, password_hash, role, nickname) VALUES (?, ?, ?, ?)`,
 		u.Username, u.PasswordHash, u.Role, u.Nickname)
 	if err != nil {
-		var se *sqlite.Error
-		if errors.As(err, &se) && se.Code() == sqliteUniqueConstraint { // users.username UNIQUE
+		if isUniqueConstraint(err) { // users.username UNIQUE
 			return 0, ErrDuplicateUsername
 		}
 		return 0, err
@@ -122,4 +121,55 @@ func (d *DB) CountAdmins(ctx context.Context) (int, error) {
 	var n int
 	err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = 'admin'`).Scan(&n)
 	return n, err
+}
+
+// CreateCouple 情侣账户原子创建（AD9，DESIGN §9）：girl/boy 两用户同事务落库，
+// 任一失败整体回滚；用户名 UNIQUE 冲突返回 ErrDuplicateUsername（校验顺序由 API 层按 mock 契约先行）。
+func (d *DB) CreateCouple(ctx context.Context, girl, boy *User) (girlID, boyID int64, err error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	insert := func(u *User) (int64, error) {
+		res, err := tx.ExecContext(ctx,
+			`INSERT INTO users (username, password_hash, role, nickname) VALUES (?, ?, ?, ?)`,
+			u.Username, u.PasswordHash, u.Role, u.Nickname)
+		if err != nil {
+			return 0, err
+		}
+		return res.LastInsertId()
+	}
+	if girlID, err = insert(girl); err != nil {
+		if isUniqueConstraint(err) {
+			return 0, 0, ErrDuplicateUsername
+		}
+		return 0, 0, err
+	}
+	if boyID, err = insert(boy); err != nil {
+		if isUniqueConstraint(err) {
+			return 0, 0, ErrDuplicateUsername
+		}
+		return 0, 0, err
+	}
+	return girlID, boyID, tx.Commit()
+}
+
+// isUniqueConstraint modernc *sqlite.Error 扩展码 2067 = SQLITE_CONSTRAINT_UNIQUE。
+func isUniqueConstraint(err error) bool {
+	var se *sqlite.Error
+	return errors.As(err, &se) && se.Code() == sqliteUniqueConstraint
+}
+
+// UpdateUserNickname 仅昵称更新（AD9：用户名/角色为登录身份与数据归属，不可修改）。
+func (d *DB) UpdateUserNickname(ctx context.Context, id int64, nickname string) error {
+	res, err := d.ExecContext(ctx, `UPDATE users SET nickname = ? WHERE id = ?`, nickname, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
