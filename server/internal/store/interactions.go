@@ -184,6 +184,13 @@ func (d *DB) ListComments(ctx context.Context, postID int64, limit, offset int) 
 	return list, rows.Err()
 }
 
+// CountComments 某动态未删评论总数（list_comments 分页 total 用）。
+func (d *DB) CountComments(ctx context.Context, postID int64) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM comments WHERE post_id = ? AND deleted_at IS NULL`, postID).Scan(&n)
+	return n, err
+}
+
 func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	row := d.QueryRowContext(ctx, `
 		SELECT c.id, c.post_id, c.author_id, c.content, c.created_at, COALESCE(u.nickname, u.username)
@@ -210,4 +217,42 @@ func (d *DB) SoftDeleteComment(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ListFavoritePostsPaged 我收藏的动态（list_favorites）：收藏时间倒序 + 总数，
+// 分页口径与媒体时间轴一致（size 由调用方夹紧）。
+func (d *DB) ListFavoritePostsPaged(ctx context.Context, viewerID int64, page, size int) ([]*Post, int, error) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 20
+	}
+	var total int
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM favorites f JOIN posts p ON p.id = f.post_id
+		WHERE f.user_id = ? AND p.deleted_at IS NULL`, viewerID).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+	rows, err := d.QueryContext(ctx, `SELECT `+postColumns+`
+		FROM favorites f
+		JOIN posts p ON p.id = f.post_id
+		JOIN users u ON u.id = p.author_id
+		WHERE f.user_id = ? AND p.deleted_at IS NULL
+		ORDER BY f.created_at DESC, f.post_id DESC LIMIT ? OFFSET ?`, viewerID, size, (page-1)*size)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	var list []*Post
+	for rows.Next() {
+		p, err := scanPost(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		list = append(list, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	return list, total, nil
 }

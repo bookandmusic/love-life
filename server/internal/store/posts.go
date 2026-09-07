@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -81,11 +82,11 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 	return postID, nil
 }
 
-const postColumns = `p.id, p.author_id, p.title, p.content, p.mood, p.location_name, p.created_at, p.deleted_at, COALESCE(u.nickname, u.username)`
+const postColumns = `p.id, p.author_id, p.title, p.content, p.mood, p.location_name, p.point_id, p.created_at, p.deleted_at, COALESCE(u.nickname, u.username)`
 
 func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 	var p Post
-	err := row.Scan(&p.ID, &p.AuthorID, &p.Title, &p.Content, &p.Mood, &p.LocationName, &p.CreatedAt, &p.DeletedAt, &p.AuthorNickname)
+	err := row.Scan(&p.ID, &p.AuthorID, &p.Title, &p.Content, &p.Mood, &p.LocationName, &p.PointID, &p.CreatedAt, &p.DeletedAt, &p.AuthorNickname)
 	return &p, err
 }
 
@@ -213,4 +214,90 @@ func (d *DB) GetMedia(ctx context.Context, id int64) (*MediaRow, error) {
 		return nil, err
 	}
 	return m, nil
+}
+
+// ListPostsOnMonthDay 那年今日（get_today_in_history）：历年在今天同月同日创建的动态，
+// yearsBack 限制回看年数上限，按时间倒序。
+func (d *DB) ListPostsOnMonthDay(ctx context.Context, yearsBack int, limit int) ([]*Post, error) {
+	if yearsBack <= 0 {
+		yearsBack = 50
+	}
+	rows, err := d.QueryContext(ctx, `SELECT `+postColumns+`
+		FROM posts p JOIN users u ON u.id = p.author_id
+		WHERE p.deleted_at IS NULL AND strftime('%m-%d', p.created_at) = strftime('%m-%d', 'now')
+		  AND strftime('%Y', p.created_at) < strftime('%Y', 'now') AND p.created_at >= datetime('now', ?)
+		ORDER BY p.created_at DESC LIMIT ?`, fmt.Sprintf("-%d years", yearsBack), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*Post
+	for rows.Next() {
+		p, err := scanPost(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, p)
+	}
+	return list, rows.Err()
+}
+
+// ListPostsByPoint 某地点下的动态（get_location_posts）：动态带地点时写入的 point_id 反查。
+func (d *DB) ListPostsByPoint(ctx context.Context, pointID int64, limit int) ([]*Post, error) {
+	rows, err := d.QueryContext(ctx, `SELECT `+postColumns+`
+		FROM posts p JOIN users u ON u.id = p.author_id
+		WHERE p.deleted_at IS NULL AND p.point_id = ?
+		ORDER BY p.id DESC LIMIT ?`, pointID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*Post
+	for rows.Next() {
+		p, err := scanPost(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, p)
+	}
+	return list, rows.Err()
+}
+
+// TimelinePostCounts 时间线统计（get_timeline_summary）：无参按年分布；
+// year 非空按该年月度分布；month(YYYY-MM) 非空按该月日度分布。
+func (d *DB) TimelinePostCounts(ctx context.Context, year, month string) ([]PeriodCount, error) {
+	group := "strftime('%Y', created_at)"
+	where := ""
+	args := []any{}
+	switch {
+	case month != "":
+		group = "strftime('%Y-%m-%d', created_at)"
+		where = " WHERE strftime('%Y-%m', created_at) = ?"
+		args = append(args, month)
+	case year != "":
+		group = "strftime('%Y-%m', created_at)"
+		where = " WHERE strftime('%Y', created_at) = ?"
+		args = append(args, year)
+	}
+	rows, err := d.QueryContext(ctx, `SELECT `+group+` AS period, COUNT(*) FROM posts`+where+`
+		GROUP BY period ORDER BY period`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []PeriodCount
+	for rows.Next() {
+		var pc PeriodCount
+		if err := rows.Scan(&pc.Period, &pc.Count); err != nil {
+			return nil, err
+		}
+		list = append(list, pc)
+	}
+	return list, rows.Err()
+}
+
+// PeriodCount 时间段聚合行（get_timeline_summary 输出）。
+type PeriodCount struct {
+	Period string
+	Count  int64
 }

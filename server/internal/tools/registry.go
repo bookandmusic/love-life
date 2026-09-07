@@ -1,7 +1,6 @@
-// Package tools MCP 工具注册表（DESIGN 第 6 章规划 26 个；当前已注册 9 个：
-// search_posts / get_space_summary / create_post / create_album / add_photos_to_album /
-// toggle_like / create_map_point / delete_map_point / get_anniversaries，其余按同一模式待接线）。
-// 读工具立即执行；写工具产出确认卡片（15 分钟 TTL）。
+// Package tools MCP 工具注册表（DESIGN 第 6 章 26 个全量注册；§8.3 分档：
+// IsWrite=写工具，客户端确认卡片后生效（15 分钟 TTL）；AppOnly=删除类，不对 PAT 开放；
+// 读工具立即执行。所有调用均记审计，actor=发起人）。
 package tools
 
 import (
@@ -12,9 +11,11 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/bookandmusic/love-life/server/internal/lunar"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/textutil"
 )
 
 type ExecResult struct {
@@ -114,6 +115,73 @@ func tokens(args map[string]any, key string) []string {
 	return out
 }
 
+// postHit 动态查询类工具（search_posts / get_today_in_history / get_location_posts /
+// list_favorites）的统一输出行；location_name 仅当动态带地点时出现。
+type postHit struct {
+	ID           int64  `json:"id"`
+	Title        string `json:"title,omitempty"`
+	Content      string `json:"content"`
+	Date         string `json:"date"`
+	Author       string `json:"author"`
+	LocationName string `json:"location_name,omitempty"`
+}
+
+// postHitColumns 与 scanPostHits 配套的 SELECT 列清单（调用方需 JOIN users）。
+const postHitColumns = `p.id, COALESCE(p.title,''), p.content, p.created_at,
+		COALESCE(u.nickname, u.username), COALESCE(p.location_name,'')`
+
+// scanPostHits 扫描按 postHitColumns 查询的动态行。
+func scanPostHits(rows *sql.Rows) ([]postHit, error) {
+	var hits []postHit
+	for rows.Next() {
+		var h postHit
+		if err := rows.Scan(&h.ID, &h.Title, &h.Content, &h.Date, &h.Author, &h.LocationName); err != nil {
+			return nil, err
+		}
+		hits = append(hits, h)
+	}
+	return hits, rows.Err()
+}
+
+// pageArgs 分页参数归一（list_albums / list_favorites / list_comments 共用）：
+// page 缺省 1，size 缺省 20、上限 50（对齐 D5 分页夹紧口径）。
+func pageArgs(args map[string]any) (page, size int) {
+	page, size = int(num(args, "page")), int(num(args, "page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 20
+	}
+	if size > 50 {
+		size = 50
+	}
+	return page, size
+}
+
+// pagedOut 分页输出统一包裹（list_albums / list_favorites / list_comments 共用）。
+func pagedOut(items any, total, page, size int) map[string]any {
+	return map[string]any{"items": items, "total": total, "page": page, "size": size, "has_more": page*size < total}
+}
+
+// toggleWord 可撤销关系操作的动词前缀（toggle_like / toggle_favorite 共用）。
+func toggleWord(done bool) string {
+	if done {
+		return ""
+	}
+	return "取消"
+}
+
+// isDigits 纯数字串判断（timeline year/month 入参校验用）。
+func isDigits(s string) bool {
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return len(s) > 0
+}
+
 // promoteMediaTokens 确认执行时把客户端随 confirm 提交的 media token 转正为媒体行；
 // 转正中途失败即清理已转正文件；成功返回媒体行与已转正文件列表（调用方在后续落库失败时需要
 // 据此清理正式区文件，与 REST 路径 cleanupPromoted 同口径；取消/过期零落库不在此处）。
@@ -154,7 +222,7 @@ func Registry() []*Tool {
 			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
 				q := "%" + str(args, "query") + "%"
 				rows, err := d.DB.QueryContext(ctx, `
-					SELECT p.id, COALESCE(p.title,''), p.content, p.created_at, COALESCE(u.nickname, u.username)
+					SELECT `+postHitColumns+`
 					FROM posts p JOIN users u ON u.id = p.author_id
 					WHERE p.deleted_at IS NULL AND (p.content LIKE ? OR p.title LIKE ?)
 					ORDER BY p.id DESC LIMIT 10`, q, q)
@@ -162,22 +230,77 @@ func Registry() []*Tool {
 					return nil, err
 				}
 				defer rows.Close()
-				type hit struct {
-					ID      int64  `json:"id"`
-					Title   string `json:"title,omitempty"`
-					Content string `json:"content"`
-					Date    string `json:"date"`
-					Author  string `json:"author"`
+				hits, err := scanPostHits(rows)
+				if err != nil {
+					return nil, err
 				}
-				hits := []hit{}
-				for rows.Next() {
-					var h hit
-					if err := rows.Scan(&h.ID, &h.Title, &h.Content, &h.Date, &h.Author); err != nil {
-						return nil, err
-					}
-					hits = append(hits, h)
+				if hits == nil {
+					hits = []postHit{}
 				}
 				d.audit(ctx, userID, "search_posts", str(args, "query"), "ok")
+				b, _ := json.Marshal(hits)
+				return &ExecResult{Content: string(b), Data: hits}, nil
+			},
+		},
+		{
+			Name:        "delete_post",
+			Description: "删除动态（进入回收站，需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"post_id": map[string]any{"type": "integer"},
+			}, "required": []string{"post_id"}},
+			IsWrite: true,
+			AppOnly: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				postID := num(args, "post_id")
+				p, err := d.DB.GetPost(ctx, postID)
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("动态不存在")
+				}
+				if err != nil {
+					return nil, err
+				}
+				// 通知口径对齐 REST DELETE /posts/{id}：删对方内容 → 站内通知作者（自删静默，无外推）
+				if p.AuthorID != userID {
+					operator, err := d.DB.GetUserByID(ctx, userID)
+					if err != nil {
+						return nil, err
+					}
+					snapshot, _ := json.Marshal(map[string]any{
+						"title": p.Title.String, "content": textutil.Trunc(p.Content, 50), "deleted_by": operator.Username,
+					})
+					_ = d.DB.InsertNotification(ctx, p.AuthorID, "post_deleted", "post", postID, string(snapshot))
+				}
+				if err := d.DB.SoftDeletePost(ctx, postID); err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "delete_post", textutil.Trunc(p.Content, 50), "deleted")
+				return &ExecResult{Content: "动态已删除（进回收站）", Data: map[string]any{"post_id": postID}}, nil
+			},
+		},
+		{
+			Name:        "get_today_in_history",
+			Description: "获取那年今日：历年在今天同月同日发布的动态",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"years_back": map[string]any{"type": "integer"},
+			}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				yearsBack := int(num(args, "years_back"))
+				if yearsBack <= 0 {
+					yearsBack = 50
+				}
+				if yearsBack > 50 {
+					yearsBack = 50
+				}
+				posts, err := d.DB.ListPostsOnMonthDay(ctx, yearsBack, 10)
+				if err != nil {
+					return nil, err
+				}
+				hits := make([]postHit, 0, len(posts))
+				for _, p := range posts {
+					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
+						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
+				}
+				d.audit(ctx, userID, "get_today_in_history", fmt.Sprintf("years_back=%d", yearsBack), "ok")
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -195,6 +318,34 @@ func Registry() []*Tool {
 				d.audit(ctx, userID, "get_space_summary", "", "ok")
 				b, _ := json.Marshal(summary)
 				return &ExecResult{Content: string(b), Data: summary}, nil
+			},
+		},
+		{
+			Name:        "get_timeline_summary",
+			Description: "时间线统计：按年/月（给 year）或按日（给 month，YYYY-MM）统计动态数量分布",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"year":  map[string]any{"type": "string"},
+				"month": map[string]any{"type": "string"},
+			}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				year, month := str(args, "year"), str(args, "month")
+				if year != "" && (len(year) != 4 || !isDigits(year)) {
+					return nil, fmt.Errorf("year 格式应为 YYYY")
+				}
+				if month != "" && (len(month) != 7 || month[4] != '-' || !isDigits(month[:4]) || !isDigits(month[5:])) {
+					return nil, fmt.Errorf("month 格式应为 YYYY-MM")
+				}
+				counts, err := d.DB.TimelinePostCounts(ctx, year, month)
+				if err != nil {
+					return nil, err
+				}
+				if counts == nil {
+					counts = []store.PeriodCount{}
+				}
+				d.audit(ctx, userID, "get_timeline_summary",
+					fmt.Sprintf("year=%s month=%s", year, month), "ok")
+				b, _ := json.Marshal(counts)
+				return &ExecResult{Content: string(b), Data: counts}, nil
 			},
 		},
 		{
@@ -282,6 +433,161 @@ func Registry() []*Tool {
 			},
 		},
 		{
+			Name:        "remove_photos_from_album",
+			Description: "从相册移除照片（不影响照片本身，需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"album_id":  map[string]any{"type": "integer"},
+				"photo_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
+			}, "required": []string{"album_id", "photo_ids"}},
+			IsWrite: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				albumID := num(args, "album_id")
+				if albumID == 0 {
+					return nil, fmt.Errorf("album_id 必填")
+				}
+				ids, err := ints(args, "photo_ids")
+				if err != nil || len(ids) == 0 {
+					return nil, fmt.Errorf("photo_ids 必填")
+				}
+				if _, err := d.DB.GetAlbum(ctx, albumID); err != nil {
+					return nil, fmt.Errorf("相册不存在")
+				}
+				if err := d.DB.RemoveAlbumItems(ctx, albumID, ids); err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "remove_photos_from_album", fmt.Sprintf("album=%d ids=%v", albumID, ids), "removed")
+				return &ExecResult{Content: fmt.Sprintf("已从相册移除 %d 张照片", len(ids)), Data: map[string]any{"album_id": albumID, "removed": len(ids)}}, nil
+			},
+		},
+		{
+			Name:        "suggest_photo_grouping",
+			Description: "推荐照片分组：按日期与地点聚合候选媒体，给出分组建议（纯查询，不生成内容）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"date_range": map[string]any{"type": "object", "properties": map[string]any{
+					"from": map[string]any{"type": "string"},
+					"to":   map[string]any{"type": "string"},
+				}},
+				"location": map[string]any{"type": "string"},
+			}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				from, to, location := "", "", str(args, "location")
+				if dr, ok := args["date_range"].(map[string]any); ok {
+					from, to = str(dr, "from"), str(dr, "to")
+				}
+				cands, err := d.DB.ListMediaGroupCandidates(ctx, from, to, location)
+				if err != nil {
+					return nil, err
+				}
+				type group struct {
+					Key      string  `json:"key"`
+					Date     string  `json:"date"`
+					Location string  `json:"location,omitempty"`
+					MediaIDs []int64 `json:"media_ids"`
+					Count    int     `json:"count"`
+				}
+				groups := []group{}
+				index := map[string]int{}
+				for _, c := range cands {
+					key := c.Date + "|" + c.Location
+					i, ok := index[key]
+					if !ok {
+						if len(groups) >= 10 {
+							continue
+						}
+						groups = append(groups, group{Key: key, Date: c.Date, Location: c.Location, MediaIDs: []int64{}})
+						i = len(groups) - 1
+						index[key] = i
+					}
+					groups[i].MediaIDs = append(groups[i].MediaIDs, c.MediaID)
+					groups[i].Count++
+				}
+				d.audit(ctx, userID, "suggest_photo_grouping",
+					fmt.Sprintf("from=%s to=%s location=%s", from, to, location), fmt.Sprintf("groups=%d", len(groups)))
+				b, _ := json.Marshal(groups)
+				return &ExecResult{Content: string(b), Data: groups}, nil
+			},
+		},
+		{
+			Name:        "list_albums",
+			Description: "列出所有相册（timeline 含月度相册，collection 仅手动相册；分页）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"view_type": map[string]any{"type": "string"},
+				"page":      map[string]any{"type": "integer"},
+				"page_size": map[string]any{"type": "integer"},
+			}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				viewType := str(args, "view_type")
+				if viewType == "" {
+					viewType = "timeline"
+				}
+				if viewType != "timeline" && viewType != "collection" {
+					return nil, fmt.Errorf("view_type 仅允许 timeline / collection")
+				}
+				albums, err := d.DB.ListAlbums(ctx, false)
+				if err != nil {
+					return nil, err
+				}
+				items := make([]map[string]any, 0, len(albums))
+				for _, al := range albums {
+					if viewType == "collection" && al.Type != "manual" {
+						continue
+					}
+					cover := ""
+					if al.CoverMediaID.Valid {
+						cover = d.MP.SignedURL(al.CoverMediaID.Int64, "thumb")
+					} else if medias, err := d.DB.ListAlbumMedia(ctx, al.ID); err == nil && len(medias) > 0 {
+						cover = d.MP.SignedURL(medias[0].ID, "thumb")
+					}
+					items = append(items, map[string]any{
+						"id": al.ID, "type": al.Type, "name": al.Name, "description": al.Description.String,
+						"month_key": al.MonthKey.String, "is_hidden": al.IsHidden, "item_count": al.ItemCount,
+						"cover_url": cover,
+					})
+				}
+				total := len(items)
+				page, size := pageArgs(args)
+				lo := (page - 1) * size
+				if lo > total {
+					lo = total
+				}
+				hi := lo + size
+				if hi > total {
+					hi = total
+				}
+				out := pagedOut(items[lo:hi], total, page, size)
+				d.audit(ctx, userID, "list_albums", fmt.Sprintf("view=%s page=%d", viewType, page), fmt.Sprintf("total=%d", total))
+				b, _ := json.Marshal(out)
+				return &ExecResult{Content: string(b), Data: out}, nil
+			},
+		},
+		{
+			Name:        "delete_album",
+			Description: "删除手动相册（进入回收站，不影响照片本身；需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"album_id": map[string]any{"type": "integer"},
+			}, "required": []string{"album_id"}},
+			IsWrite: true,
+			AppOnly: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				albumID := num(args, "album_id")
+				al, err := d.DB.GetAlbum(ctx, albumID)
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("相册不存在")
+				}
+				if err != nil {
+					return nil, err
+				}
+				if al.Type == "monthly" {
+					return nil, fmt.Errorf("月度相册不可删除，仅可在设置中隐藏")
+				}
+				if err := d.DB.SoftDeleteAlbum(ctx, albumID); err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "delete_album", al.Name, "deleted")
+				return &ExecResult{Content: fmt.Sprintf("相册「%s」已删除（进回收站）", al.Name), Data: map[string]any{"album_id": albumID}}, nil
+			},
+		},
+		{
 			Name:        "toggle_like",
 			Description: "点赞/取消点赞动态（需用户确认后生效）",
 			Params: map[string]any{"type": "object", "properties": map[string]any{
@@ -295,7 +601,150 @@ func Registry() []*Tool {
 					return nil, err
 				}
 				d.audit(ctx, userID, "toggle_like", fmt.Sprint(postID), map[bool]string{true: "liked", false: "unliked"}[liked])
-				return &ExecResult{Content: fmt.Sprintf("已%s点赞", map[bool]string{true: "", false: "取消"}[liked]), Data: map[string]any{"liked": liked}}, nil
+				return &ExecResult{Content: fmt.Sprintf("已%s点赞", toggleWord(liked)), Data: map[string]any{"liked": liked}}, nil
+			},
+		},
+		{
+			Name:        "toggle_favorite",
+			Description: "收藏/取消收藏动态（可撤销关系数据，不进回收站；需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"post_id": map[string]any{"type": "integer"},
+			}, "required": []string{"post_id"}},
+			IsWrite: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				postID := num(args, "post_id")
+				favorited, err := d.DB.ToggleFavorite(ctx, postID, userID)
+				if err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "toggle_favorite", fmt.Sprint(postID), map[bool]string{true: "favorited", false: "unfavorited"}[favorited])
+				return &ExecResult{Content: fmt.Sprintf("已%s收藏", toggleWord(favorited)), Data: map[string]any{"favorited": favorited}}, nil
+			},
+		},
+		{
+			Name:        "list_favorites",
+			Description: "列出我收藏的动态（收藏时间倒序，分页）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"page":      map[string]any{"type": "integer"},
+				"page_size": map[string]any{"type": "integer"},
+			}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				page, size := pageArgs(args)
+				posts, total, err := d.DB.ListFavoritePostsPaged(ctx, userID, page, size)
+				if err != nil {
+					return nil, err
+				}
+				hits := make([]postHit, 0, len(posts))
+				for _, p := range posts {
+					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
+						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
+				}
+				out := pagedOut(hits, total, page, size)
+				d.audit(ctx, userID, "list_favorites", fmt.Sprintf("page=%d", page), fmt.Sprintf("total=%d", total))
+				b, _ := json.Marshal(out)
+				return &ExecResult{Content: string(b), Data: out}, nil
+			},
+		},
+		{
+			Name:        "create_comment",
+			Description: "发表评论（最多 500 字，需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"post_id": map[string]any{"type": "integer"},
+				"content": map[string]any{"type": "string"},
+			}, "required": []string{"post_id", "content"}},
+			IsWrite: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				postID := num(args, "post_id")
+				content := str(args, "content")
+				if content == "" {
+					return nil, fmt.Errorf("评论内容不能为空")
+				}
+				if len([]rune(content)) > 500 {
+					return nil, fmt.Errorf("评论最多 500 字")
+				}
+				if _, err := d.DB.GetPost(ctx, postID); err != nil {
+					return nil, fmt.Errorf("动态不存在")
+				}
+				commentID, err := d.DB.CreateComment(ctx, postID, userID, content)
+				if err != nil {
+					return nil, err
+				}
+				// 通知口径对齐 REST POST /posts/{id}/comments：任何一方评论都通知另一方（D6，§4.8）
+				operator, err := d.DB.GetUserByID(ctx, userID)
+				if err != nil {
+					return nil, err
+				}
+				recipients, _ := d.DB.ListPartnerIDs(ctx, userID)
+				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username})
+				d.DP.Dispatch(ctx, recipients, "post_commented", "post", postID, string(snapshot),
+					"收到评论", operator.Username+"："+textutil.Trunc(content, 50))
+				d.audit(ctx, userID, "create_comment", textutil.Trunc(content, 50), fmt.Sprintf("comment=%d", commentID))
+				return &ExecResult{Content: "评论已发表", Data: map[string]any{"comment_id": commentID}}, nil
+			},
+		},
+		{
+			Name:        "delete_comment",
+			Description: "删除评论（进入回收站，需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"comment_id": map[string]any{"type": "integer"},
+			}, "required": []string{"comment_id"}},
+			IsWrite: true,
+			AppOnly: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				id := num(args, "comment_id")
+				c, err := d.DB.GetComment(ctx, id)
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("评论不存在")
+				}
+				if err != nil {
+					return nil, err
+				}
+				// 通知口径对齐 REST DELETE /comments/{id}：删对方评论 → 通知评论作者（自删静默）
+				if c.AuthorID != userID {
+					operator, err := d.DB.GetUserByID(ctx, userID)
+					if err != nil {
+						return nil, err
+					}
+					snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(c.Content, 50), "deleted_by": operator.Username})
+					_ = d.DB.InsertNotification(ctx, c.AuthorID, "comment_deleted", "comment", id, string(snapshot))
+				}
+				if err := d.DB.SoftDeleteComment(ctx, id); err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "delete_comment", textutil.Trunc(c.Content, 50), "deleted")
+				return &ExecResult{Content: "评论已删除（进回收站）", Data: map[string]any{"comment_id": id}}, nil
+			},
+		},
+		{
+			Name:        "list_comments",
+			Description: "列出某条动态下的评论（时间倒序，分页）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"post_id":   map[string]any{"type": "integer"},
+				"page":      map[string]any{"type": "integer"},
+				"page_size": map[string]any{"type": "integer"},
+			}, "required": []string{"post_id"}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				postID := num(args, "post_id")
+				page, size := pageArgs(args)
+				comments, err := d.DB.ListComments(ctx, postID, size, (page-1)*size)
+				if err != nil {
+					return nil, err
+				}
+				total, err := d.DB.CountComments(ctx, postID)
+				if err != nil {
+					return nil, err
+				}
+				items := make([]map[string]any, 0, len(comments))
+				for _, c := range comments {
+					items = append(items, map[string]any{
+						"id": c.ID, "post_id": c.PostID, "author": c.AuthorNickname.String,
+						"content": c.Content, "created_at": c.CreatedAt,
+					})
+				}
+				out := pagedOut(items, total, page, size)
+				d.audit(ctx, userID, "list_comments", fmt.Sprintf("post=%d page=%d", postID, page), fmt.Sprintf("total=%d", total))
+				b, _ := json.Marshal(out)
+				return &ExecResult{Content: string(b), Data: out}, nil
 			},
 		},
 		{
@@ -361,25 +810,176 @@ func Registry() []*Tool {
 			},
 		},
 		{
-			Name:        "get_anniversaries",
-			Description: "列出全部纪念日与倒计时",
+			Name:        "search_locations",
+			Description: "按名称/描述搜索地图足迹点位",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"query": map[string]any{"type": "string"},
+			}, "required": []string{"query"}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				query := str(args, "query")
+				if query == "" {
+					return nil, fmt.Errorf("query 不能为空")
+				}
+				points, err := d.DB.SearchPoints(ctx, query, 20)
+				if err != nil {
+					return nil, err
+				}
+				out := make([]map[string]any, 0, len(points))
+				for _, p := range points {
+					out = append(out, map[string]any{
+						"id": p.ID, "name": p.Name, "latitude": p.Lat, "longitude": p.Lng,
+						"city": p.City, "visit_date": p.VisitDate.String, "description": p.Description,
+					})
+				}
+				d.audit(ctx, userID, "search_locations", query, fmt.Sprintf("hits=%d", len(out)))
+				b, _ := json.Marshal(out)
+				return &ExecResult{Content: string(b), Data: out}, nil
+			},
+		},
+		{
+			Name:        "get_location_posts",
+			Description: "获取某地点（点位）下的全部动态",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"location_id": map[string]any{"type": "integer"},
+			}, "required": []string{"location_id"}},
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				pointID := num(args, "location_id")
+				point, err := d.DB.GetPoint(ctx, pointID)
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("点位不存在")
+				}
+				if err != nil {
+					return nil, err
+				}
+				posts, err := d.DB.ListPostsByPoint(ctx, pointID, 20)
+				if err != nil {
+					return nil, err
+				}
+				hits := make([]postHit, 0, len(posts))
+				for _, p := range posts {
+					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
+						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
+				}
+				d.audit(ctx, userID, "get_location_posts", fmt.Sprintf("point=%d name=%s", pointID, point.Name), fmt.Sprintf("hits=%d", len(hits)))
+				b, _ := json.Marshal(hits)
+				return &ExecResult{Content: string(b), Data: hits}, nil
+			},
+		},
+		{
+			// T1（DESIGN §6.4/§12.2）：设计名 get_next_anniversary；输出补 type 与农历换算公历 next_solar_date
+			Name:        "get_next_anniversary",
+			Description: "获取下一个纪念日信息（含类型与农历换算的公历日期）",
 			Params:      map[string]any{"type": "object", "properties": map[string]any{}},
-			Exec: func(ctx context.Context, d *Deps, _ int64, _ map[string]any) (*ExecResult, error) {
+			Exec: func(ctx context.Context, d *Deps, userID int64, _ map[string]any) (*ExecResult, error) {
 				list, err := d.DB.ListAnniversaries(ctx)
 				if err != nil {
 					return nil, err
 				}
-				type item struct {
-					Name      string `json:"name"`
-					Date      string `json:"date"`
-					DaysUntil int    `json:"days_until"`
-				}
-				items := []item{}
+				now := time.Now()
+				var best *store.Anniversary
 				for _, a := range list {
-					items = append(items, item{Name: a.Name, Date: a.Date, DaysUntil: a.DaysUntil(time.Now())})
+					if best == nil || a.DaysUntil(now) < best.DaysUntil(now) {
+						best = a
+					}
 				}
-				b, _ := json.Marshal(items)
-				return &ExecResult{Content: string(b), Data: items}, nil
+				d.audit(ctx, userID, "get_next_anniversary", "", fmt.Sprintf("count=%d", len(list)))
+				if best == nil {
+					return &ExecResult{Content: "当前还没有纪念日", Data: nil}, nil
+				}
+				item := map[string]any{
+					"name": best.Name, "date": best.Date, "days_until": best.DaysUntil(now),
+					"type": best.Type, "next_solar_date": best.NextSolarDate(now),
+				}
+				b, _ := json.Marshal(item)
+				return &ExecResult{Content: string(b), Data: item}, nil
+			},
+		},
+		{
+			Name:        "create_anniversary",
+			Description: "创建纪念日（date 统一 YYYY-MM-DD；solar=公历，lunar=农历日期；需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"name":               map[string]any{"type": "string"},
+				"date":               map[string]any{"type": "string"},
+				"type":               map[string]any{"type": "string"},
+				"remind_days_before": map[string]any{"type": "integer"},
+			}, "required": []string{"name", "date"}},
+			IsWrite: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				name, date := str(args, "name"), str(args, "date")
+				if name == "" || date == "" {
+					return nil, fmt.Errorf("name 与 date 必填")
+				}
+				// 口径对齐 REST：type 缺省/其它值归一 solar，仅显式 'lunar' 生效（§12 契约）
+				annivType := "solar"
+				if str(args, "type") == "lunar" {
+					annivType = "lunar"
+				}
+				if !lunar.ValidDateShape(date) {
+					return nil, fmt.Errorf("日期格式应为 YYYY-MM-DD")
+				}
+				if annivType != "lunar" { // solar 需为真实公历日；lunar 仅格式（农历日可落在公历不存在日）
+					if _, err := time.Parse("2006-01-02", date); err != nil {
+						return nil, fmt.Errorf("日期格式应为 YYYY-MM-DD")
+					}
+				}
+				remind := int(num(args, "remind_days_before"))
+				if remind < 0 || remind > 90 {
+					remind = 1
+				}
+				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, remind)
+				if err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "create_anniversary", fmt.Sprintf("%s %s type=%s", name, date, annivType), "created")
+				return &ExecResult{Content: fmt.Sprintf("纪念日「%s」已创建", name),
+					Data: map[string]any{"anniversary_id": id, "type": annivType}}, nil
+			},
+		},
+		{
+			Name:        "delete_anniversary",
+			Description: "删除纪念日（进入回收站，需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"anniversary_id": map[string]any{"type": "integer"},
+			}, "required": []string{"anniversary_id"}},
+			IsWrite: true,
+			AppOnly: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				id := num(args, "anniversary_id")
+				a, err := d.DB.GetAnniversary(ctx, id)
+				if errors.Is(err, store.ErrNotFound) {
+					return nil, fmt.Errorf("纪念日不存在")
+				}
+				if err != nil {
+					return nil, err
+				}
+				if err := d.DB.SoftDeleteAnniversary(ctx, id); err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "delete_anniversary", a.Name, "deleted")
+				return &ExecResult{Content: fmt.Sprintf("纪念日「%s」已删除（进回收站）", a.Name), Data: map[string]any{"anniversary_id": id}}, nil
+			},
+		},
+		{
+			Name:        "configure_reminder",
+			Description: "配置纪念日提醒的提前天数（0-90，站内+外部同发；需用户确认后生效）",
+			Params: map[string]any{"type": "object", "properties": map[string]any{
+				"anniversary_id": map[string]any{"type": "integer"},
+				"days_before":    map[string]any{"type": "integer"},
+			}, "required": []string{"anniversary_id", "days_before"}},
+			IsWrite: true,
+			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
+				id, days := num(args, "anniversary_id"), int(num(args, "days_before"))
+				if days < 0 || days > 90 {
+					return nil, fmt.Errorf("提前天数应为 0-90")
+				}
+				if _, err := d.DB.GetAnniversary(ctx, id); err != nil {
+					return nil, fmt.Errorf("纪念日不存在")
+				}
+				if err := d.DB.UpdateAnniversaryReminder(ctx, id, days); err != nil {
+					return nil, err
+				}
+				d.audit(ctx, userID, "configure_reminder", fmt.Sprintf("id=%d days=%d", id, days), "configured")
+				return &ExecResult{Content: fmt.Sprintf("纪念日提醒已设为提前 %d 天", days), Data: map[string]any{"anniversary_id": id, "days_before": days}}, nil
 			},
 		},
 	}

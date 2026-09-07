@@ -128,3 +128,20 @@ func NextLunarOccurrence(m, d int, today time.Time) string {
 	}
 	return ""
 }
+
+// ValidDateShape 仅校验 YYYY-MM-DD 形状（solar/lunar 纪念日统一契约）；
+// solar 的真实公历日由调用方 time.Parse 补充，lunar 保持宽容（可落在公历不存在日）。
+func ValidDateShape(s string) bool {
+	if len(s) != 10 || s[4] != '-' || s[7] != '-' {
+		return false
+	}
+	for i, c := range s {
+		if i == 4 || i == 7 {
+			continue
+		}
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}

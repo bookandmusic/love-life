@@ -62,6 +62,28 @@ func (d *DB) ListPoints(ctx context.Context) ([]*MapPoint, error) {
 	return list, rows.Err()
 }
 
+// SearchPoints 按名称/描述模糊搜索未删点位（get_location_posts 前置的 search_locations）。
+func (d *DB) SearchPoints(ctx context.Context, query string, limit int) ([]*MapPoint, error) {
+	like := "%" + query + "%"
+	rows, err := d.QueryContext(ctx,
+		`SELECT `+mapPointColumns+` FROM map_points
+		WHERE deleted_at IS NULL AND (name LIKE ? OR description LIKE ?)
+		ORDER BY created_at DESC, id DESC LIMIT ?`, like, like, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*MapPoint
+	for rows.Next() {
+		p, err := scanMapPoint(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, p)
+	}
+	return list, rows.Err()
+}
+
 // GetPoint 单个点位（含已删，供软删前校验）；不存在返回 ErrNotFound。
 func (d *DB) GetPoint(ctx context.Context, id int64) (*MapPoint, error) {
 	p, err := scanMapPoint(d.QueryRowContext(ctx,

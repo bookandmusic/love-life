@@ -348,3 +348,46 @@ func (d *DB) CreateMonthlyAlbum(ctx context.Context, monthKey, name string, _ in
 	}
 	return res.LastInsertId()
 }
+
+// GroupCandidate 照片分组建议候选（suggest_photo_grouping）：媒体经所属动态过滤未删，
+// 日期键取 taken_at 回退 created_at（SortTime 同口径）。
+type GroupCandidate struct {
+	MediaID  int64
+	Date     string // YYYY-MM-DD
+	Location string
+}
+
+// ListMediaGroupCandidates 按日期区间（YYYY-MM-DD 含头，可空）与地点名模糊（可空）列分组候选。
+func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location string) ([]GroupCandidate, error) {
+	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`
+	args := []any{}
+	if from != "" {
+		where += ` AND COALESCE(NULLIF(m.taken_at,''), m.created_at) >= ?`
+		args = append(args, from)
+	}
+	if to != "" {
+		where += ` AND COALESCE(NULLIF(m.taken_at,''), m.created_at) < date(?, '+1 day')`
+		args = append(args, to)
+	}
+	if location != "" {
+		where += ` AND p.location_name LIKE ?`
+		args = append(args, "%"+location+"%")
+	}
+	rows, err := d.QueryContext(ctx, `SELECT m.id,
+			strftime('%Y-%m-%d', COALESCE(NULLIF(m.taken_at,''), m.created_at)),
+			COALESCE(p.location_name,'')
+		FROM media m JOIN posts p ON p.id = m.post_id`+where+` ORDER BY 2 DESC, m.id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []GroupCandidate
+	for rows.Next() {
+		var g GroupCandidate
+		if err := rows.Scan(&g.MediaID, &g.Date, &g.Location); err != nil {
+			return nil, err
+		}
+		list = append(list, g)
+	}
+	return list, rows.Err()
+}
