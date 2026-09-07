@@ -101,12 +101,12 @@ func (d *DB) ListProviders(ctx context.Context) ([]*ModelProvider, error) {
 	return list, nil
 }
 
-// GetChatProvider 对话用供应商：链头起第一个已配 Key 的 openai-chat 供应商
-// （L2 前其余协议无适配器，L3 前不做失败切换）。无可用 → ErrNotFound。
+// GetChatProvider 对话用供应商：链头起第一个已配 Key 的供应商（按 sort_order, id；
+// 协议适配已全量落地——四协议 adapter 均已实现）。无可用 → ErrNotFound。
 func (d *DB) GetChatProvider(ctx context.Context) (*ModelProvider, error) {
 	p, err := scanProvider(d.QueryRowContext(ctx,
 		`SELECT `+providerColumns+` FROM model_providers
-		 WHERE api_type = 'openai-chat' AND api_key_enc != ''		 ORDER BY sort_order, id LIMIT 1`))
+		 WHERE api_key_enc != ''		 ORDER BY sort_order, id LIMIT 1`))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

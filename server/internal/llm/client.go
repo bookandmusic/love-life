@@ -1,15 +1,10 @@
-// Package llm OpenAI 兼容模型客户端（DESIGN 4.1 多模型适配的阶段一：OpenAI 兼容协议，
-// 覆盖 OpenAI/DeepSeek/通义兼容模式/自部署 vLLM 等；Claude 原生协议后续适配）。
-// 阶段一为非流式调用——工具循环需要完整响应，SSE 通道由 chat 层提供。
+// Package llm 模型客户端（L2 阶段一）：对外暴露规范化类型与 Client 薄壳，
+// 协议 native 适配由未导出的 adapter 接口承担（按 api_type 选用）。
+// 阶段一仅实现 openai-chat；其余协议后续阶段接入。
 package llm
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"time"
 )
 
 type Message struct {
@@ -39,15 +34,28 @@ type ToolFunction struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+// Client 模型客户端薄壳：按 api_type 持有 adapter，对外只暴露 Chat。
 type Client struct {
 	BaseURL string
 	APIKey  string
 	Model   string
-	HTTP    *http.Client
+	apiType string
+	adp     adapter
 }
 
+// New 默认 openai-chat 协议（保持向后兼容）。
 func New(baseURL, apiKey, model string) *Client {
-	return &Client{BaseURL: baseURL, APIKey: apiKey, Model: model, HTTP: &http.Client{Timeout: 60 * time.Second}}
+	c, _ := NewForProtocol(baseURL, apiKey, model, APITypeOpenAIChat)
+	return c
+}
+
+// NewForProtocol 按协议构造客户端；不支持的协议返回错误（调用方应处理，不静默）。
+func NewForProtocol(baseURL, apiKey, model, apiType string) (*Client, error) {
+	adp, err := selectAdapter(apiType)
+	if err != nil {
+		return nil, err
+	}
+	return &Client{BaseURL: baseURL, APIKey: apiKey, Model: model, apiType: apiType, adp: adp}, nil
 }
 
 type ChatRequest struct {
@@ -68,36 +76,7 @@ type ChatResponse struct {
 	} `json:"error"`
 }
 
+// Chat 委托给当前协议的 adapter（规范化 ↔ native 由 adapter 负责）。
 func (c *Client) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":    c.Model,
-		"messages": req.Messages,
-		"tools":    req.Tools,
-	})
-	if err != nil {
-		return nil, err
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
-
-	res, err := c.HTTP.Do(httpReq)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	var out ChatResponse
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return nil, fmt.Errorf("decode model response: %w", err)
-	}
-	if out.Error != nil {
-		return nil, fmt.Errorf("模型服务错误: %s", out.Error.Message)
-	}
-	if len(out.Choices) == 0 {
-		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
-	}
-	return &out, nil
+	return c.adp.Chat(ctx, c.BaseURL, c.APIKey, c.Model, req)
 }

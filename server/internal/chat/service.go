@@ -47,7 +47,8 @@ func (s *Service) systemPrompt(style string) string {
 	return base
 }
 
-// clientFromConfig 取对话供应商（链头起首个已配 Key 的 openai-chat）并解密 Key。
+// clientFromConfig 取对话供应商（链头起首个已配 Key 的供应商）并解密 Key，
+// 按供应商协议构造客户端。
 func (s *Service) clientFromConfig(ctx context.Context) (*llm.Client, error) {
 	p, err := s.db.GetChatProvider(ctx)
 	if errors.Is(err, store.ErrNotFound) {
@@ -67,7 +68,12 @@ func (s *Service) clientFromConfig(ctx context.Context) (*llm.Client, error) {
 	if model == "" {
 		return nil, errNoModel
 	}
-	return llm.New(p.BaseURL, apiKey, model), nil
+	client, err := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType)
+	if err != nil {
+		// DB CHECK 限定四种合法 api_type，selectAdapter 均已注册，运行时不应触发
+		return nil, fmt.Errorf("不支持的服务协议: %w", err)
+	}
+	return client, nil
 }
 
 var errNoModel = errors.New("未配置模型——请管理员在后台配置模型服务")

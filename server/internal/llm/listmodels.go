@@ -26,7 +26,7 @@ func ListModels(ctx context.Context, apiType, baseURL, apiKey string) ([]string,
 		// Key 经请求头传递，避免落入 URL/访问日志（其它协议同理走 header）
 		url = base + "/v1beta/models"
 	default:
-		return nil, fmt.Errorf("api_type 不支持（openai-chat / openai-responses / anthropic / gemini）")
+		return nil, ErrUnsupportedAPIType
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {

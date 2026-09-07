@@ -74,23 +74,31 @@ func TestGetChatProvider(t *testing.T) {
 	if _, err := db.GetChatProvider(ctx); err != ErrNotFound {
 		t.Fatalf("empty: err = %v, want ErrNotFound", err)
 	}
-	// L2 前仅 openai-chat 有适配器：anthropic 独占 → ErrNotFound
-	insertProvider(t, db, "anthropic", "ada", "enc2", "claude", 0)
-	if _, err := db.GetChatProvider(ctx); err != ErrNotFound {
-		t.Fatalf("anthropic-only: err = %v, want ErrNotFound", err)
-	}
-	// 未配 Key（api_key_enc 空串）不算可用
-	insertProvider(t, db, "openai-chat", "nokey", "", "gpt-4o", 1)
-	if _, err := db.GetChatProvider(ctx); err != ErrNotFound {
-		t.Fatalf("no-key: err = %v, want ErrNotFound", err)
-	}
-	// 链序靠前的无 Key openai-chat 与非适配协议都跳过，选中链头可用者
-	waltID := insertProvider(t, db, "openai-chat", "walt", "enc1", "gpt-4o", 2)
+	// 各协议 adapter 均已落地：anthropic 已配 Key 即被选中（不再按协议过滤）
+	adaID := insertProvider(t, db, "anthropic", "ada", "enc2", "claude", 0)
 	p, err := db.GetChatProvider(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.ID != waltID || p.DefaultModel != "gpt-4o" {
-		t.Fatalf("picked %+v, want walt", p)
+	if p.ID != adaID || p.APIType != "anthropic" {
+		t.Fatalf("picked %+v, want ada (anthropic)", p)
+	}
+	// 未配 Key（api_key_enc 空串）不算可用
+	if _, err := db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', 'nokey', 'u', '', 'gpt-4o', -1)`); err != nil {
+		t.Fatal(err)
+	}
+	// 链序：nokey（-1，无 Key 跳过）之后 ada 仍被选中
+	p2, err := db.GetChatProvider(ctx)
+	if err != nil || p2.ID != adaID {
+		t.Fatalf("picked %+v err=%v, want ada", p2, err)
+	}
+	// 链序更前的 openai-chat 有 Key 时优先
+	waltID := insertProvider(t, db, "openai-chat", "walt", "enc1", "gpt-4o", -2)
+	p3, err := db.GetChatProvider(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p3.ID != waltID || p3.DefaultModel != "gpt-4o" {
+		t.Fatalf("picked %+v, want walt", p3)
 	}
 }
