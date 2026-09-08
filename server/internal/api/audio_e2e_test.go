@@ -43,7 +43,9 @@ func uploadAudio(t *testing.T, ts *testEnv, token string) (string, int) {
 		t.Fatal(err)
 	}
 	defer res.Body.Close()
-	var out struct{ MediaToken string `json:"media_token"` }
+	var out struct {
+		MediaToken string `json:"media_token"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	return out.MediaToken, res.StatusCode
 }
@@ -69,11 +71,11 @@ func TestAudioEndToEnd(t *testing.T) {
 	res = doJSON(t, "GET", ts.URL+"/api/v1/media/timeline", adminToken, nil)
 	var tl struct {
 		Items []struct {
-			ID       int64   `json:"id"`
-			Kind     string  `json:"kind"`
+			ID       int64    `json:"id"`
+			Kind     string   `json:"kind"`
 			Duration *float64 `json:"duration"`
-			URL      string  `json:"url"`
-			ThumbURL string  `json:"thumb_url"`
+			URL      string   `json:"url"`
+			ThumbURL string   `json:"thumb_url"`
 		} `json:"items"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&tl)

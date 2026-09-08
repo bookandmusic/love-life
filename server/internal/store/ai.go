@@ -93,14 +93,14 @@ func (d *DB) CleanExpiredChatMessages(ctx context.Context) error {
 // ---- 确认卡片 ----
 
 type ConfirmAction struct {
-	ID          int64
-	UserID      int64
-	ToolName    string
-	ParamsJSON  string
-	Status      string
-	ExpiresAt   time.Time
-	ResolvedAt  sql.NullString
-	CreatedAt   string
+	ID         int64
+	UserID     int64
+	ToolName   string
+	ParamsJSON string
+	Status     string
+	ExpiresAt  time.Time
+	ResolvedAt sql.NullString
+	CreatedAt  string
 }
 
 func (d *DB) CreateConfirmAction(ctx context.Context, userID int64, toolName, paramsJSON string) (int64, error) {

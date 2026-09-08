@@ -21,7 +21,9 @@ func TestInteractionsAndNotifications(t *testing.T) {
 
 	// girl 点赞（girl 的另一方在本环境不存在——admin 不在情侣里，不产生站内通知）；liked/like_count 生效
 	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/like", girlToken, nil)
-	var like struct{ Liked bool `json:"liked"` }
+	var like struct {
+		Liked bool `json:"liked"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&like)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || !like.Liked {
@@ -30,9 +32,9 @@ func TestInteractionsAndNotifications(t *testing.T) {
 
 	res = doJSON(t, "GET", ts.URL+"/api/v1/posts/1", adminToken, nil)
 	var detail struct {
-		LikeCount   int  `json:"like_count"`
-		Liked       bool `json:"liked"`
-		CommentCount int `json:"comment_count"`
+		LikeCount    int  `json:"like_count"`
+		Liked        bool `json:"liked"`
+		CommentCount int  `json:"comment_count"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&detail)
 	res.Body.Close()
@@ -67,7 +69,9 @@ func TestInteractionsAndNotifications(t *testing.T) {
 
 	// 未读数与全部已读
 	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications/unread-count", adminToken, nil)
-	var unread struct{ Count int `json:"count"` }
+	var unread struct {
+		Count int `json:"count"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&unread)
 	res.Body.Close()
 	if unread.Count != 0 {
@@ -106,7 +110,9 @@ func TestInteractionsAndNotifications(t *testing.T) {
 
 	// 收藏切换：girl 收 → 取消收
 	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/favorite", girlToken, nil)
-	var fav struct{ Favorited bool `json:"favorited"` }
+	var fav struct {
+		Favorited bool `json:"favorited"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&fav)
 	res.Body.Close()
 	if !fav.Favorited {

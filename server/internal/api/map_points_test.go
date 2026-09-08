@@ -26,12 +26,12 @@ func TestMapPoints(t *testing.T) {
 		"name": "杭州·西湖", "lat": 30.2467, "lng": 120.4599,
 	})
 	var created struct {
-		ID      int64   `json:"id"`
-		Name    string  `json:"name"`
-		Lat     float64 `json:"lat"`
-		Lng     float64 `json:"lng"`
-		Source  string  `json:"source"`
-		City    string  `json:"city"`
+		ID     int64   `json:"id"`
+		Name   string  `json:"name"`
+		Lat    float64 `json:"lat"`
+		Lng    float64 `json:"lng"`
+		Source string  `json:"source"`
+		City   string  `json:"city"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&created)
 	res.Body.Close()
@@ -127,8 +127,8 @@ func TestGeocode(t *testing.T) {
 	res := doJSON(t, "GET", ts.URL+"/api/v1/geocode?q=鼓浪屿", token, nil)
 	var got struct {
 		Candidates []struct {
-			Name string `json:"name"`
-			City string `json:"city"`
+			Name string  `json:"name"`
+			City string  `json:"city"`
 			Lat  float64 `json:"lat"`
 			Lng  float64 `json:"lng"`
 		} `json:"candidates"`

@@ -25,7 +25,9 @@ func newMediaPost(t *testing.T, ts *testEnv, token string) int64 {
 		t.Fatalf("create post: %d", res.StatusCode)
 	}
 	var tl struct {
-		Items []struct{ ID int64 `json:"id"` } `json:"items"`
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
 	}
 	res = doJSON(t, "GET", ts.URL+"/api/v1/media/timeline", token, nil)
 	_ = json.NewDecoder(res.Body).Decode(&tl)
@@ -39,7 +41,9 @@ func newMediaPost(t *testing.T, ts *testEnv, token string) int64 {
 func createAlbum(t *testing.T, ts *testEnv, token, name string) int64 {
 	t.Helper()
 	res := doJSON(t, "POST", ts.URL+"/api/v1/albums", token, map[string]string{"name": name})
-	var out struct{ ID int64 `json:"id"` }
+	var out struct {
+		ID int64 `json:"id"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	res.Body.Close()
 	if res.StatusCode != http.StatusCreated || out.ID == 0 {
@@ -75,7 +79,9 @@ func TestMediaOwnershipRules(t *testing.T) {
 	if res.StatusCode != http.StatusConflict {
 		t.Fatalf("cross album: want 409, got %d", res.StatusCode)
 	}
-	var errOut struct{ Error string `json:"error"` }
+	var errOut struct {
+		Error string `json:"error"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&errOut)
 	if !strings.Contains(errOut.Error, "一文件只能归属一个手动相册") ||
 		!strings.Contains(errOut.Error, "媒体 "+itoa(mediaID)+" 已归属相册 #") {
@@ -139,8 +145,12 @@ func TestMonthlyAlbumVirtual(t *testing.T) {
 	// 虚拟详情：未归属的本月媒体在列
 	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/"+itoa(monthlyID), adminToken, nil)
 	var detail struct {
-		Album struct{ ItemCount int `json:"item_count"` } `json:"album"`
-		Media []struct{ ID int64 `json:"id"` } `json:"media"`
+		Album struct {
+			ItemCount int `json:"item_count"`
+		} `json:"album"`
+		Media []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&detail)
 	res.Body.Close()
@@ -243,15 +253,15 @@ func TestTimelinePaged(t *testing.T) {
 	res := doJSON(t, "GET", ts.URL+"/api/v1/media/timeline?page=1&size=20", adminToken, nil)
 	var out struct {
 		Items []struct {
-			ID        int64   `json:"id"`
-			Kind      string  `json:"kind"`
-			URL       string  `json:"url"`
-			ThumbURL  string  `json:"thumb_url"`
-			PostID    int64   `json:"post_id"`
-			TakenAt   string  `json:"taken_at"`
-			AuthorID  int64   `json:"author_id"`
-			AlbumID   *int64  `json:"album_id"`
-			Duration  *float64 `json:"duration"`
+			ID       int64    `json:"id"`
+			Kind     string   `json:"kind"`
+			URL      string   `json:"url"`
+			ThumbURL string   `json:"thumb_url"`
+			PostID   int64    `json:"post_id"`
+			TakenAt  string   `json:"taken_at"`
+			AuthorID int64    `json:"author_id"`
+			AlbumID  *int64   `json:"album_id"`
+			Duration *float64 `json:"duration"`
 		} `json:"items"`
 		Total   int  `json:"total"`
 		Page    int  `json:"page"`

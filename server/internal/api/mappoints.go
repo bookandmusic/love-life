@@ -25,15 +25,15 @@ type mapPointRequest struct {
 }
 
 type mapPointItem struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
+	ID          int64   `json:"id"`
+	Name        string  `json:"name"`
 	Lat         float64 `json:"lat"`
 	Lng         float64 `json:"lng"`
-	VisitDate   string `json:"visit_date"`
-	Description string `json:"description"`
-	Source      string `json:"source"`
-	CreatedAt   string `json:"created_at"`
-	CreatedBy   int64  `json:"created_by"`
+	VisitDate   string  `json:"visit_date"`
+	Description string  `json:"description"`
+	Source      string  `json:"source"`
+	CreatedAt   string  `json:"created_at"`
+	CreatedBy   int64   `json:"created_by"`
 }
 
 func toMapPointItem(p *store.MapPoint) mapPointItem {

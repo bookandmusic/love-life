@@ -146,11 +146,11 @@ func int64Args(ids []int64) []any {
 // ---- 评论 ----
 
 type Comment struct {
-	ID        int64
-	PostID    int64
-	AuthorID  int64
-	Content   string
-	CreatedAt string
+	ID             int64
+	PostID         int64
+	AuthorID       int64
+	Content        string
+	CreatedAt      string
 	AuthorNickname sql.NullString
 }
 

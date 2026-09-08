@@ -166,7 +166,6 @@ func (a *albumsAPI) mediaItemsOut(ctx context.Context, medias []*store.MediaRow)
 	return items, nil
 }
 
-
 func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {

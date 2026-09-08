@@ -104,7 +104,7 @@ func TestPostsMediaLoop(t *testing.T) {
 	res = doJSON(t, "GET", ts.URL+"/api/v1/posts?page=1&page_size=10", adminToken, nil)
 	var list struct {
 		Items []struct {
-			ID     int64 `json:"id"`
+			ID     int64  `json:"id"`
 			Author string `json:"author"`
 			Media  []struct {
 				ID       int64  `json:"id"`

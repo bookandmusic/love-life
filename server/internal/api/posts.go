@@ -75,20 +75,20 @@ type mediaResponse struct {
 }
 
 type postResponse struct {
-	ID          int64           `json:"id"`
-	AuthorID    int64           `json:"author_id"`
-	Author      string          `json:"author"`
-	Title       string          `json:"title"`
-	Content     string          `json:"content"`
-	Mood        string          `json:"mood"`
-	Location    string          `json:"location_name"`
-	CreatedAt   string          `json:"created_at"`
-	Media       []mediaResponse `json:"media"`
-	LikeCount   int             `json:"like_count"`
-	Liked       bool            `json:"liked"`
-	FavCount    int             `json:"favorite_count"`
-	Favorited   bool            `json:"favorited"`
-	CommentCount int            `json:"comment_count"`
+	ID           int64           `json:"id"`
+	AuthorID     int64           `json:"author_id"`
+	Author       string          `json:"author"`
+	Title        string          `json:"title"`
+	Content      string          `json:"content"`
+	Mood         string          `json:"mood"`
+	Location     string          `json:"location_name"`
+	CreatedAt    string          `json:"created_at"`
+	Media        []mediaResponse `json:"media"`
+	LikeCount    int             `json:"like_count"`
+	Liked        bool            `json:"liked"`
+	FavCount     int             `json:"favorite_count"`
+	Favorited    bool            `json:"favorited"`
+	CommentCount int             `json:"comment_count"`
 }
 
 func (a *postsAPI) buildPostResponse(p *store.Post, medias []*store.MediaRow, inter *store.PostInteraction) postResponse {
@@ -180,7 +180,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 			Kind: p.Kind, FilePath: p.FilePath, ThumbPath: nullStr(p.ThumbPath),
 			Width: p.Width, Height: p.Height, Size: p.Size,
 			Duration: sql.NullFloat64{Float64: p.Duration, Valid: p.Duration > 0},
-			TakenAt: nullStr(p.TakenAt),
+			TakenAt:  nullStr(p.TakenAt),
 		})
 	}
 

@@ -10,14 +10,14 @@ import (
 )
 
 type Album struct {
-	ID          int64
-	Type        string
-	Name        string
-	Description sql.NullString
-	MonthKey    sql.NullString
-	IsHidden    bool
-	CreatedAt   string
-	ItemCount   int
+	ID           int64
+	Type         string
+	Name         string
+	Description  sql.NullString
+	MonthKey     sql.NullString
+	IsHidden     bool
+	CreatedAt    string
+	ItemCount    int
 	CoverMediaID sql.NullInt64
 }
 

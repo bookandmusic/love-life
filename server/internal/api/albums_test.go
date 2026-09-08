@@ -97,7 +97,9 @@ func TestAlbums(t *testing.T) {
 
 	// 创建手动相册 + 加照片（admin 建 → girl 收到相册上新站内通知）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/albums", adminToken, map[string]string{"name": "海边合集", "description": "夏天"})
-	var created struct{ ID int64 `json:"id"` }
+	var created struct {
+		ID int64 `json:"id"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&created)
 	res.Body.Close()
 	if res.StatusCode != http.StatusCreated || created.ID == 0 {
@@ -121,7 +123,9 @@ func TestAlbums(t *testing.T) {
 			ItemCount int    `json:"item_count"`
 			CoverURL  string `json:"cover_url"`
 		} `json:"album"`
-		Media []struct{ ID int64 `json:"id"` } `json:"media"`
+		Media []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&detail)
 	res.Body.Close()
@@ -186,7 +190,9 @@ func TestAlbums(t *testing.T) {
 	}
 	res = doJSON(t, "GET", ts.URL+"/api/v1/albums?include_hidden=1", adminToken, nil)
 	var all struct {
-		Items []struct{ Type string `json:"type"` } `json:"items"`
+		Items []struct {
+			Type string `json:"type"`
+		} `json:"items"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&all)
 	res.Body.Close()

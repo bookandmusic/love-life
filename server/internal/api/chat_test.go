@@ -100,7 +100,9 @@ func TestChatToolConfirmFlow(t *testing.T) {
 	_ = sseBody(t, res)
 	// 直接取消 actionID（复用第一张卡）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/confirm", adminToken, map[string]any{"action_id": actionID, "confirmed": false})
-	var out struct{ Status string `json:"status"` }
+	var out struct {
+		Status string `json:"status"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || out.Status != "cancelled" {
@@ -201,7 +203,9 @@ func TestChatMediaFlow(t *testing.T) {
 		t.Fatalf("media message card:\n%s", body)
 	}
 	actionID := cardFromSSE(t, body)
-	if actionID == 0 { t.Fatal("action_id missing") }
+	if actionID == 0 {
+		t.Fatal("action_id missing")
+	}
 
 	res = doJSON(t, "GET", ts.URL+"/api/v1/chat/history", adminToken, nil)
 	var hist struct {
@@ -218,18 +222,24 @@ func TestChatMediaFlow(t *testing.T) {
 			gotMedia = true
 		}
 	}
-	if !gotMedia { t.Fatalf("media not echoed in history: %+v", hist.Items) }
+	if !gotMedia {
+		t.Fatalf("media not echoed in history: %+v", hist.Items)
+	}
 
 	// 2) 取消路径：media token 即使上传也不会落库（零垃圾）
 	mediaToken, code := uploadMedia(t, ts.URL, adminToken, "photo1.jpg", genJPEG(t))
-	if code != http.StatusOK { t.Fatalf("upload: %d", code) }
+	if code != http.StatusOK {
+		t.Fatalf("upload: %d", code)
+	}
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/confirm", adminToken, map[string]any{
 		"action_id": actionID, "confirmed": false, "media_tokens": []string{mediaToken},
 	})
 	res.Body.Close()
 	var postCount int
 	_ = ts.db.QueryRow(`SELECT COUNT(*) FROM posts WHERE deleted_at IS NULL`).Scan(&postCount)
-	if postCount != 0 { t.Fatalf("cancel must not create post, got %d", postCount) }
+	if postCount != 0 {
+		t.Fatalf("cancel must not create post, got %d", postCount)
+	}
 
 	// 3) 确认路径：media token → 落库为媒体（随动态）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "再发一条"})
@@ -239,7 +249,9 @@ func TestChatMediaFlow(t *testing.T) {
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/confirm", adminToken, map[string]any{
 		"action_id": actionID, "confirmed": true, "media_tokens": []string{mediaToken},
 	})
-	var out struct{ Status string `json:"status"` }
+	var out struct {
+		Status string `json:"status"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || out.Status != "executed" {
@@ -247,7 +259,9 @@ func TestChatMediaFlow(t *testing.T) {
 	}
 	var mediaN int
 	_ = ts.db.QueryRow(`SELECT COUNT(*) FROM media WHERE deleted_at IS NULL`).Scan(&mediaN)
-	if mediaN != 1 { t.Fatalf("expect 1 media, got %d", mediaN) }
+	if mediaN != 1 {
+		t.Fatalf("expect 1 media, got %d", mediaN)
+	}
 }
 
 func TestChatAlbumTools(t *testing.T) {
@@ -258,7 +272,9 @@ func TestChatAlbumTools(t *testing.T) {
 	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{
 		"content": "带图动态", "media_tokens": []string{mediaToken},
 	})
-	var pc struct{ ID int64 `json:"id"` }
+	var pc struct {
+		ID int64 `json:"id"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&pc)
 	res.Body.Close()
 	var mediaID int64
@@ -296,7 +312,9 @@ func cardFromSSE(t *testing.T, body string) int64 {
 	t.Helper()
 	for _, line := range strings.Split(body, "\n") {
 		if strings.HasPrefix(line, "data: ") && strings.Contains(line, "action_id") {
-			var card struct{ ActionID int64 `json:"action_id"` }
+			var card struct {
+				ActionID int64 `json:"action_id"`
+			}
 			_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &card)
 			return card.ActionID
 		}
@@ -304,7 +322,6 @@ func cardFromSSE(t *testing.T, body string) int64 {
 	t.Fatalf("no card in SSE:\n%s", body)
 	return 0
 }
-
 
 // TestChatAlbumToolsReject add_photos：①随 confirm 上传 token 直接拒绝（对齐 mock：媒体只能随动态）；
 // ②所属动态已软删（回收站）的媒体拒绝入相册——两种情况下 album_items 均零变化。
@@ -315,7 +332,9 @@ func TestChatAlbumToolsReject(t *testing.T) {
 	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{
 		"content": "带图动态", "media_tokens": []string{mediaToken},
 	})
-	var pc struct{ ID int64 `json:"id"` }
+	var pc struct {
+		ID int64 `json:"id"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&pc)
 	res.Body.Close()
 	var mediaID int64
@@ -348,7 +367,9 @@ func TestChatAlbumToolsReject(t *testing.T) {
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/confirm", adminToken, map[string]any{
 		"action_id": actionID, "confirmed": true, "media_tokens": []string{mediaToken},
 	})
-	var out struct{ Status string `json:"status"` }
+	var out struct {
+		Status string `json:"status"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&out)
 	res.Body.Close()
 	if out.Status != "failed" {
@@ -364,7 +385,9 @@ func TestChatAlbumToolsReject(t *testing.T) {
 	body = sseBody(t, res)
 	actionID = cardFromSSE(t, body)
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/confirm", adminToken, map[string]any{"action_id": actionID, "confirmed": true})
-	var out2 struct{ Status string `json:"status"` }
+	var out2 struct {
+		Status string `json:"status"`
+	}
 	_ = json.NewDecoder(res.Body).Decode(&out2)
 	res.Body.Close()
 	if out2.Status != "failed" {

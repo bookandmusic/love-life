@@ -58,8 +58,8 @@ func toProviderOut(p *store.ModelProvider) providerOut {
 	}
 }
 
-func sqlNullFloat(f float64) sql.NullFloat64  { return sql.NullFloat64{Float64: f, Valid: true} }
-func sqlNullInt(i int64) sql.NullInt64         { return sql.NullInt64{Int64: i, Valid: true} }
+func sqlNullFloat(f float64) sql.NullFloat64 { return sql.NullFloat64{Float64: f, Valid: true} }
+func sqlNullInt(i int64) sql.NullInt64       { return sql.NullInt64{Int64: i, Valid: true} }
 
 func (a *providersAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListProviders(r.Context())
@@ -81,7 +81,7 @@ type modelIn struct {
 	MaxTokens   any    `json:"max_tokens"`
 }
 
-// numOrNull 归一：null/''/缺失 → ok=false（存 NULL）；数字或数字字符串 → 值。
+// numOrNull 归一：null/”/缺失 → ok=false（存 NULL）；数字或数字字符串 → 值。
 func numOrNull(v any) (float64, bool) {
 	switch t := v.(type) {
 	case nil:
@@ -213,10 +213,10 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		APIType      *string   `json:"api_type"`
-		Name         *string   `json:"name"`
-		BaseURL      *string   `json:"base_url"`
-		DefaultModel *string   `json:"default_model"`
+		APIType      *string    `json:"api_type"`
+		Name         *string    `json:"name"`
+		BaseURL      *string    `json:"base_url"`
+		DefaultModel *string    `json:"default_model"`
 		Models       *[]modelIn `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

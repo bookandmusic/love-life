@@ -157,9 +157,9 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	// admin 配置一个订阅「新动态+纪念日」的 POST 渠道（自定义模板）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks", adminToken, map[string]any{
 		"name": "家庭 Bark", "method": "POST", "url": rc.server.URL,
-		"headers": map[string]string{"Authorization": "Bearer test-key"},
+		"headers":       map[string]string{"Authorization": "Bearer test-key"},
 		"body_template": `{"t":"{{title}}","c":"{{content}}","ty":"{{type}}"}`,
-		"events": []string{"new_post", "anniversary"},
+		"events":        []string{"new_post", "anniversary"},
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusCreated {
@@ -208,7 +208,7 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	res = doJSON(t, "GET", ts.URL+"/api/v1/anniversaries", adminToken, nil)
 	var list struct {
 		Items []struct {
-			DaysUntil int `json:"days_until"`
+			DaysUntil  int `json:"days_until"`
 			RemindDays int `json:"remind_days_before"`
 		} `json:"items"`
 	}

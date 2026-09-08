@@ -62,12 +62,12 @@ func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
 	}
 	now := time.Now()
 	type item struct {
-		ID             int64  `json:"id"`
-		Name           string `json:"name"`
-		Date           string `json:"date"`
-		Type           string `json:"type"`
-		RemindDays     int    `json:"remind_days_before"`
-		DaysUntil      int    `json:"days_until"`
+		ID         int64  `json:"id"`
+		Name       string `json:"name"`
+		Date       string `json:"date"`
+		Type       string `json:"type"`
+		RemindDays int    `json:"remind_days_before"`
+		DaysUntil  int    `json:"days_until"`
 	}
 	items := make([]item, 0, len(list))
 	for _, ann := range list {
