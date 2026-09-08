@@ -21,7 +21,7 @@ import (
 const (
 	historyWindow = 20 // 送入模型的历史消息条数
 	maxToolRounds = 3  // 单次对话最大工具往返
-	MaxChatMedia   = 18 // 单条聊天消息媒体引用上限（对齐发动态 18 个/条）
+	MaxChatMedia  = 18 // 单条聊天消息媒体引用上限（对齐发动态 18 个/条）
 )
 
 type Service struct {
@@ -39,12 +39,53 @@ func NewService(db *store.DB, seed []byte, deps *tools.Deps) *Service {
 	return &Service{db: db, key: crypto.KeyFrom(seed), deps: deps, reg: reg}
 }
 
-func (s *Service) systemPrompt(style string) string {
-	base := "你是情侣生活记录应用的 AI 助手，帮助这对情侣记录生活、查询回忆。"
-	if style != "" {
-		base += "输出风格偏好：" + style + "。"
+// SystemPromptTrunkFallback 主干模板：管理后台未配置 system_prompt 时的默认值
+// （与改造前硬编码一致，行为向后兼容）。GET /admin/system-prompt 未配置时同用此值。
+const SystemPromptTrunkFallback = "你是情侣生活记录应用的 AI 助手，帮助这对情侣记录生活、查询回忆。"
+
+// systemPrompt 拼装：主干（app_settings system_prompt → fallback）+ 风格片段。
+// 用户风格按名字精确匹配风格库；未设置或名字已删 → 全局默认风格；库空 → 无片段。
+// 每次调用实时读库——管理后台热切换即生效。
+func (s *Service) systemPrompt(ctx context.Context, userStyle string) string {
+	trunk := SystemPromptTrunkFallback
+	if v, err := s.db.GetSetting(ctx, "system_prompt"); err == nil {
+		var saved struct {
+			Content string `json:"content"`
+		}
+		if json.Unmarshal([]byte(v), &saved) == nil && saved.Content != "" {
+			trunk = saved.Content
+		}
 	}
-	return base
+
+	styles, err := s.db.ListStyles(ctx)
+	if err != nil || len(styles) == 0 {
+		return trunk
+	}
+	defID, err := s.db.DefaultStyleID(ctx)
+	if err != nil {
+		defID = 0
+	}
+	prompt := ""
+	if userStyle != "" {
+		for _, st := range styles {
+			if st.Name == userStyle {
+				prompt = st.Prompt
+				break
+			}
+		}
+	}
+	if prompt == "" {
+		for _, st := range styles {
+			if st.ID == defID {
+				prompt = st.Prompt
+				break
+			}
+		}
+	}
+	if prompt == "" {
+		return trunk
+	}
+	return trunk + "输出风格偏好：" + prompt
 }
 
 // clientFromConfig 取对话供应商（链头起首个已配 Key 的供应商）并解密 Key，
@@ -145,7 +186,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 
 	// 历史 + 用户风格
 	user, _ := s.db.GetUserByID(r.Context(), claims.UserID)
-	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(userStyle(user))}}
+	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(r.Context(), userStyle(user))}}
 	history, _ := s.db.ListChatMessages(r.Context(), claims.UserID, historyWindow)
 	for _, m := range history {
 		if m.Role == "user" || m.Role == "assistant" {
@@ -249,10 +290,10 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 	}
 	_, _ = s.db.SaveChatMessage(ctx, &store.ChatMessage{UserID: userID, Role: "assistant", Content: tool.Description, CardID: sql.NullInt64{Int64: actionID, Valid: actionID > 0}})
 	return "", map[string]any{
-		"action_id": actionID,
-		"tool":      tool.Name,
-		"params":    args,
-		"status":    "pending",
+		"action_id":  actionID,
+		"tool":       tool.Name,
+		"params":     args,
+		"status":     "pending",
 		"expires_in": 900,
 	}, nil
 }

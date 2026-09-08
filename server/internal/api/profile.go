@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
@@ -124,11 +125,25 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.AIStyle != nil {
-		switch *req.AIStyle {
-		case "", "文艺", "幽默", "简洁":
-		default:
-			writeError(w, http.StatusBadRequest, "输出风格仅支持 文艺/幽默/简洁")
-			return
+		// ai_style 存风格名；空 = 跟随全局默认（AD2）。合法性 = 风格库中存在。
+		if name := strings.TrimSpace(*req.AIStyle); name != "" {
+			styles, err := a.db.ListStyles(r.Context())
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "服务器错误")
+				return
+			}
+			found := false
+			for _, s := range styles {
+				if s.Name == name {
+					found = true
+					break
+				}
+			}
+			if !found {
+				writeError(w, http.StatusBadRequest, "输出风格不存在")
+				return
+			}
+			req.AIStyle = &name
 		}
 	}
 	if req.RetentionDays != nil {

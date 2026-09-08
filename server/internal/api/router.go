@@ -56,7 +56,18 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}/key", providersAPI.updateKey)
 	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}", providersAPI.update)
 	adminMux.HandleFunc("DELETE /api/v1/admin/model-providers/{id}", providersAPI.remove)
+	stylesAPI := &stylesAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/styles", stylesAPI.list)
+	adminMux.HandleFunc("POST /api/v1/admin/styles", stylesAPI.create)
+	adminMux.HandleFunc("PUT /api/v1/admin/styles/default", stylesAPI.setDefault)
+	adminMux.HandleFunc("PUT /api/v1/admin/styles/{id}", stylesAPI.update)
+	adminMux.HandleFunc("DELETE /api/v1/admin/styles/{id}", stylesAPI.remove)
+	adminMux.HandleFunc("GET /api/v1/admin/system-prompt", stylesAPI.getPrompt)
+	adminMux.HandleFunc("PUT /api/v1/admin/system-prompt", stylesAPI.setPrompt)
 	mux.Handle("/api/v1/admin/", authSvc.RequireAuth(requireAdmin(adminMux)))
+
+	// 输出风格列表（登录用户，形状同 admin 列表；AI 偏好属个人体验项，需求 §7.1）
+	mux.Handle("GET /api/v1/styles", authSvc.RequireAuth(http.HandlerFunc(stylesAPI.list)))
 
 	// 地图（登录用户；瓦片走服务端代理，密钥不下发）
 	// tile 接口允许 token query 认证（img 标签无法带 header），config 走 RequireAuth

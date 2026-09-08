@@ -18,11 +18,12 @@ const theme = ref<string>(getItem(KEYS.THEME) || 'light')
 const accent = ref<string>(getItem(KEYS.ACCENT) || 'rose')
 
 // AI 偏好（输出风格 + 对话保留时长）：读 auth.user，改后 PATCH /api/v1/me
-const aiStyle = ref('文艺')
+// 风格选项从 /api/v1/styles 拉取（内置 + 自定义）；拉取失败用种子清单兜底
+const aiStyle = ref('温暖')
 const retentionDays = ref(30)
 const aiPrefSaving = ref(false)
 const aiPrefToast = ref('')
-const STYLE_OPTS = ['文艺', '幽默', '简洁']
+const styleOpts = ref<string[]>(['温暖', '中性', '简洁', '俏皮'])
 const RETENTION_OPTS = [
   { v: 7, label: '7 天' },
   { v: 30, label: '30 天' },
@@ -30,8 +31,20 @@ const RETENTION_OPTS = [
   { v: -1, label: '永久' },
 ]
 function syncAIPref() {
-  aiStyle.value = auth.user?.ai_style || '文艺'
+  aiStyle.value = auth.user?.ai_style || defaultStyleName.value || '温暖'
   retentionDays.value = auth.user?.chat_retention_days ?? 30
+}
+const defaultStyleName = ref('')
+async function loadStyles() {
+  try {
+    const res = await api<{ items: { id: number; name: string }[]; default_style_id: number }>('/api/v1/styles')
+    if (res.items?.length) {
+      styleOpts.value = res.items.map((s) => s.name)
+      defaultStyleName.value = res.items.find((s) => s.id === res.default_style_id)?.name ?? ''
+    }
+  } catch {
+    /* 兜底清单已就位 */
+  }
 }
 async function saveAIPref() {
   aiPrefSaving.value = true
@@ -94,6 +107,7 @@ function logout() {
 onMounted(() => {
   applyTheme()
   void loadAIStatus()
+  void loadStyles().then(syncAIPref)
   syncAIPref()
 })
 </script>
@@ -128,7 +142,7 @@ onMounted(() => {
         <div class="section-label">AI 偏好</div>
         <div class="seg-wrap">
           <div class="seg">
-            <button v-for="s in STYLE_OPTS" :key="s" :class="{ on: aiStyle === s }" @click="aiStyle = s">{{ s }}</button>
+            <button v-for="s in styleOpts" :key="s" :class="{ on: aiStyle === s }" @click="aiStyle = s">{{ s }}</button>
           </div>
           <p class="mode-hint">AI 输出风格偏好</p>
         </div>

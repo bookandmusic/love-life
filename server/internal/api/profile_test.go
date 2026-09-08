@@ -12,12 +12,12 @@ func TestSpaceAndProfile(t *testing.T) {
 	// 默认空间信息 + 成员（girl/boy 双方；admin 不列）
 	res := doJSON(t, "GET", ts.URL+"/api/v1/space", girlToken, nil)
 	var space struct {
-		Name          string `json:"name"`
-		Members       []struct {
+		Name    string `json:"name"`
+		Members []struct {
 			Nickname string `json:"nickname"`
 			Role     string `json:"role"`
 		} `json:"members"`
-		DaysTogether *int `json:"days_together"`
+		DaysTogether    *int `json:"days_together"`
 		NextAnniversary struct {
 			Name string `json:"name"`
 		} `json:"next_anniversary"`
@@ -54,9 +54,16 @@ func TestSpaceAndProfile(t *testing.T) {
 		t.Fatalf("next anniversary: %+v", space.NextAnniversary)
 	}
 
-	// 个人资料与 AI 偏好
+	// 个人资料与 AI 偏好（ai_style 合法性 = 风格库中存在，AD2）
 	res = doJSON(t, "PATCH", ts.URL+"/api/v1/me", girlToken, map[string]any{
-		"nickname": "小美", "ai_style": "幽默", "chat_retention_days": 90,
+		"ai_style": "幽默", "chat_retention_days": 90,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("update me with unknown style: want 400, got %d", res.StatusCode)
+	}
+	res = doJSON(t, "PATCH", ts.URL+"/api/v1/me", girlToken, map[string]any{
+		"nickname": "小美", "ai_style": "俏皮", "chat_retention_days": 90,
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -74,7 +81,7 @@ func TestSpaceAndProfile(t *testing.T) {
 
 	// 缺省字段不覆盖（D7 回归：APP 设置页只发偏好字段，不得清空昵称）
 	res = doJSON(t, "PATCH", ts.URL+"/api/v1/me", girlToken, map[string]any{
-		"ai_style": "文艺", "chat_retention_days": 30,
+		"ai_style": "中性", "chat_retention_days": 30,
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
