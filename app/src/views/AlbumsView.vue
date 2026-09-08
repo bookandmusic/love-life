@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Images, Music, Play, Check, FolderPlus } from 'lucide-vue-next'
 import { api, fullUrl } from '../api/client'
+import { mediaUrl } from '../utils/mediaUrls'
 import MediaViewer from '../components/MediaViewer.vue'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
@@ -277,7 +278,7 @@ function onTimelineScroll(e: Event) {
                 :class="{ selected: isSelected(m.id) }"
                 @click="selectMode ? toggleSelect(m.id) : openViewer(i)"
               >
-                <img :src="fullUrl(m.thumb_url)" loading="lazy" class="ph" alt="" />
+                <img :src="fullUrl(mediaUrl(m).thumb)" loading="lazy" class="ph" alt="" />
                 <span v-if="selectMode" class="pick-mark" :class="{ on: isSelected(m.id) }">
                   <Check v-if="isSelected(m.id)" :size="13" stroke-width="3" />
                 </span>

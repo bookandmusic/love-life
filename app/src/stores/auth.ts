@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api, clearAuth, getToken, setBase, setTokens } from '../api/client'
+import { api, clearAuth, getToken, setTokens } from '../api/client'
 
 export interface UserInfo {
   id: number
@@ -14,8 +14,8 @@ export interface UserInfo {
 export const useAuth = defineStore('auth', () => {
   const user = ref<UserInfo | null>(null)
 
-  async function login(base: string, username: string, password: string) {
-    setBase(base)
+  async function login(username: string, password: string) {
+    // 生效地址由登录页双地址探测（probeAndSelect）先行写入，此处不再覆盖
     const res = await api<{ token: string; refresh_token: string; user: UserInfo }>(
       '/api/v1/auth/login',
       {

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Heart, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
 import { api, fullUrl, fmtDateTime } from '../api/client'
+import { mediaUrl } from '../utils/mediaUrls'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
@@ -193,10 +194,10 @@ onMounted(load)
           @click="goDetail(p.id)"
         >
           <template v-for="m in p.media" :key="m.id">
-            <video v-if="m.kind === 'video'" class="ph" controls playsinline :poster="fullUrl(m.thumb_url)" preload="none" @click.stop>
-              <source :src="fullUrl(m.url ?? m.thumb_url.replace('v=thumb', 'v=raw'))" />
+            <video v-if="m.kind === 'video'" class="ph" controls playsinline :poster="fullUrl(mediaUrl(m).thumb)" preload="none" @click.stop>
+              <source :src="fullUrl(mediaUrl(m).raw)" />
             </video>
-            <img v-else class="ph" :src="fullUrl(m.thumb_url)" loading="lazy" alt="" />
+            <img v-else class="ph" :src="fullUrl(mediaUrl(m).thumb)" loading="lazy" alt="" />
           </template>
         </div>
 

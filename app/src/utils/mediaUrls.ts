@@ -1,0 +1,80 @@
+// 媒体签名 URL 定时重签（AP3）：签名 15 分钟 TTL，每 5 分钟对已注册媒体批量
+// POST /media/reurl 静默换新，避免长时间停留在页面上图片/音视频裂图。
+//
+// 响应式设计：注册表用普通 Map（渲染中读写都安全），另设 version ref —— mediaUrl()
+// 读 version 建立依赖，重签成功后 bump version 让所有引用处自动重渲染；避免了
+// 「渲染中写 reactive 容器 → 触发重渲染 → 再写」的循环。
+import { ref } from 'vue'
+import { api } from '../api/client'
+
+interface MediaLike {
+  id?: number | string
+  url?: string
+  thumb_url?: string
+}
+
+interface Entry {
+  thumb: string
+  raw: string
+  lastSeen: number
+}
+
+const registry = new Map<string, Entry>()
+const version = ref(0)
+const REFRESH_INTERVAL = 5 * 60 * 1000
+
+function derive(m: MediaLike): { thumb: string; raw: string } {
+  const thumb = m.thumb_url ?? ''
+  const raw = m.url || thumb.replace('v=thumb', 'v=raw')
+  return { thumb, raw }
+}
+
+// mediaUrl 取媒体当前签名地址（未注册/未重签时返回由 m 派生的原值，行为与直接
+// 拼 m.thumb_url / m.url 等价）。在渲染中调用即完成注册。
+export function mediaUrl(m: MediaLike): { thumb: string; raw: string } {
+  version.value // 响应式依赖：重签成功后触发各引用处刷新
+  const fallback = derive(m)
+  if (m.id === undefined || m.id === null || m.id === '') return fallback
+  const key = String(m.id)
+  const e = registry.get(key)
+  if (!e) {
+    registry.set(key, { ...fallback, lastSeen: Date.now() })
+    return fallback
+  }
+  e.lastSeen = Date.now()
+  return { thumb: e.thumb || fallback.thumb, raw: e.raw || fallback.raw }
+}
+
+async function refreshSignedUrls(): Promise<void> {
+  const all = [...registry.keys()]
+  if (!all.length) return
+  for (let i = 0; i < all.length; i += 200) {
+    const ids = all.slice(i, i + 200)
+    try {
+      const res = await api<{ items: { id: number; thumb_url: string; url: string }[] }>(
+        '/api/v1/media/reurl',
+        { method: 'POST', body: JSON.stringify({ ids: ids.map(Number) }) },
+      )
+      for (const it of res.items) {
+        const e = registry.get(String(it.id))
+        if (e) {
+          if (it.thumb_url) e.thumb = it.thumb_url
+          if (it.url) e.raw = it.url
+          e.lastSeen = Date.now()
+        }
+      }
+      version.value++
+    } catch {
+      // 本轮失败静默（未登录/离线/瞬断），下轮再试；签名未过期前无感
+    }
+  }
+}
+
+let started = false
+
+// startMediaRefresh 全局启动定时重签（App.vue 挂载时调用一次）。
+export function startMediaRefresh(): void {
+  if (started) return
+  started = true
+  window.setInterval(() => void refreshSignedUrls(), REFRESH_INTERVAL)
+}

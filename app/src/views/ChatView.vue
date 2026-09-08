@@ -2,6 +2,8 @@
 import { nextTick, onMounted, ref } from 'vue'
 import { Send, Search, CheckCircle2, XCircle, Timer, Check, Sparkles, Square, ImagePlus, X, Music } from 'lucide-vue-next'
 import { api, getBase, getToken } from '../api/client'
+import { useAuth } from '../stores/auth'
+import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
 import NavActions from '../components/NavActions.vue'
 
 const MAX_MEDIA = 9 // 与 PublishView 对齐
@@ -48,6 +50,7 @@ interface HistoryMsg {
   card?: { action_id: number; tool: string; params: Record<string, unknown>; status: CardItem['status']; expires_in: number }
 }
 
+const auth = useAuth()
 const bubbles = ref<Bubble[]>([])
 const cards = ref<Record<number, CardItem>>({})
 const input = ref('')
@@ -111,30 +114,49 @@ async function uploadPicked(files: PickedMedia[]): Promise<string[]> {
 }
 
 // 4.1①：loadHistory 恢复 card 快照（未确认且未过期 → pending 可继续确认；过期/已处理 → 只读态）
+// AP2：先展示 indexedDB 本地缓存（断网可用），后台拉服务端权威数据覆盖并回写缓存。
+function applyHistory(items: HistoryMsg[]) {
+  const nextBubbles: Bubble[] = []
+  const nextCards: Record<number, CardItem> = {}
+  for (const m of items) {
+    if (m.card && m.card_id) {
+      nextCards[m.card_id] = {
+        action_id: m.card.action_id,
+        tool: m.card.tool,
+        params: m.card.params ?? {},
+        status: m.card.status,
+        expires_in: m.card.expires_in,
+      }
+      nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, cardID: m.card_id, media: m.media ?? [] })
+    } else {
+      nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, media: m.media ?? [] })
+    }
+  }
+  bubbles.value = nextBubbles
+  cards.value = nextCards
+  scrollBottom()
+}
+
 async function loadHistory() {
+  const uid = auth.user?.id ?? 0
+  // uid=0（用户未就绪的防御分支）跳过缓存，避免跨账号共享 history:0 键
+  if (uid > 0) {
+    const cached = (await loadCachedHistory(uid)) as HistoryMsg[] | null
+    if (cached?.length) applyHistory(cached)
+  }
   try {
     const res = await api<{ items: HistoryMsg[] }>('/api/v1/chat/history')
-    const nextBubbles: Bubble[] = []
-    const nextCards: Record<number, CardItem> = {}
-    for (const m of res.items) {
-      if (m.card && m.card_id) {
-        nextCards[m.card_id] = {
-          action_id: m.card.action_id,
-          tool: m.card.tool,
-          params: m.card.params ?? {},
-          status: m.card.status,
-          expires_in: m.card.expires_in,
-        }
-        nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, cardID: m.card_id, media: m.media ?? [] })
-      } else {
-        nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, media: m.media ?? [] })
+    applyHistory(res.items)
+    if (uid > 0) void saveCachedHistory(uid, res.items)
+  } catch {
+    // 拉取失败：有缓存则继续展示（提示离线），无缓存维持原状静默
+    if (uid > 0) {
+      const cached = (await loadCachedHistory(uid)) as HistoryMsg[] | null
+      if (cached?.length) {
+        applyHistory(cached)
+        showToast('网络不可用，已展示本地缓存')
       }
     }
-    bubbles.value = nextBubbles
-    cards.value = nextCards
-    scrollBottom()
-  } catch {
-    /* 空历史静默 */
   }
 }
 

@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Cake, PenLine, ChevronRight, RefreshCw, CalendarDays, MapPin, Sparkles } from 'lucide-vue-next'
 import { api, fullUrl } from '../api/client'
+import { mediaUrl } from '../utils/mediaUrls'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
@@ -187,7 +188,7 @@ onMounted(load)
           <!-- 杂志封面主图卡 -->
           <div v-if="coverMemory" class="cover-card" @click="router.push(`/posts/${coverMemory.id}`)">
             <div class="cover-media">
-              <img :src="fullUrl(coverMemory.media[0].thumb_url)" loading="lazy" alt="" />
+              <img :src="fullUrl(mediaUrl(coverMemory.media[0]).thumb)" loading="lazy" alt="" />
               <div class="cover-mask">
                 <div class="cover-tags">
                   <span v-if="coverMemory.mood" class="cover-tag"><Sparkles :size="12" stroke-width="2" />{{ coverMemory.mood }}</span>

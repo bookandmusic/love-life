@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { KEYS, getItem } from './utils/storage'
 import { applyWindowState } from './utils/windowState'
 import { ACCENTS } from './utils/accents'
+import { probeAndSelect } from './utils/netProbe'
+import { startMediaRefresh } from './utils/mediaUrls'
 
 const router = useRouter()
 
@@ -16,6 +18,8 @@ function applyStoredAppearance() {
   if (ACCENTS[accent]) document.documentElement.dataset.accent = accent
 }
 
+let probeTimer: number | undefined
+
 onMounted(() => {
   applyStoredAppearance()
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
@@ -23,6 +27,15 @@ onMounted(() => {
   })
   router.afterEach(() => applyStoredAppearance())
   void applyWindowState()
+  // 双地址定时重探测（AP1）：在家/在外网络切换后自动优选内网
+  void probeAndSelect()
+  probeTimer = window.setInterval(() => void probeAndSelect(), 5 * 60 * 1000)
+  // 媒体签名 URL 定时重签（AP3）：15 分钟 TTL 临期前静默换新
+  startMediaRefresh()
+})
+
+onUnmounted(() => {
+  if (probeTimer !== undefined) clearInterval(probeTimer)
 })
 </script>
 

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ChevronLeft, ChevronRight, Music, Trash2, X } from 'lucide-vue-next'
 import { fullUrl } from '../api/client'
+import { mediaUrl } from '../utils/mediaUrls'
 
 export interface ViewerItem {
   id: number | string
@@ -175,17 +176,17 @@ const transformStyle = computed(() => ({
         <video
           v-if="cur.kind === 'video'"
           class="mv-media mv-video"
-          :src="fullUrl(cur.url || cur.thumb_url.replace('v=thumb', 'v=raw'))"
+          :src="fullUrl(mediaUrl(cur).raw)"
           playsinline controls autoplay
         />
         <div v-else-if="cur.kind === 'audio'" class="mv-media mv-audio">
           <Music :size="56" stroke-width="1.4" />
-          <audio :src="fullUrl(cur.url || cur.thumb_url.replace('v=thumb', 'v=raw'))" controls autoplay />
+          <audio :src="fullUrl(mediaUrl(cur).raw)" controls autoplay />
         </div>
         <img
           v-else
           class="mv-media mv-img"
-          :src="fullUrl(cur.url || cur.thumb_url.replace('v=thumb', 'v=raw'))"
+          :src="fullUrl(mediaUrl(cur).raw)"
           :style="transformStyle"
           alt=""
           @dblclick.prevent="onDblClick"

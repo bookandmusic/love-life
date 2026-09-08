@@ -3,6 +3,7 @@ import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronLeft, Heart, Music, Star, MessageCircle, MapPin, Trash2, ChevronDown, ChevronUp, X } from 'lucide-vue-next'
 import { api, fullUrl, fmtDateTime } from '../api/client'
+import { mediaUrl } from '../utils/mediaUrls'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
 import { useSpace } from '../stores/space'
@@ -193,13 +194,13 @@ onMounted(load)
       >
         <div v-for="(m, i) in post.media" :key="m.id" class="media-cell" @click="openViewer(i)">
           <video v-if="m.kind === 'video'" class="thumb video" controls playsinline>
-            <source :src="fullUrl(m.thumb_url.replace('v=thumb', 'v=raw'))" />
+            <source :src="fullUrl(mediaUrl(m).raw)" />
           </video>
           <div v-else-if="m.kind === 'audio'" class="thumb audio-thumb">
             <Music :size="28" stroke-width="1.6" />
-            <audio controls preload="none" :src="fullUrl(m.thumb_url.replace('v=thumb', 'v=raw'))" />
+            <audio controls preload="none" :src="fullUrl(mediaUrl(m).raw)" />
           </div>
-          <img v-else class="thumb" :src="fullUrl(m.thumb_url)" loading="lazy" />
+          <img v-else class="thumb" :src="fullUrl(mediaUrl(m).thumb)" loading="lazy" />
         </div>
       </div>
 

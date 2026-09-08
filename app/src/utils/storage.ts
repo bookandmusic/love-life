@@ -1,6 +1,8 @@
 // 本地存储键集中管理（阶段5.4 B18：`love-life-*` 键散落 4 个文件，统一在此维护）
 export const KEYS = {
   BASE: 'love-life-base',
+  BASE_LAN: 'love-life-base-lan',
+  BASE_WAN: 'love-life-base-wan',
   TOKEN: 'love-life-token',
   REFRESH: 'love-life-refresh',
   THEME: 'love-life-theme',

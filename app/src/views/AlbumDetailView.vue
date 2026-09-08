@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ChevronLeft, Music, Play, Plus, Trash2 } from 'lucide-vue-next'
 import { api, fullUrl } from '../api/client'
+import { mediaUrl } from '../utils/mediaUrls'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
 import SkeletonState from '../components/SkeletonState.vue'
@@ -222,14 +223,14 @@ onMounted(load)
             @pointerleave="onPhotoPressEnd"
             @pointercancel="onPhotoPressEnd"
           >
-            <video v-if="m.kind === 'video'" class="thumb" controls playsinline :poster="fullUrl(m.thumb_url)" preload="none">
-              <source :src="fullUrl(m.url)" />
+            <video v-if="m.kind === 'video'" class="thumb" controls playsinline :poster="fullUrl(mediaUrl(m).thumb)" preload="none">
+              <source :src="fullUrl(mediaUrl(m).raw)" />
             </video>
             <div v-else-if="m.kind === 'audio'" class="thumb audio-thumb">
               <Music :size="28" stroke-width="1.6" />
-              <audio controls preload="none" :src="fullUrl(m.url)" />
+              <audio controls preload="none" :src="fullUrl(mediaUrl(m).raw)" />
             </div>
-            <img v-else :src="fullUrl(m.thumb_url)" class="thumb" loading="lazy" alt="" />
+            <img v-else :src="fullUrl(mediaUrl(m).thumb)" class="thumb" loading="lazy" alt="" />
           </div>
         </template>
         <!-- 添加入口：做成最后一个图片图标（仅手动相册） -->
@@ -294,7 +295,7 @@ onMounted(load)
                 :title="isLocked(m) ? (m.album_id === albumIdNum ? '已在本相册' : (m.album_name ? '已归属「' + m.album_name + '」' : '已归属其他相册')) : ''"
               >
                 <img
-                  :src="fullUrl(m.thumb_url)"
+                  :src="fullUrl(mediaUrl(m).thumb)"
                   class="ph"
                   :class="{ picked: picked.includes(m.id) }"
                   loading="lazy"

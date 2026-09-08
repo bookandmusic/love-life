@@ -4,12 +4,39 @@ const BASE_KEY = KEYS.BASE
 const TOKEN_KEY = KEYS.TOKEN
 const REFRESH_KEY = KEYS.REFRESH
 
+// 旧单地址迁移（AP1）：历史版本只有一个 base，视作公网槽初值；双地址槽已用时跳过
+function migrateLegacyBase() {
+  const legacy = getItem(BASE_KEY)
+  if (legacy && !getItem(KEYS.BASE_LAN) && !getItem(KEYS.BASE_WAN)) {
+    setItem(KEYS.BASE_WAN, legacy)
+  }
+}
+migrateLegacyBase()
+
 export function getBase(): string {
   return getItem(BASE_KEY) ?? ''
 }
 
+// normalizeBase 统一去尾斜杠；空串原样返回（未配置槽位）
+function normalizeBase(base: string): string {
+  return base.replace(/\/+$/, '')
+}
+
 export function setBase(base: string) {
-  setItem(BASE_KEY, base.replace(/\/+$/, ''))
+  setItem(BASE_KEY, normalizeBase(base))
+}
+
+export function getLanBase(): string {
+  return getItem(KEYS.BASE_LAN) ?? ''
+}
+
+export function getWanBase(): string {
+  return getItem(KEYS.BASE_WAN) ?? ''
+}
+
+export function setDualBase(lan: string, wan: string) {
+  setItem(KEYS.BASE_LAN, normalizeBase(lan))
+  setItem(KEYS.BASE_WAN, normalizeBase(wan))
 }
 
 export function getToken(): string | null {
