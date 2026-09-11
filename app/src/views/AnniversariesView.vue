@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, Trash2, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
-import { api } from '../api/client'
+import { Bell, ChevronLeft, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
+import { api, errText } from '../api/client'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
+import AppToast from '../components/AppToast.vue'
+import Sheet from '../components/Sheet.vue'
+import { useLongPress } from '../composables/useLongPress'
+import { KEYS, onceHint } from '../utils/storage'
+import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg } from '../utils/deleteCopy'
 import { nextLunarOccurrence, lunarDayText, lunarMonthText, LUNAR_DAYS } from '../utils/lunar'
+import { daysUntilDate, nextSolarDate, ymdOf } from '../utils/dates'
 
 interface Anniv {
   id: number
@@ -15,6 +21,7 @@ interface Anniv {
   // 统一契约：date 一律 YYYY-MM-DD，type 决定语义（solar=公历；lunar=农历日期，每年按农历月/日重复）
   date: string
   type?: 'solar' | 'lunar'
+  is_leap?: boolean
   remind_days_before: number
   days_until: number
 }
@@ -32,28 +39,66 @@ const newForm = ref(false)
 const fName = ref('')
 const fType = ref<'solar' | 'lunar'>('solar')
 const fSolarDate = ref('')
+const fLunarYear = ref<number>(new Date().getFullYear())
 const fLunarMonth = ref<number>(8)
 const fLunarDay = ref<number>(15)
+const fLunarLeap = ref(false)
 const fRemind = ref(1)
+const lunarYearOpts = computed(() => {
+  const cur = new Date().getFullYear()
+  const years: number[] = []
+  for (let y = 1900; y <= cur; y++) years.push(y)
+  return years.reverse()
+})
 
 // B9 删除确认 sheet
 const showDelete = ref(false)
 const deleting = ref<Anniv | null>(null)
+const toast = ref('')
+// 移入回收站：长按卡片触发（卡片上没有常驻删除图标）
+const { pressing, down: pressDown, move: pressMove, up: pressUp } = useLongPress()
 
-// 农历换算预览：农历 → 最近一个公历日期
+// D6 提醒设置 sheet（REQUIREMENTS:182：每条纪念日的提醒天数可单独修改）
+const showRemind = ref(false)
+const reminding = ref<Anniv | null>(null)
+const remindDays = ref(1)
+const remindSaving = ref(false)
+function askRemind(a: Anniv) {
+  reminding.value = a
+  remindDays.value = a.remind_days_before
+  showRemind.value = true
+}
+async function saveRemind() {
+  const a = reminding.value
+  if (!a || remindSaving.value) return
+  remindSaving.value = true
+  try {
+    await api(`/api/v1/anniversaries/${a.id}/reminder`, {
+      method: 'PATCH',
+      body: JSON.stringify({ remind_days_before: remindDays.value }),
+    })
+    a.remind_days_before = remindDays.value
+    showRemind.value = false
+  } catch (e) {
+    error.value = errText(e, '提醒保存失败')
+  } finally {
+    remindSaving.value = false
+  }
+}
+
+// 农历换算预览：农历 → 最近一个公历日期（含闰月语义）
 const lunarPreview = computed(() =>
-  fType.value === 'lunar' ? nextLunarOccurrence(fLunarMonth.value, fLunarDay.value) : null,
+  fType.value === 'lunar' ? nextLunarOccurrence(fLunarMonth.value, fLunarDay.value, fLunarLeap.value) : null,
 )
 const lunarPreviewLabel = computed(() =>
-  fType.value === 'lunar' ? lunarDayText(fLunarMonth.value, fLunarDay.value) : '',
+  fType.value === 'lunar' ? lunarDayText(fLunarMonth.value, fLunarDay.value, fLunarLeap.value) : '',
 )
-// 农历新增统一结构：date = 当前年份 + 农历月/日（YYYY-MM-DD，按农历语义；仅展示参考，重复规则=月/日）
+// 农历新增统一结构：date = 真实农历年月日（YYYY-MM-DD，按农历语义，如 1996-05-15）
 const lunarRefDate = computed(() => {
   if (fType.value !== 'lunar') return ''
-  const y = new Date().getFullYear()
   const mm = String(fLunarMonth.value).padStart(2, '0')
   const dd = String(fLunarDay.value).padStart(2, '0')
-  return `${y}-${mm}-${dd}`
+  return `${fLunarYear.value}-${mm}-${dd}`
 })
 
 async function load() {
@@ -63,7 +108,7 @@ async function load() {
     const res = await api<{ items: Anniv[] }>('/api/v1/anniversaries')
     items.value = res.items
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -79,9 +124,10 @@ async function confirmRemove() {
   const a = deleting.value
   try {
     await api(`/api/v1/anniversaries/${a.id}`, { method: 'DELETE' })
-    await load()
+    items.value = items.value.filter((x) => x.id !== a.id) // 原地移除，不再整表重载
+    toast.value = RECYCLE_TOAST
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '删除失败'
+    error.value = errText(e, '删除失败')
   } finally {
     deleting.value = null
   }
@@ -96,8 +142,10 @@ function resetForm() {
   fName.value = ''
   fType.value = 'solar'
   fSolarDate.value = ''
+  fLunarYear.value = new Date().getFullYear()
   fLunarMonth.value = 8
   fLunarDay.value = 15
+  fLunarLeap.value = false
   fRemind.value = 1
   error.value = ''
 }
@@ -120,16 +168,16 @@ async function save() {
         body: JSON.stringify({ name, type: 'solar', date: fSolarDate.value, remind_days_before: fRemind.value }),
       })
     } else {
-      // 统一契约：date = YYYY-MM-DD（农历语义参考日期），只在客户端换算；不存「本次公历」
+      // 统一契约：date = 真实农历年月日 + is_leap 闰月标记；换算/倒计时由服务端推算
       await api('/api/v1/anniversaries', {
         method: 'POST',
-        body: JSON.stringify({ name, type: 'lunar', date: lunarRefDate.value, remind_days_before: fRemind.value }),
+        body: JSON.stringify({ name, type: 'lunar', date: lunarRefDate.value, is_leap: fLunarLeap.value, remind_days_before: fRemind.value }),
       })
     }
     closeForm()
     await load()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '添加失败'
+    error.value = errText(e, '添加失败')
   } finally {
     saving.value = false
   }
@@ -147,67 +195,47 @@ watch(
   { immediate: true },
 )
 
-// 统一契约：从 YYYY-MM-DD 取 m/d（农历时按农历语义；私人 type 决定）
-function ymdOf(date: string): { y: number; m: number; d: number } {
-  const [y, m, d] = date.split('-').map(Number)
-  return { y, m, d }
-}
-
-
-
 // —— 统一计算「下一次即将到来」（阳历→今年正日；农历→按公历下次），并按最近排序 ——
-function daysUntilDate(dateStr: string): number {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  let target = new Date(y, m - 1, d)
-  target.setHours(0, 0, 0, 0)
-  while (target.getTime() < today.getTime()) target.setFullYear(target.getFullYear() + 1)
-  return Math.round((target.getTime() - today.getTime()) / 86400000)
-}
-
 interface AnnNext {
-  date: string
   days: number
+  invalid: boolean // 服务端 -1（哨兵）/ 无日期 / 日期不可解析 → 排序置底并置灰
 }
 
 function unifiedNext(a: Anniv): AnnNext {
-  if (a.type === 'lunar' && a.date) {
-    const { m, d } = ymdOf(a.date)
-    const occ = nextLunarOccurrence(Number(m), Number(d))
-    if (occ) return { date: occ, days: daysUntilDate(occ) }
+  // 服务端值优先（mock/后端已推算 days_until）；-1 是「无法推算」哨兵，不得当有效值用
+  if (Number.isFinite(a.days_until) && a.days_until >= 0) return { days: a.days_until, invalid: false }
+  if ((a.type || 'solar') === 'lunar') {
+    // 农历：只能靠离线换算，换算不出（越出 1900-2100 表/无日期）即无效——绝不按公历解读农历 date
+    if (a.date) {
+      const { m, d } = ymdOf(a.date)
+      const occ = nextLunarOccurrence(Number(m), Number(d), a.is_leap === true)
+      if (occ) return { days: daysUntilDate(occ), invalid: false }
+    }
+    return { days: Number.MAX_SAFE_INTEGER, invalid: true }
   }
-  // 兜底：solar 用公历 date；无有效日期排在最后
-  return { date: a.date || '', days: a.date ? daysUntilDate(a.date) : Number.MAX_SAFE_INTEGER }
+  // 阳历：按公历 date 每年重复；空日期/不可解析（NaN）→ 无效
+  if (a.date) {
+    const days = daysUntilDate(a.date)
+    if (Number.isFinite(days)) return { days, invalid: false }
+  }
+  return { days: Number.MAX_SAFE_INTEGER, invalid: true }
 }
 
 const sortedItems = computed(() => [...items.value].sort((x, y) => unifiedNext(x).days - unifiedNext(y).days))
 
-/** 阳历「月/日」在未来的下一次出现日期（今天起） */
-function nextSolarDate(dateStr: string): string {
-  const [y, m, d] = dateStr.split('-').map(Number)
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
-  const target = new Date(y, m - 1, d)
-  target.setHours(0, 0, 0, 0)
-  while (target.getTime() < today.getTime()) target.setFullYear(target.getFullYear() + 1)
-  const Y = target.getFullYear()
-  const M = String(target.getMonth() + 1).padStart(2, '0')
-  const D = String(target.getDate()).padStart(2, '0')
-  return `${Y}-${M}-${D}`
-}
-
 function rowMeta(a: Anniv): AnnivRowMeta {
   const n = unifiedNext(a)
   const hot = n.days <= 30
-  if (a.type === 'lunar' && a.date) {
-    const { m, d } = ymdOf(a.date)
-    const occ = nextLunarOccurrence(m, d)
-    return { kind: 'lunar', hot, anniv: `每年${lunarDayText(m, d)}`, next: `下次 ${occ || '—'}`, origin: a.date ? `原始日期 ${a.date}` : '', days: n.days }
+  const origin = a.date ? `原始日期 ${a.date}` : ''
+  // 日期不可解析（含空）时不再展示「每年 X 月 X 日 / 下次 YYYY-MM-DD」这类假信息
+  const md = a.date ? ymdOf(a.date) : null
+  const ok = !!md && Number.isFinite(md.m) && Number.isFinite(md.d)
+  if ((a.type || 'solar') === 'lunar') {
+    const isLeap = a.is_leap === true
+    const occ = ok ? nextLunarOccurrence(md!.m, md!.d, isLeap) : null
+    return { kind: 'lunar', hot, anniv: ok ? `每年${lunarDayText(md!.m, md!.d, isLeap)}` : '', next: `下次 ${occ || '—'}`, origin, days: n.days, invalid: n.invalid }
   }
-  const { m, d } = a.date ? ymdOf(a.date) : { m: 0, d: 0 }
-  const solarRule = m ? `每年 ${m} 月 ${d} 日` : ''
-  return { kind: 'solar', hot, anniv: solarRule, next: `下次 ${a.date ? nextSolarDate(a.date) : '—'}`, origin: a.date ? `原始日期 ${a.date}` : '', days: n.days }
+  return { kind: 'solar', hot, anniv: ok ? `每年 ${md!.m} 月 ${md!.d} 日` : '', next: `下次 ${ok ? nextSolarDate(a.date) : '—'}`, origin, days: n.days, invalid: n.invalid }
 }
 
 const rows = computed(() => sortedItems.value.map((a) => ({ ...a, meta: rowMeta(a) })))
@@ -221,10 +249,15 @@ interface AnnivRowMeta {
   next: string // 副2：下次具体日期（如「下次 2026-09-25」）
   origin: string // 副3：原始日期（不丢主体信息，仅作小字陪衬）
   days: number
+  invalid: boolean // 日期无效（服务端 -1 / 无日期 / 不可解析）→ 右侧显示「日期无效」并置灰
 }
 
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // 长按是隐形手势：首次进入提示一次（本地记住）
+  if (onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按纪念日可移入回收站'
+})
 </script>
 
 <template>
@@ -250,6 +283,9 @@ onMounted(load)
         </template>
         <template v-else>
           <div class="lunar-row">
+            <select v-model.number="fLunarYear" class="s-select">
+              <option v-for="y in lunarYearOpts" :key="y" :value="y">{{ y }}年</option>
+            </select>
             <select v-model.number="fLunarMonth" class="s-select">
               <option v-for="m in 12" :key="m" :value="m">{{ lunarMonthText(m) }}</option>
             </select>
@@ -257,6 +293,7 @@ onMounted(load)
               <option v-for="d in 30" :key="d" :value="d">{{ LUNAR_DAYS[d] }}</option>
             </select>
           </div>
+          <label class="leap-row"><input v-model="fLunarLeap" type="checkbox" /> 闰月</label>
           <p v-if="lunarPreviewLabel" class="lunar-pv">你选的是 <b>{{ lunarPreviewLabel }}</b>
             <template v-if="lunarPreview">（本次 {{ lunarPreview }}）</template>
           </p>
@@ -289,7 +326,17 @@ onMounted(load)
           <p>还没有纪念日，点右下角 + 添加第一个吧</p>
         </div>
 
-        <div v-for="a in rows" :key="a.id" class="row">
+        <div
+          v-for="a in rows"
+          :key="a.id"
+          class="row pressable"
+          :class="{ pressing: pressing === a.id }"
+          @pointerdown="pressDown($event, a.id, () => askRemove(a))"
+          @pointermove="pressMove"
+          @pointerup="pressUp"
+          @pointerleave="pressUp"
+          @pointercancel="pressUp"
+        >
           <span class="icon" :class="a.meta.hot ? '' : 'far'">
             <Cake v-if="a.meta.hot" :size="18" stroke-width="2" />
             <Gift v-else :size="18" stroke-width="2" />
@@ -302,28 +349,50 @@ onMounted(load)
             <div class="meta">
               <span class="meta-line next">{{ a.meta.next }}</span>
               <span class="meta-line anniv">{{ a.meta.anniv }}</span>
+              <button class="meta-line remind" @pointerdown.stop @click="askRemind(a)">
+                <Bell :size="12" stroke-width="2" />
+                {{ a.remind_days_before === 0 ? '当天提醒' : `提前 ${a.remind_days_before} 天提醒` }}
+              </button>
             </div>
           </div>
           <div class="count">
-            <span class="days-num num" :class="{ done: !a.meta.hot }">
-              <b>{{ a.meta.days }}</b><small>天</small>
-            </span>
-            <span v-if="a.meta.hot" class="count-tip">后</span>
+            <span v-if="a.meta.invalid" class="days-invalid">日期无效</span>
+            <template v-else>
+              <span class="days-num num" :class="{ done: !a.meta.hot }">
+                <b>{{ a.meta.days }}</b><small>天</small>
+              </span>
+              <span v-if="a.meta.hot" class="count-tip">后</span>
+            </template>
           </div>
-          <button class="del" aria-label="删除纪念日" @click="askRemove(a)"><Trash2 :size="17" stroke-width="1.8" /></button>
         </div>
       </div>
+
+      <!-- D6 提醒设置 sheet -->
+      <Sheet
+        v-if="reminding"
+        v-model:show="showRemind"
+        title="提醒设置"
+        confirm-text="保存"
+        :confirm-disabled="remindSaving"
+        @confirm="saveRemind"
+      >
+        <p class="s-hint">纪念日「{{ reminding.name }}」</p>
+        <select v-model.number="remindDays" class="s-input">
+          <option v-for="d in remindOptions" :key="d" :value="d">{{ d === 0 ? '当天提醒' : `提前 ${d} 天提醒` }}</option>
+        </select>
+      </Sheet>
 
       <!-- B9 删除确认 sheet -->
       <ConfirmSheet
         v-if="deleting"
         v-model:show="showDelete"
-        title="删除纪念日"
-        :message="`确定删除「${deleting.name}」？将进入回收站`"
-        confirm-text="删除"
+        :title="RECYCLE_TITLE"
+        :message="recycleMsg(deleting.name)"
+        :confirm-text="RECYCLE_CONFIRM"
         :confirm-danger="true"
         @confirm="confirmRemove"
       />
+      <AppToast :text="toast" @done="toast = ''" />
     </template>
   </div>
 </template>
@@ -458,6 +527,13 @@ onMounted(load)
   align-items: center;
   margin-bottom: 12px;
 }
+.leap-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
 .scroll-area {
   flex: 1;
   overflow-y: auto;
@@ -568,6 +644,33 @@ onMounted(load)
   opacity: 0.65;
   font-variant-numeric: tabular-nums;
 }
+/* D6 提醒入口：贴在「下次/每年」小字下方，点开改天数 */
+.meta-line.remind {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 11px;
+  color: var(--primary-deep);
+  cursor: pointer;
+  width: max-content;
+}
+.s-hint {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--muted-ink);
+}
+.s-input {
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 14px;
+}
 .count {
   display: flex;
   flex-direction: column;
@@ -607,18 +710,9 @@ onMounted(load)
 .days-num.done small {
   font-size: 10px;
 }
-.del {
-  border: none;
-  background: none;
+.days-invalid {
+  font-size: 12px;
   color: var(--muted-ink);
-  cursor: pointer;
-  padding: 8px;
-  border-radius: 10px;
-  flex-shrink: 0;
-}
-.del:active {
-  background: rgba(255, 69, 58, 0.12);
-  color: var(--danger);
 }
 .empty {
   text-align: center;

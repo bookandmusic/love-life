@@ -1,49 +1,39 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
-import { Heart, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
-import { api, fullUrl, fmtDateTime } from '../api/client'
-import { mediaUrl } from '../utils/mediaUrls'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { Heart, Music, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
+import { api, errText, fmtDateTime } from '../api/client'
+import AppToast from '../components/AppToast.vue'
+import ConfirmSheet from '../components/ConfirmSheet.vue'
+import MediaViewer from '../components/MediaViewer.vue'
+import { mediaSrc, type Post } from '../types'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import { useSpace } from '../stores/space'
+import { useAuth } from '../stores/auth'
+import { usePostInteractions } from '../composables/postInteractions'
+import { useLongPress } from '../composables/useLongPress'
+import { KEYS, onceHint } from '../utils/storage'
+import { RECYCLE_CONFIRM, RECYCLE_TITLE, RECYCLE_TOAST, peerNotice, recycleMsg } from '../utils/deleteCopy'
 
-const router = useRouter()
-function goDetail(id: number) {
-  router.push(`/posts/${id}`)
-}
+const route = useRoute()
 
-interface MediaItem {
-  id: number
-  kind: string
-  thumb_url: string
-  url?: string
+// D8 那年今日（REQUIREMENTS:110）：?memories=1 只列同月同日回忆（服务端过滤后再分页）
+const memoriesOnly = computed(() => route.query.memories === '1')
+function listPath(p: number): string {
+  return `/api/v1/posts?page=${p}&page_size=${PAGE_SIZE}${memoriesOnly.value ? '&memories=1' : ''}`
 }
 
 interface CommentItem {
   id: number
+  author_id: number
   author: string
   content: string
   created_at: string
 }
 
-interface PostItem {
-  id: number
-  author_id: number
-  author: string
-  title: string
-  content: string
-  mood: string
-  location_name: string
-  created_at: string
-  media: MediaItem[]
-  like_count: number
-  liked: boolean
-  favorite_count: number
-  favorited: boolean
-  comment_count: number
-}
+type PostItem = Post
 
 const spaceStore = useSpace()
 
@@ -58,6 +48,21 @@ const expanded = ref<number | null>(null)
 const comments = ref<Record<number, CommentItem[]>>({})
 const commentText = ref('')
 
+// 全屏媒体查看器：列表页直接看大图（原先只能跳详情页）
+const viewer = ref<{ index: number; post: PostItem } | null>(null)
+function openViewer(p: PostItem, index: number) {
+  viewer.value = { index, post: p }
+}
+// ?focus=<id>：通知 / 首页回忆卡 / 相册跳过来时定位并短暂高亮该条（与地图 D3 同做法）
+const hlId = ref<number | null>(null)
+const auth = useAuth()
+// 长按 = 低频操作入口（移入回收站）：卡片与评论行共用一套手势
+const { pressing, down: pressDown, move: pressMove, up: pressUp, click: pressClick } = useLongPress()
+const deletingPost = ref<PostItem | null>(null)
+const showDeletePost = ref(false)
+const deletingComment = ref<CommentItem | null>(null)
+const showDeleteComment = ref(false)
+
 const noMore = computed(() => posts.value.length > 0 && posts.value.length >= total.value)
 const PAGE_SIZE = 20
 
@@ -66,13 +71,13 @@ async function load() {
   loading.value = true
   error.value = ''
   try {
-    const res = await api<{ items: PostItem[]; total: number }>(`/api/v1/posts?page=1&page_size=${PAGE_SIZE}`)
+    const res = await api<{ items: PostItem[]; total: number }>(listPath(1))
     posts.value = res.items
     total.value = res.total
     page.value = 1
     await spaceStore.load()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -84,12 +89,11 @@ async function loadMore() {
   loadingMore.value = true
   try {
     const next = page.value + 1
-    const res = await api<{ items: PostItem[] }>(`/api/v1/posts?page=${next}&page_size=${PAGE_SIZE}`)
+    const res = await api<{ items: PostItem[] }>(listPath(next))
     posts.value.push(...res.items)
     page.value = next
   } catch (e) {
-    toast.value = e instanceof Error ? e.message : '加载失败'
-    setTimeout(() => (toast.value = ''), 1800)
+    toast.value = errText(e, '加载失败')
   } finally {
     loadingMore.value = false
   }
@@ -100,25 +104,10 @@ function onScroll(e: Event) {
   if (el.scrollTop + el.clientHeight >= el.scrollHeight - 120) loadMore()
 }
 
-async function toggleLike(p: PostItem) {
-  try {
-    const res = await api<{ liked: boolean }>(`/api/v1/posts/${p.id}/like`, { method: 'POST' })
-    p.liked = res.liked
-    p.like_count += res.liked ? 1 : -1
-  } catch (e) {
-    toast.value = e instanceof Error ? e.message : '操作失败'
-  }
-}
-
-async function toggleFav(p: PostItem) {
-  try {
-    const res = await api<{ favorited: boolean }>(`/api/v1/posts/${p.id}/favorite`, { method: 'POST' })
-    p.favorited = res.favorited
-    p.favorite_count += res.favorited ? 1 : -1
-  } catch (e) {
-    toast.value = e instanceof Error ? e.message : '操作失败'
-  }
-}
+// 点赞/收藏/评论：与详情页共用实现（composables/postInteractions.ts）
+const { toggleLike, toggleFav, submitComment: postComment } = usePostInteractions({
+  onError: (m) => (toast.value = m),
+})
 
 async function toggleComments(p: PostItem) {
   if (expanded.value === p.id) {
@@ -134,35 +123,98 @@ async function loadComments(postID: number) {
   try {
     const res = await api<{ items: CommentItem[] }>(`/api/v1/posts/${postID}/comments`)
     comments.value[postID] = res.items
-  } catch {
+  } catch (e) {
     comments.value[postID] = []
+    toast.value = errText(e, '评论加载失败')
   }
 }
 
 async function submitComment(p: PostItem) {
-  const text = commentText.value.trim()
-  if (!text) return
+  if (!(await postComment(p, commentText.value))) return
+  commentText.value = ''
+  await loadComments(p.id)
+}
+
+// 移入回收站：文案统一走 utils/deleteCopy（标题/按钮「移入回收站」+ 后果 + 恢复路径）
+function askDeletePost(p: PostItem) {
+  deletingPost.value = p
+  showDeletePost.value = true
+}
+function askDeleteComment(c: CommentItem) {
+  deletingComment.value = c
+  showDeleteComment.value = true
+}
+function postDeleteMsg(p: PostItem) {
+  return recycleMsg('这条动态', '动态里的照片与评论会一并移入回收站。' + peerNotice(auth.user?.id, p.author_id))
+}
+function commentDeleteMsg(c: CommentItem) {
+  return recycleMsg(`${c.author}：${c.content.slice(0, 20)}…`, peerNotice(auth.user?.id, c.author_id))
+}
+
+async function confirmDeletePost() {
+  if (!deletingPost.value) return
+  const id = deletingPost.value.id
   try {
-    await api(`/api/v1/posts/${p.id}/comments`, {
-      method: 'POST',
-      body: JSON.stringify({ content: text }),
-    })
-    commentText.value = ''
-    p.comment_count++
-    await loadComments(p.id)
+    await api(`/api/v1/posts/${id}`, { method: 'DELETE' })
+    // 原地移除，不整表重载（避免列表闪烁与滚动位置丢失）
+    posts.value = posts.value.filter((p) => p.id !== id)
+    total.value = Math.max(0, total.value - 1)
+    toast.value = RECYCLE_TOAST
   } catch (e) {
-    toast.value = e instanceof Error ? e.message : '评论失败'
+    toast.value = errText(e, '删除失败')
+  } finally {
+    deletingPost.value = null
   }
 }
 
-onMounted(load)
+async function confirmDeleteComment() {
+  if (!deletingComment.value) return
+  const c = deletingComment.value
+  // 评论只可能来自当前展开的那条动态
+  const pid = expanded.value
+  try {
+    await api(`/api/v1/comments/${c.id}`, { method: 'DELETE' })
+    if (pid !== null) {
+      comments.value[pid] = (comments.value[pid] ?? []).filter((x) => x.id !== c.id)
+      const owner = posts.value.find((x) => x.id === pid)
+      if (owner) owner.comment_count = Math.max(0, owner.comment_count - 1)
+    }
+    toast.value = RECYCLE_TOAST
+  } catch (e) {
+    toast.value = errText(e, '删除评论失败')
+  } finally {
+    deletingComment.value = null
+  }
+}
+
+async function applyFocus() {
+  const id = Number(route.query.focus)
+  if (!id) return
+  if (!posts.value.length) await load()
+  await nextTick()
+  document.getElementById(`post-${id}`)?.scrollIntoView({ block: 'center' })
+  hlId.value = id
+  window.setTimeout(() => {
+    hlId.value = null
+  }, 2400)
+}
+
+onMounted(async () => {
+  await load()
+  await applyFocus()
+  // 长按是隐形手势：首次进入提示一次（本地记住后不再打扰）
+  if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按动态或评论可移入回收站'
+})
+// 同一页面内切换过滤条件（首页「那年今日」入口）需重载，否则仍是上一份列表
+watch(memoriesOnly, () => void load())
+watch(() => route.query.focus, () => void applyFocus())
 </script>
 
 <template>
   <div class="posts-page">
     <!-- 毛玻璃导航栏 -->
     <header class="navbar glass">
-      <span class="title">动态</span>
+      <span class="title">{{ memoriesOnly ? '那年今日' : '动态' }}</span>
       <NavActions />
     </header>
 
@@ -171,10 +223,23 @@ onMounted(load)
       <ErrorState v-else-if="error" :error="error" :retry="load" />
       <div v-else-if="posts.length === 0" class="empty">
         <PenLine :size="32" stroke-width="1.2" class="empty-ic" />
-        <p>还没有动态，点右下角 + 记录第一条吧</p>
+        <p v-if="memoriesOnly">今天还没有同月同日的回忆</p>
+        <p v-else>还没有动态，点右下角 + 记录第一条吧</p>
       </div>
 
-      <article v-for="p in posts" :key="p.id" class="post">
+      <article
+        v-for="p in posts"
+        :id="`post-${p.id}`"
+        :key="p.id"
+        class="post pressable"
+        :class="{ hl: hlId === p.id, pressing: pressing === p.id }"
+        @pointerdown="pressDown($event, p.id, () => askDeletePost(p))"
+        @pointermove="pressMove"
+        @pointerup="pressUp"
+        @pointerleave="pressUp"
+        @pointercancel="pressUp"
+        @click="pressClick"
+      >
         <div class="head">
           <div class="mini" :class="spaceStore.roleClass(p.author_id)">{{ p.author.slice(0, 1) }}</div>
           <div class="who">
@@ -184,20 +249,22 @@ onMounted(load)
           <span v-if="p.mood" class="mood">{{ p.mood }}</span>
         </div>
 
-        <h3 v-if="p.title" class="p-title" @click="goDetail(p.id)">{{ p.title }}</h3>
-        <p class="p-text" @click="goDetail(p.id)">{{ p.content }}</p>
+        <p class="p-text">{{ p.content }}</p>
 
         <div
           v-if="p.media.length"
           class="media-grid"
           :class="{ single: p.media.length === 1, dual: p.media.length === 2 }"
-          @click="goDetail(p.id)"
         >
-          <template v-for="m in p.media" :key="m.id">
-            <video v-if="m.kind === 'video'" class="ph" controls playsinline :poster="fullUrl(mediaUrl(m).thumb)" preload="none" @click.stop>
-              <source :src="fullUrl(mediaUrl(m).raw)" />
+          <template v-for="(m, mi) in p.media" :key="m.id">
+            <video v-if="m.kind === 'video'" class="ph" controls playsinline :poster="mediaSrc(m, 'thumb')" preload="none" @pointerdown.stop @click.stop>
+              <source :src="mediaSrc(m, 'raw')" />
             </video>
-            <img v-else class="ph" :src="fullUrl(mediaUrl(m).thumb)" loading="lazy" alt="" />
+            <div v-else-if="m.kind === 'audio'" class="ph audio-ph" @click="openViewer(p, mi)">
+              <Music :size="22" stroke-width="1.6" />
+              <audio controls preload="none" :src="mediaSrc(m, 'raw')" @pointerdown.stop @click.stop />
+            </div>
+            <img v-else class="ph" :src="mediaSrc(m, 'thumb')" loading="lazy" alt="" @click="openViewer(p, mi)" />
           </template>
         </div>
 
@@ -205,7 +272,7 @@ onMounted(load)
           <MapPin :size="13" stroke-width="2" />{{ p.location_name }}
         </div>
 
-        <div class="actions">
+        <div class="actions" @pointerdown.stop>
           <button class="act" :class="{ on: p.liked }" @click="toggleLike(p)">
             <Heart :size="18" :fill="p.liked ? 'currentColor' : 'none'" stroke-width="1.8" />
             <b class="num">{{ p.like_count || '' }}</b>
@@ -221,12 +288,23 @@ onMounted(load)
         </div>
 
         <div v-if="expanded === p.id" class="comments">
-          <div v-for="c in comments[p.id] ?? []" :key="c.id" class="comment">
+          <div
+            v-for="c in comments[p.id] ?? []"
+            :key="c.id"
+            class="comment pressable"
+            :class="{ pressing: pressing === c.id }"
+            @pointerdown.stop="pressDown($event, c.id, () => askDeleteComment(c))"
+            @pointermove="pressMove"
+            @pointerup="pressUp"
+            @pointerleave="pressUp"
+            @pointercancel="pressUp"
+            @click="pressClick"
+          >
             <b>{{ c.author }}</b>
             <span>{{ c.content }}</span>
           </div>
           <p v-if="(comments[p.id] ?? []).length === 0" class="no-comment">还没有评论</p>
-          <div class="comment-input">
+          <div class="comment-input" @pointerdown.stop>
             <input v-model="commentText" placeholder="说点什么…" @keyup.enter="submitComment(p)" />
             <button @click="submitComment(p)">发送</button>
           </div>
@@ -236,10 +314,34 @@ onMounted(load)
       <p v-if="loadingMore" class="load-more">加载中…</p>
       <p v-else-if="noMore && posts.length >= PAGE_SIZE" class="load-more">没有更多了</p>
     </div>
-    <!-- B9 错误 toast -->
-    <Transition name="fade">
-      <div v-if="toast" class="toast" @click="toast = ''">{{ toast }}</div>
-    </Transition>
+    <!-- 移入回收站：卡片 / 评论行长按触发 -->
+    <ConfirmSheet
+      v-if="deletingPost"
+      v-model:show="showDeletePost"
+      :title="RECYCLE_TITLE"
+      :message="postDeleteMsg(deletingPost)"
+      :confirm-text="RECYCLE_CONFIRM"
+      :confirm-danger="true"
+      @confirm="confirmDeletePost"
+    />
+    <ConfirmSheet
+      v-if="deletingComment"
+      v-model:show="showDeleteComment"
+      :title="RECYCLE_TITLE"
+      :message="commentDeleteMsg(deletingComment)"
+      :confirm-text="RECYCLE_CONFIRM"
+      :confirm-danger="true"
+      @confirm="confirmDeleteComment"
+    />
+    <!-- 全屏媒体查看器（列表页直接看大图） -->
+    <MediaViewer
+      v-if="viewer"
+      :items="viewer.post.media"
+      :start="viewer.index"
+      mode="post"
+      @close="viewer = null"
+    />
+    <AppToast :text="toast" @done="toast = ''" />
   </div>
 </template>
 
@@ -282,6 +384,21 @@ onMounted(load)
   margin-bottom: 14px;
   overflow: hidden;
   box-shadow: var(--shadow);
+}
+/* ?focus=<id> 定位高亮（与地图点位列表同一套语言） */
+.post.hl {
+  box-shadow: 0 0 0 2px var(--primary), var(--shadow);
+}
+/* 音频媒体格（原详情页能力，列表页补齐） */
+.audio-ph {
+  display: grid;
+  place-items: center;
+  gap: 6px;
+  color: var(--muted-ink);
+  background: var(--bg);
+}
+.audio-ph audio {
+  width: 100%;
 }
 .head {
   display: flex;
@@ -332,10 +449,6 @@ onMounted(load)
 :root[data-theme='dark'] .mood {
   background: rgba(255, 143, 171, 0.18);
   color: #ffb4c2;
-}
-.p-title {
-  font-size: 16px;
-  margin: 10px 14px 0;
 }
 .p-text {
   padding: 8px 14px 0;
@@ -451,26 +564,4 @@ onMounted(load)
   opacity: 0.55;
   margin-bottom: 10px;
 }
-.error {
-  text-align: center;
-  color: var(--danger);
-  padding: 40px 0;
-}
-/* B9 错误 toast */
-.toast {
-  position: fixed;
-  bottom: calc(16px + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0,0,0,0.78);
-  color: #fff;
-  font-size: 14px;
-  padding: 10px 20px;
-  border-radius: 12px;
-  z-index: 1100;
-  max-width: 90vw;
-  text-align: center;
-}
-.fade-enter-active, .fade-leave-active { transition: opacity .22s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
 </style>

@@ -1,7 +1,18 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { getToken } from '../api/client'
 import { useAuth } from '../stores/auth'
-import { useMode } from '../stores/mode'
+import { KEYS } from '../utils/storage'
+
+// D5 一级 tab（只记这五个；详情页/发布页不记，避免冷启动落到需要参数或不适合停留的页面）
+const TABS = ['/home', '/posts', '/albums', '/anniversaries', '/map']
+
+/** '/' 的落地页：AI 模式→对话页；传统模式→上次一级 tab（REQUIREMENTS:83），无记录则首页 */
+function startRoute(): string {
+  // 直读 localStorage 而不经 Pinia：record redirect 在导航最早期执行，避免依赖 store 安装顺序
+  if (localStorage.getItem(KEYS.MODE) === 'ai') return '/chat'
+  const last = localStorage.getItem(KEYS.LAST_ROUTE) || ''
+  return TABS.includes(last) ? last : '/home'
+}
 
 const router = createRouter({
   history: createWebHistory(),
@@ -14,14 +25,13 @@ const router = createRouter({
       path: '/',
       component: () => import('../views/MainView.vue'),
       children: [
-        { path: '', redirect: '/home' },
+        { path: '', redirect: startRoute },
         { path: 'home', component: () => import('../views/HomeView.vue') },
         { path: 'posts', component: () => import('../views/PostsView.vue') },
         { path: 'albums', component: () => import('../views/AlbumsView.vue') },
         { path: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'map', component: () => import('../views/MapView.vue') },
         { path: 'anniversaries', component: () => import('../views/AnniversariesView.vue') },
-        { path: 'posts/:id', component: () => import('../views/PostDetailView.vue') },
         { path: 'albums/:id', component: () => import('../views/AlbumDetailView.vue') },
       ],
     },
@@ -36,10 +46,12 @@ router.beforeEach(async (to) => {
     await auth.restore()
     if (!auth.user) return '/login'
   }
-  if (to.path === '/' && auth.user) {
-    return useMode().mode === 'ai' ? '/chat' : '/home'
-  }
   return true
+})
+
+// D5：记住上次停留的一级 tab（只记 TABS，详情页等不覆盖）
+router.afterEach((to) => {
+  if (TABS.includes(to.path)) localStorage.setItem(KEYS.LAST_ROUTE, to.path)
 })
 
 export default router

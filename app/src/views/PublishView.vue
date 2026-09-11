@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronLeft, MapPin, Send, ImagePlus, Music, Play, X, Search, Loader2 } from 'lucide-vue-next'
-import { api } from '../api/client'
+import { api, errText } from '../api/client'
+import AppToast from '../components/AppToast.vue'
 import Sheet from '../components/Sheet.vue'
 import MiniMapPicker from '../components/MiniMapPicker.vue'
 
@@ -18,15 +19,11 @@ const customMood = ref('')
 const MAX_FILES = 9
 const files = ref<File[]>([])
 const previews = ref<{ url: string; kind: string }[]>([])
-const fileInput = ref<HTMLInputElement | null>(null)
 const uploading = ref(false)
 const error = ref('')
 const toast = ref('')
-let toastTimer: number | undefined
 function showToast(msg: string) {
   toast.value = msg
-  if (toastTimer) window.clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => (toast.value = ''), 1800)
 }
 const acceptTypes = 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav,audio/x-wav'
 
@@ -146,7 +143,7 @@ async function submit() {
     await api('/api/v1/posts', { method: 'POST', body: JSON.stringify(body) })
     router.replace('/posts')
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '发布失败'
+    error.value = errText(e, '发布失败')
   } finally {
     uploading.value = false
   }
@@ -195,7 +192,7 @@ async function submit() {
           </button>
         </div>
         <label v-if="!atLimit" class="add-tile" :class="{ single: previews.length === 0 }">
-          <input ref="fileInput" type="file" multiple :accept="acceptTypes" @change="pickFiles" />
+          <input type="file" multiple :accept="acceptTypes" @change="pickFiles" />
           <ImagePlus :size="20" stroke-width="1.8" />
           <span>添加</span>
         </label>
@@ -253,9 +250,7 @@ async function submit() {
       </p>
     </Sheet>
 
-    <Transition name="fade">
-      <div v-if="toast" class="toast" @click="toast = ''">{{ toast }}</div>
-    </Transition>
+    <AppToast :text="toast" bottom="calc(30px + env(safe-area-inset-bottom))" @done="toast = ''" />
   </section>
 </template>
 
@@ -462,28 +457,6 @@ async function submit() {
   margin-top: 4px;
   font-size: 12px;
   color: var(--muted-ink);
-}
-.toast {
-  position: fixed;
-  left: 50%;
-  bottom: calc(30px + env(safe-area-inset-bottom));
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.78);
-  color: #fff;
-  font-size: 14px;
-  padding: 10px 20px;
-  border-radius: 12px;
-  z-index: 2200;
-  max-width: 90vw;
-  text-align: center;
-}
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.22s ease;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
 }
 .loc-row {
   margin-bottom: 10px;

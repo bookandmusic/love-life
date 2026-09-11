@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, Music, Play, Plus, Trash2 } from 'lucide-vue-next'
-import { api, fullUrl } from '../api/client'
+import { ChevronLeft, Music, Play, Plus } from 'lucide-vue-next'
+import { api, errText, fullUrl } from '../api/client'
+import AppToast from '../components/AppToast.vue'
 import { mediaUrl } from '../utils/mediaUrls'
+import { useViewer } from '../composables/useViewer'
+import { groupByMonth } from '../utils/dates'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
+import { useLongPress } from '../composables/useLongPress'
+import { REMOVE_CONFIRM, REMOVE_TITLE, REMOVE_TOAST, removeMsg } from '../utils/deleteCopy'
 import MediaViewer from '../components/MediaViewer.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 
 const route = useRoute()
 const router = useRouter()
-const albumID = String(route.params.id)
-const albumIdNum = Number(albumID)
+const albumID = computed(() => String(route.params.id))
+const albumIdNum = computed(() => Number(albumID.value))
 
 interface MediaItem {
   id: number
@@ -36,13 +41,13 @@ const loading = ref(false)
 async function load() {
   loading.value = true
   try {
-    const res = await api<{ album: { name: string; type: string }; media: MediaItem[] }>(`/api/v1/albums/${albumID}`)
+    const res = await api<{ album: { name: string; type: string }; media: MediaItem[] }>(`/api/v1/albums/${albumID.value}`)
     album.value = res.album
     media.value = res.media
   } catch (e) {
     album.value = null
     media.value = []
-    actionError.value = e instanceof Error ? e.message : '加载失败'
+    actionError.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -52,11 +57,11 @@ async function load() {
 const showRemovePhoto = ref(false)
 const removingPhoto = ref<MediaItem | null>(null)
 // 全屏查看器（iOS）
-const viewer = ref<{ index: number } | null>(null)
-let longPressFired = false
-let pressedIndex = 0
-// B9 删除相册 sheet
-const showDeleteAlbum = ref(false)
+const { viewer, openViewer, closeViewer } = useViewer()
+// 长按 = 移出当前相册（与其它列表同一套手势：500ms、位移 >8px 取消、按住有反馈）
+const { pressing, down: pressDown, move: pressMove, up: pressUp, click: pressClick } = useLongPress()
+// 成功提示（移出相册用；错误仍走 actionError 常驻待点关闭）
+const toast = ref('')
 // B9 错误 toast
 const actionError = ref('')
 
@@ -66,25 +71,8 @@ const pickLoading = ref(false)
 const allTimeline = ref<TimelineItem[]>([])
 const picked = ref<number[]>([])
 
-function monthKey(m: TimelineItem): string {
-  return (m.taken_at || '').slice(0, 7) || 'unknown'
-}
-function monthLabel(key: string): string {
-  if (key === 'unknown') return '其他'
-  const [y, mo] = key.split('-')
-  return `${y}年${mo ? Number(mo) : ''}月`
-}
-const pickGroups = computed(() => {
-  const groups = new Map<string, TimelineItem[]>()
-  for (const m of allTimeline.value) {
-    const k = monthKey(m)
-    if (!groups.has(k)) groups.set(k, [])
-    groups.get(k)!.push(m)
-  }
-  return [...groups.entries()]
-    .sort((a, b) => (a[0] === 'unknown' ? 1 : b[0] === 'unknown' ? -1 : b[0].localeCompare(a[0])))
-    .map(([key, items]) => ({ key, label: monthLabel(key), items }))
-})
+// 月分组：与时间轴 tab 共用同一实现（utils/dates.groupByMonth）
+const pickGroups = computed(() => groupByMonth(allTimeline.value, (m) => m.taken_at || ''))
 
 function isLocked(m: TimelineItem): boolean {
   return m.album_id != null
@@ -128,40 +116,31 @@ function togglePick(id: number) {
 async function confirmAdd() {
   if (picked.value.length === 0) return
   try {
-    await api(`/api/v1/albums/${albumID}/photos`, {
+    await api(`/api/v1/albums/${albumID.value}/photos`, {
       method: 'POST',
       body: JSON.stringify({ media_ids: picked.value }),
     })
     closePick()
     await load()
   } catch (e) {
-    actionError.value = e instanceof Error ? e.message : '添加失败'
+    actionError.value = errText(e, '添加失败')
   }
 }
 
-// C3 长按照片弹「移出相册」；短按（<500ms）打开全屏查看器
-let longPressTimer: number | null = null
-function onPhotoPressStart(m: MediaItem, index: number) {
-  longPressFired = false
-  pressedIndex = index
+// 长按 = 移出当前相册（与其它列表同一套手势：500ms、位移 >8px 取消、按住有反馈）
+function askRemovePhoto(m: MediaItem) {
+  // 只有手动相册能移出（月度相册按月份自动组织，DESIGN §12.2）
   if (album.value?.type !== 'manual') return
-  longPressTimer = window.setTimeout(() => {
-    longPressFired = true
-    removingPhoto.value = m
-    showRemovePhoto.value = true
-  }, 500)
+  removingPhoto.value = m
+  showRemovePhoto.value = true
 }
-function onPhotoPressEnd() {
-  if (longPressTimer !== null) {
-    clearTimeout(longPressTimer)
-    longPressTimer = null
-  }
-  if (!longPressFired) {
-    viewer.value = { index: pressedIndex }
-  }
+function onPhotoClick(index: number, e: MouseEvent) {
+  pressClick(e)
+  if (e.defaultPrevented) return // 长按已触发：不再开大图
+  openViewer(index)
 }
 function onViewerRemove(id: string | number) {
-  viewer.value = null
+  closeViewer()
   const m = media.value.find((x) => String(x.id) === String(id))
   if (m) {
     removingPhoto.value = m
@@ -173,27 +152,24 @@ async function confirmRemovePhoto() {
   if (!removingPhoto.value) return
   const mid = removingPhoto.value.id
   try {
-    await api(`/api/v1/albums/${albumID}/photos`, {
+    await api(`/api/v1/albums/${albumID.value}/photos`, {
       method: 'DELETE',
       body: JSON.stringify({ media_ids: [mid] }),
     })
     media.value = media.value.filter((m) => m.id !== mid)
+    toast.value = REMOVE_TOAST
   } catch (e) {
-    actionError.value = e instanceof Error ? e.message : '移出失败'
+    actionError.value = errText(e, '移出失败')
   } finally {
     removingPhoto.value = null
   }
 }
 
-function askDeleteAlbum() { showDeleteAlbum.value = true }
-async function confirmDeleteAlbum() {
-  try {
-    await api(`/api/v1/albums/${albumID}`, { method: 'DELETE' })
-    router.replace('/albums')
-  } catch (e) {
-    actionError.value = e instanceof Error ? e.message : '删除失败'
-  }
-}
+// 卸载时清掉可能仍在计时的长按（否则 500ms 后回调会去改已销毁组件的状态）
+
+
+// 路由参数变化（如相册间跳转）必须重载：此前只在 setup 时取一次，切换后仍是旧数据
+watch(() => route.params.id, load)
 
 onMounted(load)
 </script>
@@ -205,11 +181,6 @@ onMounted(load)
         <ChevronLeft :size="22" stroke-width="2.5" />
       </button>
       <span class="title">{{ album?.name ?? '…' }}</span>
-      <div class="nav-right">
-        <button v-if="album?.type === 'manual'" class="nav-btn danger" aria-label="删除" @click="askDeleteAlbum">
-          <Trash2 :size="16" stroke-width="1.8" />
-        </button>
-      </div>
     </header>
 
     <div class="body">
@@ -217,18 +188,21 @@ onMounted(load)
       <div v-else class="grid">
         <p v-if="media.length === 0" class="empty">相册还是空的</p>
         <template v-for="(m, index) in media" :key="m.id">
-          <div class="thumb-cell"
-            @pointerdown="onPhotoPressStart(m, index)"
-            @pointerup="onPhotoPressEnd"
-            @pointerleave="onPhotoPressEnd"
-            @pointercancel="onPhotoPressEnd"
+          <div class="thumb-cell pressable"
+            :class="{ pressing: pressing === m.id }"
+            @pointerdown="pressDown($event, m.id, () => askRemovePhoto(m))"
+            @pointermove="pressMove"
+            @pointerup="pressUp"
+            @pointerleave="pressUp"
+            @pointercancel="pressUp"
+            @click="onPhotoClick(index, $event)"
           >
-            <video v-if="m.kind === 'video'" class="thumb" controls playsinline :poster="fullUrl(mediaUrl(m).thumb)" preload="none">
+            <video v-if="m.kind === 'video'" class="thumb" controls playsinline :poster="fullUrl(mediaUrl(m).thumb)" preload="none" @pointerdown.stop>
               <source :src="fullUrl(mediaUrl(m).raw)" />
             </video>
             <div v-else-if="m.kind === 'audio'" class="thumb audio-thumb">
               <Music :size="28" stroke-width="1.6" />
-              <audio controls preload="none" :src="fullUrl(mediaUrl(m).raw)" />
+              <audio controls preload="none" :src="fullUrl(mediaUrl(m).raw)" @pointerdown.stop />
             </div>
             <img v-else :src="fullUrl(mediaUrl(m).thumb)" class="thumb" loading="lazy" alt="" />
           </div>
@@ -246,7 +220,7 @@ onMounted(load)
       :start="viewer.index"
       mode="album"
       :album-name="album?.name"
-      @close="viewer = null"
+      @close="closeViewer"
       @remove="onViewerRemove"
     />
 
@@ -254,25 +228,13 @@ onMounted(load)
     <ConfirmSheet
       v-if="removingPhoto"
       v-model:show="showRemovePhoto"
-      title="移出当前相册"
-      :message="`确定将这张照片从「${album?.name ?? ''}」中移出？照片本身不会删除`"
-      confirm-text="移出"
-      :confirm-danger="true"
+      :title="REMOVE_TITLE"
+      :message="removeMsg(album?.name ?? '')"
+      :confirm-text="REMOVE_CONFIRM"
       @confirm="confirmRemovePhoto"
     />
-    <!-- B9 删除相册 sheet -->
-    <ConfirmSheet
-      v-model:show="showDeleteAlbum"
-      title="删除相册"
-      message="相册将删除，照片本身不受影响（回到未归属状态）"
-      confirm-text="删除"
-      :confirm-danger="true"
-      @confirm="confirmDeleteAlbum"
-    />
-    <!-- B9 错误 toast -->
-    <Transition name="fade">
-      <div v-if="actionError" class="toast" @click="actionError = ''">{{ actionError }}</div>
-    </Transition>
+    <AppToast :text="actionError" :duration="0" @done="actionError = ''" />
+    <AppToast :text="toast" @done="toast = ''" />
 
     <!-- 选择页：与相册时间轴 tab 视觉一致（按月分组） -->
     <div v-if="showPick" class="pick-overlay">
@@ -355,9 +317,6 @@ onMounted(load)
   padding: 4px;
   display: flex;
   align-items: center;
-}
-.nav-btn.danger {
-  color: var(--danger);
 }
 .body {
   flex: 1;
@@ -490,24 +449,6 @@ onMounted(load)
   border-radius: 3px;
   pointer-events: none;
 }
-/* B9 错误 toast */
-.toast {
-  position: fixed;
-  bottom: calc(16px + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0,0,0,0.78);
-  color: #fff;
-  font-size: 14px;
-  padding: 10px 20px;
-  border-radius: 12px;
-  z-index: 1100;
-  max-width: 90vw;
-  text-align: center;
-}
-.fade-enter-active, .fade-leave-active { transition: opacity .22s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-
 /* —— 选择页（与时间轴 tab 一致的全屏层） —— */
 .pick-overlay {
   position: fixed;
@@ -516,6 +457,19 @@ onMounted(load)
   background: var(--bg);
   display: flex;
   flex-direction: column;
+}
+/* 桌面档：选择页收进应用卡片（与外壳/弹窗共用框架令牌） */
+@media (min-width: 1280px) {
+  .pick-overlay {
+    top: var(--frame-inset);
+    bottom: var(--frame-inset);
+    left: 50%;
+    right: auto;
+    width: min(var(--frame-max), calc(100% - 2 * var(--frame-inset)));
+    transform: translateX(-50%);
+    border-radius: var(--frame-radius);
+    overflow: hidden;
+  }
 }
 .pick-header {
   flex-shrink: 0;

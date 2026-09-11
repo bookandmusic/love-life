@@ -2,14 +2,17 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ChevronLeft, ChevronRight, List, Map as MapIcon, MapPin, Minus, Pin, Plus, RefreshCw, Search, Trash2,
+  ChevronLeft, ChevronRight, List, Map as MapIcon, MapPin, Minus, Plus, RefreshCw, Search,
 } from 'lucide-vue-next'
-import { api } from '../api/client'
+import { api, errText } from '../api/client'
+import AppToast from '../components/AppToast.vue'
 import NavActions from '../components/NavActions.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
-import Sheet from '../components/Sheet.vue'
 import MiniMapPicker from '../components/MiniMapPicker.vue'
-import { latLonToTile, tileToLatLon, tileUrl, TILE } from '../utils/mapTiles'
+import { useLongPress } from '../composables/useLongPress'
+import { KEYS, onceHint } from '../utils/storage'
+import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg } from '../utils/deleteCopy'
+import { latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
 
 // ============ 瓦片引擎（统一实现见 utils/mapTiles.ts：APP 统一请求后端 /api/v1/map/tile，密钥不下发） ============
 const MAX_ZOOM = 12
@@ -44,24 +47,44 @@ const mapCenter = ref(latLonToTile(35, 104, 4))
 const tiles = ref<Array<{ key: string; px: number; py: number; url: string | null }>>([])
 const gridOrigin = ref({ x: 0, y: 0 })
 
-// 容器尺寸：用 ref 跟踪以避免 getElementById
+// 容器/网格尺寸：用 ref 跟踪以避免 getElementById
 const containerW = ref(0)
 const containerH = ref(0)
 const containerRef = ref<HTMLDivElement | null>(null)
+const gridRef = ref<HTMLDivElement | null>(null)
 let resizeObs: ResizeObserver | null = null
+let detachInteractions: (() => void) | null = null
+
+// 地图挂载：容器与网格随 newForm 切换（v-if）销毁重建，所以「测尺寸 + 挂观察器 + 绑手势 + 布局」
+// 必须整体重跑一次；否则重建后 containerW 恒为 0，layout() 直接早退（地图空白）且手势全丢。
+function attachMap() {
+  detachInteractions?.()
+  detachInteractions = null
+  resizeObs?.disconnect()
+  resizeObs = null
+  const grid = gridRef.value
+  const container = containerRef.value
+  if (!grid || !container) return
+  containerW.value = container.clientWidth
+  containerH.value = container.clientHeight
+  resizeObs = new ResizeObserver(() => {
+    if (!containerRef.value) return
+    containerW.value = containerRef.value.clientWidth
+    containerH.value = containerRef.value.clientHeight
+    layout()
+  })
+  resizeObs.observe(container)
+  detachInteractions = bindInteractions(grid)
+  layout()
+}
+
+// 网格/容器被 v-if 重建后自动重挂（首帧也走这里；attachMap 自带 teardown，重复调用安全）
+watch([gridRef, containerRef], () => nextTick(attachMap))
 
 // 高亮
 const hlPoint = ref<number | null>(null)
 
-// FAB「添加地点」入口：?new=1 → 建点模式（点选 → 命名 sheet → 提交）
-const creating = ref(false)
-const tapToPick = ref(false) // 点选模式标志
-const pickedCoord = ref<{ lat: number; lng: number } | null>(null)
-const newName = ref('')
-const newDesc = ref('')
-const newVisitDate = ref('')
 const saving = ref(false)
-const createError = ref('')
 
 // C3 删除点位 sheet
 const showDeletePoint = ref(false)
@@ -90,8 +113,9 @@ async function searchGeoForm() {
       `/api/v1/geocode?q=${encodeURIComponent(q)}`,
     )
     npCandidates.value = res.candidates ?? []
-  } catch {
+  } catch (e) {
     npCandidates.value = []
+    npErr.value = errText(e, '地点搜索失败，请检查网络后重试')
   } finally {
     npSearching.value = false
   }
@@ -125,9 +149,8 @@ async function saveNewPointForm() {
     await loadPoints()
     layout()
     toast.value = '已添加'
-    setTimeout(() => { if (toast.value === '已添加') toast.value = '' }, 1500)
   } catch (e) {
-    npErr.value = e instanceof Error ? e.message : '添加失败'
+    npErr.value = errText(e, '添加失败')
   } finally {
     saving.value = false
   }
@@ -145,24 +168,25 @@ onMounted(async () => {
   if (route.query.new === '1') {
     newForm.value = true
   }
-  nextTick(() => {
-    layout()
-    // 跟踪容器尺寸
-    if (containerRef.value) {
-      containerW.value = containerRef.value.clientWidth
-      containerH.value = containerRef.value.clientHeight
-      resizeObs = new ResizeObserver(() => {
-        if (!containerRef.value) return
-        containerW.value = containerRef.value.clientWidth
-        containerH.value = containerRef.value.clientHeight
-        layout()
-      })
-      resizeObs.observe(containerRef.value)
-    }
-    bindDrag()
-    bindTouch()
-  })
+  nextTick(attachMap)
+  void applyFocus()
+  // 长按是隐形手势：首次进入提示一次（本地记住）
+  if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按足迹可移入回收站'
 })
+
+// D3：通知「足迹」→ /map?focus=<id>：切回地图视图并居中高亮该点位
+async function applyFocus() {
+  const id = Number(route.query.focus)
+  if (!id) return
+  newForm.value = false
+  if (!points.value.length) await loadPoints()
+  view.value = 'map'
+  await nextTick()
+  attachMap() // 关闭完整表单后容器会重建，先重挂再居中
+  centerOnPoint(id)
+}
+
+watch(() => route.query.focus, () => void applyFocus())
 
 // ?new=1 → 打开完整表单页（FAB「地点」入口；watch 支持停留本页时重复触发）
 watch(
@@ -182,6 +206,8 @@ watch(
 onBeforeUnmount(() => {
   resizeObs?.disconnect()
   resizeObs = null
+  detachInteractions?.()
+  detachInteractions = null
 })
 
 async function loadPoints() {
@@ -191,7 +217,7 @@ async function loadPoints() {
     const res = await api<{ items: PointItem[] }>('/api/v1/map/points')
     points.value = res.items
   } catch (e) {
-    loadError.value = e instanceof Error ? e.message : '加载失败'
+    loadError.value = errText(e, '加载失败')
   } finally {
     loadingPoints.value = false
   }
@@ -201,7 +227,7 @@ async function loadPoints() {
 // 落标记会画在赤道正中（Null Island）污染地图；列表视图照常展示
 const mappablePoints = computed(() => points.value.filter((p) => p.lat !== 0 || p.lng !== 0))
 
-// 重新计算瓦片布局
+// 重新计算瓦片布局（排布逻辑见 utils/mapTiles.tileGrid；世界越界格 url 置空）
 function layout() {
   if (containerW.value === 0 || containerH.value === 0) return
   const cw = containerW.value
@@ -211,23 +237,12 @@ function layout() {
   const ox = centerWorldX - cw / 2
   const oy = centerWorldY - ch / 2
   gridOrigin.value = { x: ox, y: oy }
-  const startX = Math.floor(ox / TILE)
-  const startY = Math.floor(oy / TILE)
-  const endX = Math.ceil((ox + cw) / TILE)
-  const endY = Math.ceil((oy + ch) / TILE)
-  const list: Array<{ key: string; px: number; py: number; url: string | null }> = []
-  for (let tx = startX; tx <= endX; tx++) {
-    for (let ty = startY; ty <= endY; ty++) {
-      const inWorld = tx >= 0 && ty >= 0 && tx < Math.pow(2, mapZoom.value) && ty < Math.pow(2, mapZoom.value)
-      list.push({
-        key: `${mapZoom.value}/${tx}/${ty}`,
-        px: tx * TILE - ox,
-        py: ty * TILE - oy,
-        url: inWorld ? tileUrl(mapZoom.value, tx, ty) : null,
-      })
-    }
-  }
-  tiles.value = list
+  tiles.value = tileGrid(mapCenter.value.x, mapCenter.value.y, cw, ch).map((c) => ({
+    key: `${mapZoom.value}/${c.x}/${c.y}`,
+    px: c.left,
+    py: c.top,
+    url: tileInWorld(mapZoom.value, c.x, c.y) ? tileUrl(mapZoom.value, c.x, c.y) : null,
+  }))
 }
 
 function zoomMap(delta: number) {
@@ -292,7 +307,7 @@ let pinch: { active: boolean; startDist: number; startZoom: number; anchorLat: n
 
 // 提交未落地的平移：把 CSS transform 位移合入 mapCenter，并重新布局
 function commitPan() {
-  const g = document.getElementById('map-grid')
+  const g = gridRef.value
   if (g) g.style.transform = ''
   if (shiftX || shiftY) {
     if (containerW.value) {
@@ -309,38 +324,41 @@ function commitPan() {
 }
 
 // 鼠标 / 手写笔单指拖拽（触屏手势统一由 bindTouch 处理，避免双指捏合混入拖拽）
-function bindDrag() {
-  const grid = document.getElementById('map-grid')
-  if (!grid) return
-  grid.addEventListener('pointerdown', (e) => {
+function bindDrag(grid: HTMLElement): () => void {
+  const onDown = (e: PointerEvent) => {
     if (e.pointerType !== 'mouse' && e.pointerType !== 'pen') return
     const t = e.target as HTMLElement
     if (t.closest('.controls') || t.closest('.pin')) return
-    if (tapToPick.value) return // 点选模式下由点击处理
     hlPoint.value = null
     dragging = true
     lastX = e.clientX
     lastY = e.clientY
     try { grid.setPointerCapture(e.pointerId) } catch { /* ignore */ }
-  })
-  grid.addEventListener('pointermove', (e) => {
+  }
+  const onMove = (e: PointerEvent) => {
     if (!dragging) return
     if (e.pointerType !== 'mouse' && e.pointerType !== 'pen') { dragging = false; return }
-    const dx = e.clientX - lastX
-    const dy = e.clientY - lastY
+    shiftX += e.clientX - lastX
+    shiftY += e.clientY - lastY
     lastX = e.clientX
     lastY = e.clientY
-    shiftX += dx
-    shiftY += dy
     grid.style.transform = `translate(${shiftX}px, ${shiftY}px)`
-  })
+  }
   const end = () => {
     if (!dragging) return
     dragging = false
     commitPan()
   }
+  grid.addEventListener('pointerdown', onDown)
+  grid.addEventListener('pointermove', onMove)
   grid.addEventListener('pointerup', end)
   grid.addEventListener('pointercancel', end)
+  return () => {
+    grid.removeEventListener('pointerdown', onDown)
+    grid.removeEventListener('pointermove', onMove)
+    grid.removeEventListener('pointerup', end)
+    grid.removeEventListener('pointercancel', end)
+  }
 }
 
 function touchDist(e: TouchEvent): number {
@@ -352,12 +370,8 @@ function touchDist(e: TouchEvent): number {
 }
 
 // 触屏手势：单指平移 + 双指捏合（以双指中点为缩放锚点，二者互不冲突）
-function bindTouch() {
-  const grid = document.getElementById('map-grid')
-  if (!grid) return
-
-  grid.addEventListener('touchstart', (e) => {
-    if (tapToPick.value) return // 点选模式：手势不启用，由点击处理
+function bindTouch(grid: HTMLElement): () => void {
+  const onStart = (e: TouchEvent) => {
     if (e.touches.length === 2) {
       // 若此前有未落地的单指平移，先提交，避免与捏合互相污染
       if (touchPanning) {
@@ -390,10 +404,8 @@ function bindTouch() {
       panLastX = e.touches[0].clientX
       panLastY = e.touches[0].clientY
     }
-  }, { passive: true })
-
-  grid.addEventListener('touchmove', (e) => {
-    if (tapToPick.value) return
+  }
+  const onMove = (e: TouchEvent) => {
     if (e.touches.length === 2 && pinch?.active) {
       e.preventDefault()
       const d = touchDist(e)
@@ -421,13 +433,11 @@ function bindTouch() {
       panLastY = t.clientY
       shiftX += dx
       shiftY += dy
-      const g2 = document.getElementById('map-grid')
-      if (g2) g2.style.transform = `translate(${shiftX}px, ${shiftY}px)`
+      const g = gridRef.value
+      if (g) g.style.transform = `translate(${shiftX}px, ${shiftY}px)`
     }
-  }, { passive: false })
-
-  grid.addEventListener('touchend', (e) => {
-    if (tapToPick.value) return
+  }
+  const onEnd = (e: TouchEvent) => {
     if (pinch?.active) {
       if (e.touches.length >= 2) return // 仍处于捏合中
       pinch = null
@@ -443,74 +453,37 @@ function bindTouch() {
       touchPanning = false
       commitPan()
     }
-  }, { passive: true })
-
-  grid.addEventListener('touchcancel', () => {
+  }
+  const onCancel = () => {
     pinch = null
     touchPanning = false
     commitPan()
-  }, { passive: true })
-}
-
-
-// 点选模式：点击地图空白 → 记录该点经纬度 → 弹命名 sheet
-function onGridClick(e: MouseEvent) {
-  if (!tapToPick.value) return
-  const t = e.target as HTMLElement
-  if (t.closest('.pin') || t.closest('.controls')) return
-  const grid = e.currentTarget as HTMLElement
-  const rect = grid.getBoundingClientRect()
-  const x = e.clientX - rect.left - shiftX
-  const y = e.clientY - rect.top - shiftY
-  const worldX = gridOrigin.value.x + x
-  const worldY = gridOrigin.value.y + y
-  const tileX = worldX / TILE
-  const tileY = worldY / TILE
-  const n = Math.pow(2, mapZoom.value)
-  const lon = (tileX / n) * 360 - 180
-  const lat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * tileY) / n))) * 180) / Math.PI
-  pickedCoord.value = { lat, lng: lon }
-  newName.value = ''
-  newDesc.value = ''
-  newVisitDate.value = new Date().toISOString().slice(0, 10)
-  creating.value = true
-  tapToPick.value = false
-}
-
-// 取消点选模式
-function cancelPick() {
-  tapToPick.value = false
-  pickedCoord.value = null
-}
-
-async function submitNewPoint() {
-  if (!pickedCoord.value || !newName.value.trim() || saving.value) return
-  saving.value = true
-  createError.value = ''
-  try {
-    const body: Record<string, unknown> = {
-      name: newName.value.trim(),
-      lat: pickedCoord.value.lat,
-      lng: pickedCoord.value.lng,
-      source: 'manual',
-    }
-    if (newDesc.value.trim()) body.description = newDesc.value.trim()
-    if (newVisitDate.value) body.visit_date = newVisitDate.value
-    await api('/api/v1/map/points', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    })
-    creating.value = false
-    pickedCoord.value = null
-    await loadPoints()
-    layout()
-    toast.value = '已添加'
-    setTimeout(() => { if (toast.value === '已添加') toast.value = '' }, 1500)
-  } catch (e) {
-    createError.value = e instanceof Error ? e.message : '添加失败'
-  } finally {
-    saving.value = false
   }
+  grid.addEventListener('touchstart', onStart, { passive: true })
+  grid.addEventListener('touchmove', onMove, { passive: false })
+  grid.addEventListener('touchend', onEnd, { passive: true })
+  grid.addEventListener('touchcancel', onCancel, { passive: true })
+  return () => {
+    grid.removeEventListener('touchstart', onStart)
+    grid.removeEventListener('touchmove', onMove)
+    grid.removeEventListener('touchend', onEnd)
+    grid.removeEventListener('touchcancel', onCancel)
+  }
+}
+
+// 手势统一入口：两套绑定的解绑器合并（网格随 v-if 重建时先解绑再重绑）
+function bindInteractions(grid: HTMLElement): () => void {
+  const offs = [bindDrag(grid), bindTouch(grid)]
+  return () => offs.forEach((off) => off())
+}
+
+
+// 移入回收站：长按列表行触发（行内不再常驻删除图标）；短按仍是"居中该点位"
+const { pressing, down: pressDown, move: pressMove, up: pressUp, click: pressClick } = useLongPress()
+function onPointClick(p: PointItem, e: MouseEvent) {
+  pressClick(e)
+  if (e.defaultPrevented) return
+  centerOnPoint(p.id)
 }
 
 function askDeletePoint(p: PointItem) {
@@ -525,8 +498,9 @@ async function confirmDeletePoint() {
     await api(`/api/v1/map/points/${pid}`, { method: 'DELETE' })
     points.value = points.value.filter((x) => x.id !== pid)
     if (hlPoint.value === pid) hlPoint.value = null
+    toast.value = RECYCLE_TOAST
   } catch (e) {
-    toast.value = e instanceof Error ? e.message : '删除失败'
+    toast.value = errText(e, '删除失败')
   } finally {
     deletingPoint.value = null
   }
@@ -563,7 +537,7 @@ async function confirmDeletePoint() {
         <p class="np-pick-hint">或在地图上点选（候选不满意时）</p>
         <MiniMapPicker :lat="npLat" :lng="npLng" :height="280" @pick="onFormMapPick" />
         <div v-if="npLat != null && npLng != null" class="np-picked">已选：{{ npLat.toFixed(5) }}, {{ npLng.toFixed(5) }}</div>
-        <p v-if="createError || npErr" class="s-err">{{ npErr || createError }}</p>
+        <p v-if="npErr" class="s-err">{{ npErr }}</p>
       </div>
     </template>
 
@@ -585,14 +559,7 @@ async function confirmDeletePoint() {
 
     <div v-if="view === 'map'" class="map-fixed">
       <div ref="containerRef" class="map-container">
-        <!-- 点选模式提示 -->
-        <Transition name="fade">
-          <div v-if="tapToPick" class="pick-banner" @click="cancelPick">
-            <Pin :size="14" stroke-width="2" />
-            点选位置（再次点击此处取消）
-          </div>
-        </Transition>
-        <div id="map-grid" class="map-grid" :class="{ picking: tapToPick }" @click="onGridClick">
+        <div ref="gridRef" class="map-grid">
           <div
             v-for="t in tiles"
             :key="t.key"
@@ -617,15 +584,13 @@ async function confirmDeletePoint() {
             </div>
           </TransitionGroup>
 
-          <!-- 地图十字准星（点选模式可见） -->
-          <div v-if="tapToPick" class="crosshair"><Pin :size="20" stroke-width="2" /></div>
         </div>
 
         <!-- 缩放控件 -->
         <div class="controls">
-          <button v-if="!tapToPick" @click="zoomMap(1)" aria-label="放大"><Plus :size="17" stroke-width="2" /></button>
-          <button v-if="!tapToPick" @click="zoomMap(-1)" aria-label="缩小"><Minus :size="17" stroke-width="2" /></button>
-          <button v-if="!tapToPick" @click="resetMap" aria-label="重置"><RefreshCw :size="15" stroke-width="2" /></button>
+          <button @click="zoomMap(1)" aria-label="放大"><Plus :size="17" stroke-width="2" /></button>
+          <button @click="zoomMap(-1)" aria-label="缩小"><Minus :size="17" stroke-width="2" /></button>
+          <button @click="resetMap" aria-label="重置"><RefreshCw :size="15" stroke-width="2" /></button>
         </div>
       </div>
     </div>
@@ -640,9 +605,14 @@ async function confirmDeletePoint() {
         <div
           v-for="p in points"
           :key="p.id"
-          class="point-row"
-          :class="{ hl: hlPoint === p.id }"
-          @click="centerOnPoint(p.id)"
+          class="point-row pressable"
+          :class="{ hl: hlPoint === p.id, pressing: pressing === p.id }"
+          @pointerdown="pressDown($event, p.id, () => askDeletePoint(p))"
+          @pointermove="pressMove"
+          @pointerup="pressUp"
+          @pointerleave="pressUp"
+          @pointercancel="pressUp"
+          @click="onPointClick(p, $event)"
         >
           <div class="pr-icon"><MapPin :size="20" stroke-width="2" /></div>
           <div class="pr-info">
@@ -650,44 +620,23 @@ async function confirmDeletePoint() {
             <div v-if="p.visit_date" class="pr-time">{{ p.visit_date }}</div>
             <div v-if="p.description" class="pr-desc">{{ p.description }}</div>
           </div>
-          <button class="pr-del" aria-label="删除" @click.stop="askDeletePoint(p)">
-            <Trash2 :size="16" stroke-width="1.8" />
-          </button>
           <ChevronRight class="chevron" :size="18" stroke-width="1.8" />
         </div>
       </div>
     </div>
 
-    <!-- 命名 sheet（点选完成后弹） -->
-    <Sheet
-      v-if="creating"
-      v-model:show="creating"
-      title="命名这个地点"
-      confirm-text="添加"
-      :confirm-disabled="!newName.trim() || saving"
-      @confirm="submitNewPoint"
-    >
-      <input v-model="newName" class="s-input" placeholder="地点名（如：厦门·鼓浪屿）" maxlength="30" />
-      <input v-model="newVisitDate" type="date" class="s-input" />
-      <textarea v-model="newDesc" class="s-input s-textarea" placeholder="备注（选填）" maxlength="100" rows="2" />
-      <p v-if="createError" class="s-err">{{ createError }}</p>
-    </Sheet>
-
     <!-- 删除确认 -->
     <ConfirmSheet
       v-if="deletingPoint"
       v-model:show="showDeletePoint"
-      title="删除足迹"
-      :message="`确定删除「${deletingPoint.name}」？该动态中的地点名仍保留为快照`"
-      confirm-text="删除"
+      :title="RECYCLE_TITLE"
+      :message="recycleMsg(deletingPoint.name, '动态里的地点名仍保留为快照。')"
+      :confirm-text="RECYCLE_CONFIRM"
       :confirm-danger="true"
       @confirm="confirmDeletePoint"
     />
 
-    <!-- toast -->
-    <Transition name="fade">
-      <div v-if="toast" class="toast" @click="toast = ''">{{ toast }}</div>
-    </Transition>
+    <AppToast :text="toast" @done="toast = ''" />
     </template>
   </div>
 </template>
@@ -764,7 +713,6 @@ async function confirmDeletePoint() {
   cursor: grab;
   touch-action: none;
 }
-.map-grid.picking { cursor: crosshair; }
 .tile { position: absolute; width: 256px; height: 256px; pointer-events: none; }
 .tile img { width: 256px; height: 256px; display: block; transition: opacity .25s ease; }
 
@@ -856,37 +804,6 @@ async function confirmDeletePoint() {
   font-weight: 600;
 }
 .np-save:disabled { opacity: 0.45; }
-
-/* 点选模式横条 */
-.pick-banner {
-  position: absolute;
-  top: 10px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 5;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  background: rgba(0, 0, 0, 0.7);
-  color: #fff;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-/* 十字准星 */
-.crosshair {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 4;
-  color: var(--danger);
-  pointer-events: none;
-  opacity: 0.7;
-}
 
 /* pin */
 .pin {
@@ -1001,17 +918,6 @@ async function confirmDeletePoint() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.pr-del {
-  border: none;
-  background: none;
-  color: var(--danger);
-  cursor: pointer;
-  padding: 6px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-}
-.pr-del:active { background: rgba(224, 73, 75, 0.1); }
 .chevron { color: #c7c7cc; flex-shrink: 0; }
 
 /* 创建 sheet 输入 */
@@ -1030,24 +936,6 @@ async function confirmDeletePoint() {
 .s-input:focus { border-color: var(--primary, #ff8fab); }
 .s-textarea { resize: none; }
 .s-err { font-size: 13px; color: var(--danger); margin: 0; }
-
-/* 错误 toast */
-.toast {
-  position: fixed;
-  bottom: calc(16px + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0,0,0,0.78);
-  color: #fff;
-  font-size: 14px;
-  padding: 10px 20px;
-  border-radius: 12px;
-  z-index: 1100;
-  max-width: 90vw;
-  text-align: center;
-}
-.fade-enter-active, .fade-leave-active { transition: opacity .22s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
 
 /* 空态 */
 .empty {

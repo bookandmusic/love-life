@@ -36,5 +36,6 @@ function onCancel() { emit('update:show', false) }
 </template>
 
 <style scoped>
-.msg { font-size: 14px; color: var(--muted-ink); text-align: center; margin: 0; }
+/* 后果说明是弹层主体内容，用正文色；muted 灰会被读成「禁用/不可用」 */
+.msg { font-size: 14px; line-height: 1.5; color: var(--ink); text-align: center; margin: 0; }
 </style>
