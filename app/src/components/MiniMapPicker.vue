@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LocateFixed, MapPin, Minus, Plus } from 'lucide-vue-next'
-import { latLonToTile, tileToLatLon, tileUrl, TILE } from '../utils/mapTiles'
+import { latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
 
 // 迷你瓦片地图：用于「地点选择」——展示底图，支持点击选点 / 拖拽平移 / ±缩放 / 重置视角。
 // 瓦片契约与 MapView 共用（/api/v1/map/tile，WebMercator，TILE=256，见 utils/mapTiles.ts）。
@@ -29,22 +29,11 @@ const dragMoved = ref(false)
 const dragLast = ref({ x: 0, y: 0 })
 let ro: ResizeObserver | null = null
 
-// 视口内需要渲染的瓦片（相对容器左上角定位）
-const view = computed(() => {
-  const ox = center.value.x * TILE - cw.value / 2
-  const oy = center.value.y * TILE - ch.value / 2
-  const x0 = Math.floor(ox / TILE)
-  const y0 = Math.floor(oy / TILE)
-  const cols = Math.ceil(cw.value / TILE) + 2
-  const rows = Math.ceil(ch.value / TILE) + 2
-  const cells: { x: number; y: number; left: number; top: number }[] = []
-  for (let i = 0; i < cols; i++) {
-    for (let j = 0; j < rows; j++) {
-      cells.push({ x: x0 + i, y: y0 + j, left: (x0 + i) * TILE - ox, top: (y0 + j) * TILE - oy })
-    }
-  }
-  return cells
-})
+// 视口内需要渲染的瓦片（相对容器左上角定位；排布逻辑见 utils/mapTiles.tileGrid）
+// 越出世界范围的格直接跳过（与 MapView 共用 tileInWorld 谓词），避免请求无效瓦片
+const view = computed(() =>
+  tileGrid(center.value.x, center.value.y, cw.value, ch.value).filter((c) => tileInWorld(zoom.value, c.x, c.y)),
+)
 
 function recenter(lat: number, lng: number) {
   center.value = latLonToTile(lat, lng, zoom.value)

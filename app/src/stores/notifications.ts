@@ -19,5 +19,10 @@ export const useUnread = defineStore('unread', () => {
     count.value = 0
   }
 
-  return { count, refresh, reset }
+  /** D7：单条标记已读成功后减 1（失败不减；不为负——总数会在下次 refresh 对齐） */
+  function decrement() {
+    count.value = Math.max(0, count.value - 1)
+  }
+
+  return { count, refresh, reset, decrement }
 })

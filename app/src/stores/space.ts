@@ -1,11 +1,12 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api } from '../api/client'
+import { api, errText } from '../api/client'
 
 export interface SpaceMember {
   id: number
   nickname: string
   role: string
+  avatar?: string
 }
 
 export interface SpaceInfo {
@@ -15,6 +16,8 @@ export interface SpaceInfo {
   members: SpaceMember[]
   days_together: number | null
   next_anniversary: { name: string; date: string; days_until: number }
+  anniversary_count: number // S5：首页空态判定用（区分「没有纪念日」与「日期全部无效」）
+  album_count: number
 }
 
 // 共享空间信息 store（阶段5.2 B14：Home/Posts 等不再各自重复拉 /space，切页不重复请求）
@@ -40,7 +43,7 @@ export const useSpace = defineStore('space', () => {
     try {
       space.value = await api<SpaceInfo>('/api/v1/space')
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '加载失败'
+      error.value = errText(e, '加载失败')
     } finally {
       loading.value = false
     }

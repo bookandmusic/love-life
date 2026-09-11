@@ -2,7 +2,8 @@
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronLeft, CheckCheck, Bell, Heart, MessageCircle, Star, Trash2, Images, Cake, MapPin } from 'lucide-vue-next'
-import { api, fmtDateTime } from '../api/client'
+import { api, errText, fmtDateTime } from '../api/client'
+import AppToast from '../components/AppToast.vue'
 import { useUnread } from '../stores/notifications'
 
 interface NotifItem {
@@ -72,7 +73,7 @@ async function load() {
     items.value = res.items
     unreadStore.refresh()
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -84,8 +85,7 @@ async function readAll() {
     unreadStore.reset()
     await load()
   } catch (e) {
-    toast.value = e instanceof Error ? e.message : '操作失败'
-    setTimeout(() => (toast.value = ''), 1800)
+    toast.value = errText(e, '操作失败')
   }
 }
 
@@ -93,13 +93,13 @@ function targetRoute(n: NotifItem): string | null {
   if (!n.target_type || !n.target_id) return null
   switch (n.target_type) {
     case 'post':
-      return `/posts/${n.target_id}`
+      return `/posts?focus=${n.target_id}`
     case 'album':
       return `/albums/${n.target_id}`
     case 'anniversary':
       return '/anniversaries'
     case 'map_point':
-      return '/map'
+      return `/map?focus=${n.target_id}` // D3：定位到具体点位（列表页无锚点，只能到地图居中高亮）
     default:
       return null
   }
@@ -112,6 +112,7 @@ async function open(n: NotifItem) {
     try {
       await api(`/api/v1/notifications/${n.id}/read`, { method: 'POST' })
       n.is_read = true
+      unreadStore.decrement() // D7：标记已读成功后红点同步减 1（失败静默则不减）
     } catch {
       /* 已读失败静默 */
     }
@@ -159,9 +160,7 @@ onMounted(load)
       </div>
     </div>
 
-    <Transition name="fade">
-      <div v-if="toast" class="toast" @click="toast = ''">{{ toast }}</div>
-    </Transition>
+    <AppToast :text="toast" @done="toast = ''" />
   </div>
 </template>
 
@@ -265,31 +264,5 @@ onMounted(load)
   color: var(--primary-deep);
   opacity: 0.5;
   margin-bottom: 8px;
-}
-.error {
-  color: var(--danger);
-}
-
-.toast {
-  position: fixed;
-  bottom: calc(16px + env(safe-area-inset-bottom));
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.78);
-  color: #fff;
-  font-size: 14px;
-  padding: 10px 20px;
-  border-radius: 12px;
-  z-index: 1100;
-  max-width: 90vw;
-  text-align: center;
-}
-.fade-enter-active,
-.fade-leave-active {
-  transition: opacity 0.22s ease;
-}
-.fade-enter-from,
-.fade-leave-to {
-  opacity: 0;
 }
 </style>

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Cake, PenLine, ChevronRight, RefreshCw, CalendarDays, MapPin, Sparkles } from 'lucide-vue-next'
-import { api, fullUrl } from '../api/client'
-import { mediaUrl } from '../utils/mediaUrls'
+import { Cake, ChevronRight, RefreshCw, CalendarDays, Heart, Images, MapPin, Sparkles } from 'lucide-vue-next'
+import { api, errText, fullUrl } from '../api/client'
+import { mediaSrc, type Post } from '../types'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
@@ -12,17 +12,11 @@ import { useSpace } from '../stores/space'
 const router = useRouter()
 const spaceStore = useSpace()
 
-interface PostItem {
-  id: number
-  title?: string
-  content: string
-  mood?: string
-  location_name?: string
-  created_at: string
-  media: Array<{ id: number; kind: string; thumb_url: string }>
-}
+type PostItem = Pick<Post, 'id' | 'content' | 'mood' | 'location_name' | 'created_at' | 'media'>
 
 const posts = ref<PostItem[]>([])
+// 那年今日：服务端按同月同日过滤后再分页（D8），避免只在最新 50 条里找
+const memories = ref<PostItem[]>([])
 const loading = ref(false)
 const error = ref('')
 const space = computed(() => spaceStore.space)
@@ -32,23 +26,19 @@ const coupleNames = computed(() => {
   return names.join(' & ') || '我们'
 })
 
-// 回忆标题：优先标题，否则正文截断
+// 回忆标题：正文截断
 function memoryTitle(m: PostItem): string {
-  const t = (m.title || m.content || '').trim()
+  const t = (m.content || '').trim()
   return t.slice(0, 24) || '一条回忆'
 }
 
 // 回忆精选：随机抽 1 张有图的「杂志封面」+ 若干无图的「文字回忆」
 const shuffleTick = ref(0)
 function shuffle<T>(arr: T[]): T[] {
-  let seed = (shuffleTick.value + 1) * 2654435761 % 2147483647
-  const rand = () => {
-    seed = (seed * 1103515245 + 12345) % 2147483647
-    return seed / 2147483647
-  }
+  void shuffleTick.value // 依赖「换一批」的计数：值本身不用，但必须读，否则 computed 不再重算
   const a = [...arr]
   for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1))
+    const j = Math.floor(Math.random() * (i + 1))
     ;[a[i], a[j]] = [a[j], a[i]]
   }
   return a
@@ -68,9 +58,9 @@ const todayDD = computed(() => {
   const d = new Date()
   return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 })
-// 那年今日：同月同日的历史回忆（有数据才出现，入口卡）
+// 那年今日：同月同日的历史回忆（有数据才出现，入口卡）；服务端已过滤，这里再校验一次月日
 const memoriesToday = computed(() =>
-  posts.value.filter((x) => `${x.created_at.slice(5, 7)}${x.created_at.slice(8, 10)}` === todayDD.value),
+  memories.value.filter((x) => `${x.created_at.slice(5, 7)}${x.created_at.slice(8, 10)}` === todayDD.value),
 )
 const nextAnniv = computed(() => {
   const next = spaceStore.space?.next_anniversary
@@ -85,26 +75,32 @@ const upcoming = computed(() => {
       icon: 'cal' as const,
       title: '那年今日',
       sub: `${memoriesToday.value.length} 篇同月同日`,
-      to: '/posts',
+      to: '/posts?memories=1',
     },
   ]
 })
 
-const totallyEmpty = computed(
-  () => spaceStore.space !== null && posts.value.length === 0 && !spaceStore.space?.next_anniversary?.name,
-)
+// 全新部署空态（REQUIREMENTS:111）：无动态 + 无纪念日 + 无相册。
+// 用计数而不是 next_anniversary.name：纪念日存在但日期全部无效时名称也是空，
+// 旧判定会把有数据的空间误显示成空态（S5）
+const totallyEmpty = computed(() => {
+  const sp = spaceStore.space
+  return sp !== null && posts.value.length === 0 && sp.anniversary_count === 0 && sp.album_count === 0
+})
 
 async function load() {
   loading.value = true
   error.value = ''
   try {
-    const [, p] = await Promise.all([
+    const [, p, m] = await Promise.all([
       spaceStore.load(true),
       api<{ items: PostItem[] }>('/api/v1/posts?page=1&page_size=50'),
+      api<{ items: PostItem[] }>('/api/v1/posts?memories=1&page=1&page_size=50'),
     ])
     posts.value = p.items
+    memories.value = m.items
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '加载失败'
+    error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -129,8 +125,14 @@ onMounted(load)
         <div class="hero">
           <div class="hero-top">
             <div class="hero-couple">
-              <div class="avatar him">{{ space?.members?.[1]?.nickname?.slice(0, 1) || '你' }}</div>
-              <div class="avatar her">{{ space?.members?.[0]?.nickname?.slice(0, 1) || '我' }}</div>
+              <div class="avatar him">
+                <img v-if="space?.members?.[1]?.avatar" :src="fullUrl(space.members[1].avatar)" alt="" />
+                <template v-else>{{ space?.members?.[1]?.nickname?.slice(0, 1) || '你' }}</template>
+              </div>
+              <div class="avatar her">
+                <img v-if="space?.members?.[0]?.avatar" :src="fullUrl(space.members[0].avatar)" alt="" />
+                <template v-else>{{ space?.members?.[0]?.nickname?.slice(0, 1) || '我' }}</template>
+              </div>
             </div>
             <div class="hero-names">{{ coupleNames }}</div>
           </div>
@@ -166,11 +168,15 @@ onMounted(load)
           </div>
         </div>
 
-        <!-- 空态 -->
+        <!-- 空态（D9：插画风空态——暖色渐变卡片 + Lucide 组合，不引入图片资产） -->
         <div v-if="totallyEmpty" class="empty">
-          <PenLine :size="30" stroke-width="1.2" class="empty-ic" />
+          <div class="empty-art" aria-hidden="true">
+            <span class="ea-blob"><Images :size="28" stroke-width="1.6" /></span>
+            <span class="ea-spark"><Sparkles :size="16" stroke-width="2" /></span>
+            <span class="ea-heart"><Heart :size="14" stroke-width="2" /></span>
+          </div>
           <p>这里还没有回忆</p>
-          <p class="empty-sub">点右下角 + 记录第一条吧</p>
+          <p class="empty-sub">点右下角 +，记录第一条吧</p>
         </div>
 
         <template v-else>
@@ -186,9 +192,9 @@ onMounted(load)
           </div>
 
           <!-- 杂志封面主图卡 -->
-          <div v-if="coverMemory" class="cover-card" @click="router.push(`/posts/${coverMemory.id}`)">
+          <div v-if="coverMemory" class="cover-card" @click="router.push(`/posts?focus=${coverMemory.id}`)">
             <div class="cover-media">
-              <img :src="fullUrl(mediaUrl(coverMemory.media[0]).thumb)" loading="lazy" alt="" />
+              <img :src="mediaSrc(coverMemory.media[0], 'thumb')" loading="lazy" alt="" />
               <div class="cover-mask">
                 <div class="cover-tags">
                   <span v-if="coverMemory.mood" class="cover-tag"><Sparkles :size="12" stroke-width="2" />{{ coverMemory.mood }}</span>
@@ -201,7 +207,7 @@ onMounted(load)
           </div>
 
           <!-- 文字回忆卡 -->
-          <div v-for="m in textMemories" :key="m.id" class="text-card" @click="router.push(`/posts/${m.id}`)">
+          <div v-for="m in textMemories" :key="m.id" class="text-card" @click="router.push(`/posts?focus=${m.id}`)">
             <span class="tc-bar"></span>
             <div class="tc-body">
               <p>{{ m.content || '一条回忆' }}</p>
@@ -284,6 +290,12 @@ onMounted(load)
   font-weight: 600;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16);
   border: 2.5px solid rgba(255, 255, 255, 0.85);
+  overflow: hidden;
+}
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 :root[data-theme='dark'] .avatar {
   border-color: rgba(28, 28, 30, 0.9);
@@ -432,16 +444,44 @@ onMounted(load)
   gap: 1px;
 }
 
-/* 空态 */
+/* 空态：暖色渐变底 + 三枚图标叠出的「插画」感（不引入图片资产） */
 .empty {
   text-align: center;
-  padding: 60px 0;
+  margin: 20px 0 8px;
+  padding: 34px 20px 30px;
+  border-radius: 22px;
+  border: 1px solid var(--rule);
+  background: linear-gradient(160deg, rgba(255, 143, 171, 0.2), rgba(255, 209, 102, 0.16) 55%, rgba(90, 167, 212, 0.14));
   color: var(--muted-ink);
 }
-.empty-ic {
+.empty-art {
+  position: relative;
+  width: 92px;
+  height: 88px;
+  margin: 0 auto 14px;
+}
+.ea-blob {
+  position: absolute;
+  inset: 10px 14px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface);
+  color: var(--primary-deep);
+  box-shadow: 0 10px 24px rgba(240, 98, 146, 0.18);
+}
+.ea-spark {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  color: var(--sem-gold);
+}
+.ea-heart {
+  position: absolute;
+  bottom: 6px;
+  left: 0;
   color: var(--primary);
-  opacity: 0.55;
-  margin-bottom: 12px;
 }
 .empty p {
   font-size: 16px;

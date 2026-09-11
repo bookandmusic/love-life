@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ChevronLeft, LogOut, ExternalLink } from 'lucide-vue-next'
-import { api, getBase } from '../api/client'
+import { api, errText, getBase } from '../api/client'
 import { useAuth } from '../stores/auth'
 import { useMode, type AppMode } from '../stores/mode'
-import { KEYS, getItem, setItem } from '../utils/storage'
+import { KEYS } from '../utils/storage'
 import { ACCENTS, ACCENT_IDS } from '../utils/accents'
 
 const PROJECT_HOME = 'https://github.com/bookandmusic/love-life'
@@ -14,16 +14,17 @@ const router = useRouter()
 const auth = useAuth()
 const modeStore = useMode()
 
-const theme = ref<string>(getItem(KEYS.THEME) || 'light')
-const accent = ref<string>(getItem(KEYS.ACCENT) || 'rose')
+const theme = ref<string>(localStorage.getItem(KEYS.THEME) || 'light')
+const accent = ref<string>(localStorage.getItem(KEYS.ACCENT) || 'rose')
 
 // AI 偏好（输出风格 + 对话保留时长）：读 auth.user，改后 PATCH /api/v1/me
 // 风格选项从 /api/v1/styles 拉取（内置 + 自定义）；拉取失败用种子清单兜底
-const aiStyle = ref('温暖')
+const aiStyle = ref('文艺')
 const retentionDays = ref(30)
 const aiPrefSaving = ref(false)
 const aiPrefToast = ref('')
-const styleOpts = ref<string[]>(['温暖', '中性', '简洁', '俏皮'])
+let aiPrefTimer: number | undefined // 「已保存」标签的自动隐藏计时（卸载时清理）
+const styleOpts = ref<string[]>(['文艺', '幽默', '简洁'])
 const RETENTION_OPTS = [
   { v: 7, label: '7 天' },
   { v: 30, label: '30 天' },
@@ -31,7 +32,7 @@ const RETENTION_OPTS = [
   { v: -1, label: '永久' },
 ]
 function syncAIPref() {
-  aiStyle.value = auth.user?.ai_style || defaultStyleName.value || '温暖'
+  aiStyle.value = auth.user?.ai_style || defaultStyleName.value || '文艺'
   retentionDays.value = auth.user?.chat_retention_days ?? 30
 }
 const defaultStyleName = ref('')
@@ -60,22 +61,27 @@ async function saveAIPref() {
     }
     aiPrefToast.value = '已保存'
   } catch (e) {
-    aiPrefToast.value = e instanceof Error ? e.message : '保存失败'
+    aiPrefToast.value = errText(e, '保存失败')
   } finally {
     aiPrefSaving.value = false
-    setTimeout(() => (aiPrefToast.value = ''), 1800)
+    if (aiPrefTimer) window.clearTimeout(aiPrefTimer)
+    aiPrefTimer = window.setTimeout(() => (aiPrefToast.value = ''), 1800)
   }
 }
+
+onUnmounted(() => {
+  if (aiPrefTimer) window.clearTimeout(aiPrefTimer)
+})
 
 // AI 可用性（阶段4.4 B6-②：后台未配置模型 Key 时 AI 模式置灰并提示原因）
 const aiStatus = ref<{ available: boolean; reason: string } | null>(null)
 const aiStatusLoading = ref(false)
 
 function applyTheme() {
-  setItem(KEYS.THEME, theme.value)
+  localStorage.setItem(KEYS.THEME, theme.value)
   const dark = theme.value === 'dark' || (theme.value === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-  setItem(KEYS.ACCENT, accent.value)
+  localStorage.setItem(KEYS.ACCENT, accent.value)
   if (ACCENTS[accent.value]) document.documentElement.dataset.accent = accent.value
 }
 
@@ -286,9 +292,6 @@ onMounted(() => {
 }
 .label {
   flex: 1;
-}
-.ai-row.off {
-  opacity: 0.5;
 }
 .ai-hint {
   margin: 0;
