@@ -77,7 +77,7 @@ function addClick(fn: () => void) {
   display: flex;
   flex-direction: column;
   position: relative;
-  max-width: var(--col-max);
+  max-width: var(--frame-max);
   margin: 0 auto;
   background: var(--app-veil);
 }
@@ -190,28 +190,17 @@ function addClick(fn: () => void) {
   z-index: 19;
 }
 
-/* 平板档：底部 tab 拉满视口宽度，主壳 100% 宽无居中 */
-@media (min-width: 768px) {
-  .main {
-    max-width: 100%;
-    margin: 0;
-    border-radius: 0;
-    box-shadow: none;
-  }
-}
-
 /* 桌面档：浮动圆角面板（iOS Stage Manager 风格）—— 居中 + 圆角 + 大阴影 + 白底，
    内部切左导航栏 + 720 内容列；body 渐变透出画布感。断点 1280 含 iPad Pro 不被切到桌面。 */
 @media (min-width: 1280px) {
   .main {
     flex-direction: row;
-    max-width: 832px;
-    width: calc(100% - 32px);
-    height: calc(100% - 32px);
-    margin: 16px auto;
+    width: calc(100% - 2 * var(--frame-inset));
+    height: calc(100% - 2 * var(--frame-inset));
+    margin: var(--frame-inset) auto;
     background: var(--surface);
-    border-radius: 18px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-radius: var(--frame-radius);
+    box-shadow: var(--frame-shadow);
     overflow: hidden;
   }
   .tabbar {
@@ -222,7 +211,7 @@ function addClick(fn: () => void) {
     padding: 16px 0 calc(16px + env(safe-area-inset-bottom));
     border-top: none;
     border-right: 0.5px solid var(--glass-edge);
-    border-radius: 18px 0 0 18px;
+    border-radius: var(--frame-radius) 0 0 var(--frame-radius);
   }
   .tab {
     flex: 0 0 auto;

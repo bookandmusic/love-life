@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { KEYS, getItem } from './utils/storage'
+import { KEYS } from './utils/storage'
 import { applyWindowState } from './utils/windowState'
 import { ACCENTS } from './utils/accents'
 import { probeAndSelect } from './utils/netProbe'
@@ -11,20 +11,23 @@ const router = useRouter()
 
 // 主题 + 强调色初始化（设置页可改；深浅跟随系统仅作可选项，不随环境暗色自动变深）
 function applyStoredAppearance() {
-  const theme = getItem(KEYS.THEME) || 'light'
+  const theme = localStorage.getItem(KEYS.THEME) || 'light'
   const dark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
   document.documentElement.dataset.theme = dark ? 'dark' : 'light'
-  const accent = getItem(KEYS.ACCENT) || 'rose'
+  const accent = localStorage.getItem(KEYS.ACCENT) || 'rose'
   if (ACCENTS[accent]) document.documentElement.dataset.accent = accent
 }
 
 let probeTimer: number | undefined
+// 具名引用才能解绑：此前匿名回调无法移除，卸载后仍会监听系统主题变化
+const media = window.matchMedia('(prefers-color-scheme: dark)')
+function onSystemThemeChange() {
+  if ((localStorage.getItem(KEYS.THEME) || 'light') === 'system') applyStoredAppearance()
+}
 
 onMounted(() => {
   applyStoredAppearance()
-  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
-    if ((localStorage.getItem(KEYS.THEME) || 'light') === 'system') applyStoredAppearance()
-  })
+  media.addEventListener('change', onSystemThemeChange)
   router.afterEach(() => applyStoredAppearance())
   void applyWindowState()
   // 双地址定时重探测（AP1）：在家/在外网络切换后自动优选内网
@@ -36,24 +39,11 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (probeTimer !== undefined) clearInterval(probeTimer)
+  media.removeEventListener('change', onSystemThemeChange)
 })
 </script>
 
 <template>
-  <!--
-    THESIS: 一对情侣的日常记录——用 iOS 原生语言承载：毛玻璃导航栏、系统 tab bar、
-    列表式内容、克制的动效。回归「正常、温馨、好用」的情侣记录 app。
-    OWN-WORLD: 系统浅灰底（#f2f2f7）+ 白色卡片/列表 + 暖粉主色（#ff8fab 情感数据/强调）
-    + iOS 语义蓝（操作）+ 深红（破坏）；-apple-system 字体栈；液态玻璃
-    （backdrop-filter: blur + saturate + 彩色光斑）+ 0.5px 分割线；圆角 10-16。
-    STORY: 使用者觉得「这就是一个认真做记录的情侣 app」——不奇怪、不花哨、每件事都顺手。
-    FIRST VIEWPORT: 毛玻璃导航栏（标题+右侧通知/设置按钮）、内容区（在一起天数卡+纪念日+
-    回忆精选）、底部 iOS tab bar（首页/动态/相册/纪念日/地图）、右下角 FAB。
-    FORM: iOS Human Interface Guidelines（用户已定：iOS 风格、5 tab + 右下角 FAB、
-    页头通知/设置按钮、地图瓦片+联动+缩放）。
-    FINISH: unreviewed and undocumented is unfinished; this build ends
-    with the finish review, the verdict, and DESIGN.md
-  -->
   <router-view v-slot="{ Component }">
     <Transition name="page-fade" mode="out-in">
       <component :is="Component" />
@@ -65,12 +55,16 @@ onUnmounted(() => {
 /* 设计令牌——iOS 风格（浅色=日常，深色=夜间；暖粉主色 + 系统浅灰底） */
 :root,
 :root[data-theme='light'] {
+  /* 应用框架（外壳 / 独立整页 / 底部弹窗共用一套尺寸）：手机=整屏，桌面=浮动卡片 */
+  --frame-max: 480px;
+  --frame-inset: 0px;
+  --frame-radius: 0px;
+  --frame-shadow: none;
   --col-max: 480px;
-  --sheet-max: 480px;
   --bg: #f2f2f7;
   --surface: #ffffff;
   --ink: #1c1c1e;
-  --muted-ink: #8e8e93;
+  --muted-ink: #6c6c70; /* iOS secondaryLabel 等效：白底 5.23:1（AA），原 #8e8e93 仅 3.26:1 */
   --primary: #ff8fab;
   --primary-deep: #f06292;
   --danger: #ff3b30;
@@ -122,7 +116,8 @@ onUnmounted(() => {
   --sem-green-soft: rgba(48, 209, 88, 0.16);
 }
 
-/* 强调色（暖色系预设色板）——阶段4.4；覆盖主粉/深档粉，深浅各一份 */
+/* 强调色（暖色系预设色板）——阶段4.4；覆盖主粉/深档粉，深浅各一份。
+   单一事实源：app/src/utils/accents.ts（Settings 色板 label/swatch 取自该处） */
 :root[data-accent='rose']          { --primary: #ff8fab; --primary-deep: #f06292; }
 :root[data-accent='peach']         { --primary: #ff9f7a; --primary-deep: #e35f3d; }
 :root[data-accent='gold']          { --primary: #f2b441; --primary-deep: #cf8a1c; }
@@ -139,31 +134,38 @@ onUnmounted(() => {
 }
 @media (min-width: 768px) {
   :root:root {
-    --col-max: 1023px; /* 平板：不限制列宽（侧内边距由视图自管） */
+    --col-max: 100%;    /* 平板：内容列不限制（侧内边距由视图自管） */
+    --frame-max: 100%;  /* 平板：外壳/独立页全宽，与 APP 同宽 */
     --side-pad: 24px;
   }
 }
 @media (min-width: 1280px) {
   :root:root {
-    --col-max: 720px;  /* 桌面：内容列上限，浮窗由 MainView 承载 */
-    --side-pad: 0px;   /* 桌面：侧内边距由浮窗外距承担 */
+    --col-max: 720px;   /* 桌面：内容列上限 */
+    --frame-max: 832px; /* 桌面：浮动卡片上限（MainView 外壳与独立整页同宽） */
+    --frame-inset: 16px; /* 桌面：卡片与视口的外距（上下同值） */
+    --frame-radius: 18px;
+    --frame-shadow: 0 20px 60px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    --side-pad: 0px;    /* 桌面：侧内边距由浮窗外距承担 */
   }
 }
 
-/* 独立整页（登录/通知/AI 对话/设置）：与主壳同宽策略，桌面档切浮动面板 */
+/* 独立整页（登录/通知/AI 对话/设置）：与主壳同一套框架令牌，桌面档切浮动卡片
+   （宽度/外距/圆角/阴影全部取 --frame-*，保证登录卡片与登录后的 APP 卡片逐像素一致） */
 .page-col {
   width: 100%;
-  max-width: var(--col-max);
+  max-width: var(--frame-max);
   margin-inline: auto;
 }
 @media (min-width: 1280px) {
-  .page-col {
-    max-width: 720px;
-    height: calc(100% - 32px);
-    margin: 16px auto;
+  /* 三类名提权：各页 scoped 的 height:100%（.settings-page[data-v-x] = 0,2,0）会压过
+     .page-col（0,1,0），桌面档卡片因此被撑到贴住视口下边缘（只剩上外距）。0,3,0 稳赢。 */
+  .page-col.page-col.page-col {
+    height: calc(100% - 2 * var(--frame-inset));
+    margin: var(--frame-inset) auto;
     background: var(--surface);
-    border-radius: 18px;
-    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+    border-radius: var(--frame-radius);
+    box-shadow: var(--frame-shadow);
     overflow: hidden;
   }
 }
@@ -187,6 +189,17 @@ body,
 }
 .navbar .nav-actions {
   margin-left: auto;
+}
+
+/* 长按目标（低频操作入口）：按住即有反馈，并禁掉系统文本选择/呼出菜单。
+   反馈用 .pressing 类（由 useLongPress 驱动），不用 :active——否则点卡片里的按钮时整卡会闪灰 */
+.pressable {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+.pressable.pressing {
+  background: var(--sk);
 }
 
 /* 全局锁定 chrome 滚动/拖动：仅各视图内容区可滚动，body/主壳/侧栏等永不出滚动条或拖动回弹 */

@@ -63,6 +63,9 @@ watch(() => props.show, (v) => {
   -webkit-tap-highlight-color: transparent;
 }
 .sheet-card {
+  /* border-box：否则 width 只算内容宽，加上 16px 内边距后弹窗比屏幕/卡片宽出 32px（手机贴边溢出、桌面超出卡片） */
+  box-sizing: border-box;
+  position: relative; /* 桌面档要压在 ::before 那层暗色之上 */
   width: min(420px, 100%);
   background: var(--surface);
   color: var(--ink);
@@ -88,18 +91,57 @@ watch(() => props.show, (v) => {
 }
 .btn {
   flex: 1;
+  box-sizing: border-box;
   height: 42px;
   border-radius: 12px;
   border: none;
   font-size: 15px;
   font-weight: 500;
   cursor: pointer;
-  background: var(--muted-ink); opacity: 0.12;
+  /* 只压背景，不压元素透明度：opacity 会连文字一起变淡，看起来像被禁用 */
+  background: var(--sk);
   color: var(--ink);
 }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn.primary { background: var(--primary, #ff8fab); color: #fff; }
 .btn.danger  { background: var(--danger,  #e0494b); color: #fff; }
+
+/* 桌面档：弹窗从「应用卡片的下边缘」弹出——遮罩留出与卡片相同的外距，
+   弹窗宽度对齐卡片宽度、四角同圆角，看起来是卡片内部升起的 sheet（手机/平板仍贴屏幕底） */
+@media (min-width: 1280px) {
+  .sheet-mask {
+    padding-bottom: var(--frame-inset);
+  }
+  /* 看得见的暗层收进卡片矩形（与卡片同外距、同圆角）；mask 本身仍铺满视口，
+     所以「点卡片外空白也能关闭」的手感不变——::before 设了 pointer-events: none，点击穿到 mask 上 */
+  .sheet-mask {
+    background: transparent;
+  }
+  .sheet-mask::before {
+    content: '';
+    position: absolute;
+    top: var(--frame-inset);
+    bottom: var(--frame-inset);
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(var(--frame-max), calc(100% - 2 * var(--frame-inset)));
+    border-radius: var(--frame-radius);
+    background: rgba(0, 0, 0, 0.32);
+    pointer-events: none;
+  }
+  .sheet-card {
+    width: min(var(--frame-max), calc(100% - 2 * var(--frame-inset)));
+    border-radius: var(--frame-radius);
+  }
+  /* 表面随卡片拉满（所以看起来是从卡片下缘升起），内容仍保持对话框宽度 */
+  .sheet-title,
+  .sheet-body,
+  .sheet-foot {
+    width: 100%;
+    max-width: 520px;
+    margin-inline: auto;
+  }
+}
 
 .sheet-enter-active, .sheet-leave-active { transition: opacity .18s ease; }
 .sheet-enter-active .sheet-card, .sheet-leave-active .sheet-card { transition: transform .22s ease; }
