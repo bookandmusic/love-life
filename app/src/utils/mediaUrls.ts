@@ -32,7 +32,7 @@ function derive(m: MediaLike): { thumb: string; raw: string } {
 // mediaUrl 取媒体当前签名地址（未注册/未重签时返回由 m 派生的原值，行为与直接
 // 拼 m.thumb_url / m.url 等价）。在渲染中调用即完成注册。
 export function mediaUrl(m: MediaLike): { thumb: string; raw: string } {
-  version.value // 响应式依赖：重签成功后触发各引用处刷新
+  void version.value // 响应式依赖：重签成功后触发各引用处刷新（C11：显式丢弃表达式值，过 no-unused-expressions）
   const fallback = derive(m)
   if (m.id === undefined || m.id === null || m.id === '') return fallback
   const key = String(m.id)
@@ -43,6 +43,27 @@ export function mediaUrl(m: MediaLike): { thumb: string; raw: string } {
   }
   e.lastSeen = Date.now()
   return { thumb: e.thumb || fallback.thumb, raw: e.raw || fallback.raw }
+}
+
+// refreshMediaUrl 单个媒体立刻换新签名（另存到本机前调用：签名 15 分钟 TTL 已过时
+// 直链会 401，重签一次再下）。返回换新后的 raw 地址，失败抛错由调用方兜底。
+export async function refreshMediaUrl(id: number | string): Promise<string> {
+  const res = await api<{ items: { id: number; thumb_url: string; url: string }[] }>('/api/v1/media/reurl', {
+    method: 'POST',
+    body: JSON.stringify({ ids: [Number(id)] }),
+  })
+  const it = res.items?.[0]
+  if (!it?.url) throw new Error('reurl 未返回地址')
+  const e = registry.get(String(it.id))
+  if (e) {
+    if (it.thumb_url) e.thumb = it.thumb_url
+    e.raw = it.url
+    e.lastSeen = Date.now()
+  } else {
+    registry.set(String(it.id), { thumb: it.thumb_url ?? '', raw: it.url, lastSeen: Date.now() })
+  }
+  version.value++
+  return it.url
 }
 
 async function refreshSignedUrls(): Promise<void> {

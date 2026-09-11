@@ -30,7 +30,9 @@ const server = http.createServer((req, res) => {
 
   res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,Range')
+  // 另存到本机：APP 需读取服务端生成的文件名（Content-Disposition 不在 CORS 安全头里）
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Disposition,Content-Length,Accept-Ranges,Content-Range')
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 204

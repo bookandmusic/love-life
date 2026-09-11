@@ -11,9 +11,9 @@ import { randomBytes } from 'node:crypto'
 
 // ---------- 认证与用户 ----------
 export const USERS = [
-  { id: 1, username: 'admin', password: 'admin123456', role: 'admin', nickname: '管理员', birthday: '', ai_style: '简洁', chat_retention_days: 30 },
-  { id: 2, username: 'girl', password: 'girl123456', role: 'girl', nickname: '她', birthday: '1998-06-15', ai_style: '文艺', chat_retention_days: 30 },
-  { id: 3, username: 'boy', password: 'boy123456', role: 'boy', nickname: '他', birthday: '1996-03-22', ai_style: '幽默', chat_retention_days: -1 },
+  { id: 1, username: 'admin', password: 'admin123456', role: 'admin', nickname: '管理员', avatar: '', birthday: '', ai_style: '简洁', chat_retention_days: 30 },
+  { id: 2, username: 'girl', password: 'girl123456', role: 'girl', nickname: '她', avatar: '', birthday: '1998-06-15', ai_style: '文艺', chat_retention_days: 30 },
+  { id: 3, username: 'boy', password: 'boy123456', role: 'boy', nickname: '他', avatar: '', birthday: '1996-03-22', ai_style: '幽默', chat_retention_days: -1 },
 ]
 
 export const tokenStore = new Map()
@@ -47,13 +47,13 @@ export const space = {
 export const now = Date.now()
 export const day = 86400000
 export const posts = [
-  { id: 1, author_id: 2, title: '周末去看海了', content: '厦门的海真的好蓝，一起在沙滩走了好久，风很大但很舒服。', mood: '开心', point_id: 1, location_name: '厦门 · 鼓浪屿', media: [{ id: 1, kind: 'photo', thumb_url: '/api/v1/media/file/1' }], created_at: new Date(now - 1 * day).toISOString() },
-  { id: 2, author_id: 3, title: '第一次做蛋包饭', content: '照着教程试了一下，虽然卖相一般，但她吃得很开心。', mood: '幸福', point_id: null, location_name: '', media: [{ id: 2, kind: 'photo', thumb_url: '/api/v1/media/file/2' }], created_at: new Date(now - 2 * day).toISOString() },
-  { id: 3, author_id: 2, title: '西湖边散步', content: '杭州的春天真舒服，柳树都发芽了，沿着湖边走了两小时。', mood: '平静', point_id: 2, location_name: '杭州 · 西湖', media: [], created_at: new Date(now - 3 * day).toISOString() },
-  { id: 4, author_id: 3, title: '', content: '今天加班到很晚，回家看到她留了热汤，心里暖暖的。', mood: '感动', point_id: null, location_name: '', media: [], created_at: new Date(now - 5 * day).toISOString() },
-  { id: 5, author_id: 2, title: '外滩夜景', content: '上海的夜景真的太美了，灯光洒在黄浦江上，拍了好多照片。', mood: '兴奋', point_id: 3, location_name: '上海 · 外滩', media: [{ id: 5, kind: 'photo', thumb_url: '/api/v1/media/file/5' }, { id: 6, kind: 'photo', thumb_url: '/api/v1/media/file/6' }], created_at: new Date(now - 8 * day).toISOString() },
-  { id: 6, author_id: 3, title: '', content: '还记得去年在苏州平江路，一起在小桥上看了很久的落日。', mood: '怀念', point_id: 4, location_name: '苏州 · 平江路', media: [], created_at: new Date(now - 12 * day).toISOString() },
-  { id: 7, author_id: 2, title: '初识在八月', content: '去年的今天，我们刚认识——她穿了一件浅蓝的裙子，笑起来眼睛弯弯的。', mood: '心动', point_id: null, location_name: '大理 · 古城', media: [], created_at: new Date('2025-08-26T20:00:00+08:00').toISOString() },
+  { id: 1, author_id: 2, content: '厦门的海真的好蓝，一起在沙滩走了好久，风很大但很舒服。', mood: '开心', point_id: 1, location_name: '厦门 · 鼓浪屿', media: [{ id: 1, kind: 'photo', thumb_url: '/api/v1/media/file/1' }], created_at: new Date(now - 1 * day).toISOString() },
+  { id: 2, author_id: 3, content: '照着教程试了一下，虽然卖相一般，但她吃得很开心。', mood: '幸福', point_id: null, location_name: '', media: [{ id: 2, kind: 'photo', thumb_url: '/api/v1/media/file/2' }], created_at: new Date(now - 2 * day).toISOString() },
+  { id: 3, author_id: 2, content: '杭州的春天真舒服，柳树都发芽了，沿着湖边走了两小时。', mood: '平静', point_id: 2, location_name: '杭州 · 西湖', media: [], created_at: new Date(now - 3 * day).toISOString() },
+  { id: 4, author_id: 3, content: '今天加班到很晚，回家看到她留了热汤，心里暖暖的。', mood: '感动', point_id: null, location_name: '', media: [], created_at: new Date(now - 5 * day).toISOString() },
+  { id: 5, author_id: 2, content: '上海的夜景真的太美了，灯光洒在黄浦江上，拍了好多照片。', mood: '兴奋', point_id: 3, location_name: '上海 · 外滩', media: [{ id: 5, kind: 'photo', thumb_url: '/api/v1/media/file/5' }, { id: 6, kind: 'photo', thumb_url: '/api/v1/media/file/6' }], created_at: new Date(now - 8 * day).toISOString() },
+  { id: 6, author_id: 3, content: '还记得去年在苏州平江路，一起在小桥上看了很久的落日。', mood: '怀念', point_id: 4, location_name: '苏州 · 平江路', media: [], created_at: new Date(now - 12 * day).toISOString() },
+  { id: 7, author_id: 2, content: '去年的今天，我们刚认识——她穿了一件浅蓝的裙子，笑起来眼睛弯弯的。', mood: '心动', point_id: null, location_name: '大理 · 古城', media: [], created_at: new Date('2025-08-26T20:00:00+08:00').toISOString() },
 ]
 
 export const comments = [
@@ -77,7 +77,8 @@ export const albums = [
  * post_id 可空（F1 独立媒体）；album_id 表示归属的手动相册（null=未归属，F2 一文件一相册）；author_id 媒体作者（F6 删除通知用）。
  */
 function mediaRow(id, { post_id = null, kind = 'photo', taken_at, author_id = 2, album_id = null, duration } = {}) {
-  const ext = kind === 'video' ? 'mp4' : kind === 'audio' ? 'mp3' : 'png'
+  // ext 与 fixtures/ 里真实样本的字节一致（照片 JPEG / 视频 WebM / 录音 WAV，见 routes.mjs MOCK_RAW）
+  const ext = kind === 'video' ? 'webm' : kind === 'audio' ? 'wav' : 'jpg'
   const row = {
     id, post_id, kind, author_id, album_id, taken_at,
     thumb_url: `/api/v1/media/file/${id}?v=thumb`,
@@ -216,10 +217,9 @@ export const systemPrompt = {
 // 输出风格库：内置风格完全固化（不可删改）；自定义风格由后台管理。
 // prompt = 「说话语气」片段，拼在全局 System Prompt 主干之后；default_id = 全局默认（APP 未设置风格时使用）。
 export const styles = [
-  { id: 1, name: '温暖', prompt: '说话温暖贴心，多用鼓励和关心的语气，像伴侣日常聊天一样自然。', builtin: true },
-  { id: 2, name: '中性', prompt: '语气平和客观，简洁清晰地表达，不刻意煽情。', builtin: true },
+  { id: 1, name: '文艺', prompt: '语气文艺有文采，善用比喻和意象，像写给彼此的信一样温柔。', builtin: true },
+  { id: 2, name: '幽默', prompt: '语气幽默活泼，可以适当开玩笑和自嘲，营造轻松氛围。', builtin: true },
   { id: 3, name: '简洁', prompt: '回答尽量简短，直给要点，不啰嗦。', builtin: true },
-  { id: 4, name: '俏皮', prompt: '语气活泼俏皮，可以适当开玩笑，营造轻松氛围。', builtin: true },
 ]
 export const styleDefaults = { id: 1 }
 // schema：参数名册（键=参数名，值="类型 — 说明"）；空对象 = 无参数。与 DESIGN §6 工具清单对应
@@ -279,7 +279,7 @@ export const alerts = [
 ]
 // latencyMs：模型响应耗时，仅 ai/pat 调用有值；user 直接写库为 null
 export const audit = [
-  { time: '2026-08-24 10:30:15', actorType: 'user', actor: 'Girl', action: 'create_post', params: 'title: "周末出游"', result: 'success', latencyMs: null },
+  { time: '2026-08-24 10:30:15', actorType: 'user', actor: 'Girl', action: 'create_post', params: 'content: "周末出游"', result: 'success', latencyMs: null },
   { time: '2026-08-24 09:15:42', actorType: 'ai', actor: 'GPT-4o', action: 'search_posts', params: 'query: "海边"', result: 'success', latencyMs: 1320 },
   { time: '2026-08-23 22:05:18', actorType: 'pat', actor: 'Claude Desktop', action: 'list_favorites', params: 'page: 1', result: 'success', latencyMs: 861 },
   { time: '2026-08-23 18:30:05', actorType: 'user', actor: 'Boy', action: 'delete_comment', params: 'comment_id: 42', result: 'success', latencyMs: null },

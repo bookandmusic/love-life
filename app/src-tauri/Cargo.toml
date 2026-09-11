@@ -13,5 +13,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = [] }
+# 媒体另存到本机：dialog = 系统「另存为」，fs = 写入所选文件（见 src/lib.rs 与 capabilities/default.json）
+tauri-plugin-dialog = "2"
+tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

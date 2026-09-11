@@ -6,7 +6,11 @@
  */
 
 import { randomBytes } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { nextLunarOccurrence } from '../../app/src/utils/lunar.ts'
+import { mediaKindLabel } from '../../app/src/utils/mediaKind.ts'
 import {
   USERS, tokenStore, space, posts, comments, likes, favorites,
   albums, timelineMedia, anniversaries, notifications, mapSources, mapPoints,
@@ -16,6 +20,11 @@ import {
   tools, recycle, restoreLog, security, audit, tokens, webhooks, adminUsers,
   newToken, userIdFromToken, userById,
 } from './fixtures.mjs'
+
+// 确认卡片有效期（默认 15 分钟，与 /chat/history 的 expires_in 同口径）。
+// MOCK_ACTION_TTL_MS=0 供过期路径自动化回归用（.verify/mock-expiry-410.mjs）
+const ACTION_TTL_MS = Number(process.env.MOCK_ACTION_TTL_MS ?? 900000)
+const ACTION_TTL_SEC = Math.max(0, Math.round(ACTION_TTL_MS / 1000))
 
 const ok = (data) => ({ _s: 200, d: data })
 const created = (data) => ({ _s: 201, d: data })
@@ -64,7 +73,7 @@ function annivDaysUntil(a) {
   if ((a.type || 'solar') === 'lunar') {
     const ym = ymdFromDate(a.date)
     if (ym) {
-      const occ = nextLunarOccurrence(ym.m, ym.d)
+      const occ = nextLunarOccurrence(ym.m, ym.d, a.is_leap === true)
       return occ ? daysUntilDate(occ) : -1
     }
     return -1
@@ -76,7 +85,7 @@ function annivDaysUntil(a) {
 function annivNextDate(a) {
   if ((a.type || 'solar') === 'lunar') {
     const ym = ymdFromDate(a.date)
-    return ym ? nextLunarOccurrence(ym.m, ym.d) || '' : ''
+    return ym ? nextLunarOccurrence(ym.m, ym.d, a.is_leap === true) || '' : ''
   }
   return a.date || ''
 }
@@ -98,8 +107,19 @@ function spaceResponse() {
     daysTogether = daysBetween(new Date(space.love_start_date), today)
   }
   const na = nextAnniversaryInfo()
-  const members = USERS.filter((u) => u.role !== 'admin').map((u) => ({ id: u.id, nickname: u.nickname, role: u.role }))
-  return { name: space.name, signature: space.signature, love_start_date: space.love_start_date, members, days_together: daysTogether, next_anniversary: na }
+  const members = USERS.filter((u) => u.role !== 'admin').map((u) => ({ id: u.id, nickname: u.nickname, role: u.role, avatar: u.avatar || '' }))
+  // S5：单靠 next_anniversary 无法区分「没有纪念日」与「纪念日存在但日期无效」，
+  // 首页空态需要计数（即时统计，不落库）
+  return {
+    name: space.name,
+    signature: space.signature,
+    love_start_date: space.love_start_date,
+    members,
+    days_together: daysTogether,
+    next_anniversary: na,
+    anniversary_count: anniversaries.length,
+    album_count: albums.length,
+  }
 }
 
 // 媒体输出：对齐真实 mediaResponse {id,kind,width,height,url,thumb_url}
@@ -131,7 +151,7 @@ function postOut(p, viewerId) {
   const media = (p.media || []).map((m) => mediaOut(m))
   return {
     id: p.id, author_id: p.author_id, author: author?.nickname || '',
-    title: p.title, content: p.content, mood: p.mood, location_name: p.location_name,
+    content: p.content, mood: p.mood, location_name: p.location_name,
     media,
     like_count: [...likes].filter((k) => k.startsWith(p.id + ':')).length,
     comment_count: comments.filter((c) => c.post_id === p.id).length,
@@ -185,6 +205,10 @@ function locatePlace(name) {
 // ---------- 路由 ----------
 const routes = []
 
+// 健康检查：客户端双地址探测（AP1，DESIGN §11.2）ping 的就是这里，无鉴权。
+// 此前 mock 缺该路由 → 探测恒 404，登录页状态点恒显示「不可达」。
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/health$/, handler: () => ok({ status: 'ok' }) })
+
 // --- Auth ---
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/auth\/login$/, handler: (url, body, headers) => {
   const { username, password, client } = JSON.parse(body || '{}')
@@ -200,9 +224,13 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/auth\/me$/, handler: (url, bo
   return ok(userById(uid))
 }})
 
-routes.push({ method: 'POST', pattern: /^\/api\/v1\/auth\/refresh$/, handler: (url, body, headers) => {
-  const uid = userIdFromToken(headers)
-  if (!uid) return unauthorized()
+// 刷新：refresh_token 走 body（与真实服务端 server/internal/auth/service.go 一致，客户端不带 Authorization）；
+// 签发新对并作废旧 refresh（rotation）——旧 refresh 复用即 401
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/auth\/refresh$/, handler: (url, body) => {
+  const rt = String(JSON.parse(body || '{}').refresh_token || '')
+  const uid = rt ? tokenStore.get(rt) : null
+  if (!uid) return unauthorized('refresh_token 无效或已过期')
+  tokenStore.delete(rt)
   const { access, refresh } = newToken(uid)
   return ok({ token: access, refresh_token: refresh })
 }})
@@ -241,7 +269,15 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/posts$/, handler: (url, body,
   const q = queryParams(url)
   const page = parseInt(q.page) || 1
   const pageSize = parseInt(q.page_size) || 20
-  const sorted = [...posts].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  let sorted = [...posts].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+  // D8 那年今日（REQUIREMENTS:110）：先按同月同日过滤，再分页——否则只能在最新一页里碰运气
+  if (q.memories === '1') {
+    // 必须用 UTC 取「今天」：created_at 是 toISOString() 落库的 UTC 串，取本地日期会在
+    // 本地跨零点而 UTC 还在前一天的那段时间里永远 0 命中（口径同 slice(4,10) 与前端展示）
+    const t = new Date()
+    const mmdd = `-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`
+    sorted = sorted.filter((p) => (p.created_at || '').slice(4, 10) === mmdd)
+  }
   const total = sorted.length
   const pageItems = sorted.slice((page - 1) * pageSize, page * pageSize)
   return ok({ items: pageItems.map((p) => postOut(p, uid)), total })
@@ -280,7 +316,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/posts$/, handler: (url, body
     }
   }
   const newPost = {
-    id, author_id: uid, title: b.title || '', content, mood,
+    id, author_id: uid, content, mood,
     point_id: pointId, location_name: locationName, media: [],
     created_at: new Date().toISOString(),
   }
@@ -295,7 +331,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/posts$/, handler: (url, body
   }
   posts.unshift(newPost)
   // F7：新动态通知另一方（admin 不在情侣里，partnerIds 排除 admin）
-  for (const r of partnerIds(uid)) addNotification(r, 'post_created', 'post', id, { operator: operatorName(uid), title: newPost.title, content: (newPost.content || '').slice(0, 50) })
+  for (const r of partnerIds(uid)) addNotification(r, 'post_created', 'post', id, { operator: operatorName(uid), content: (newPost.content || '').slice(0, 50) })
   return created({ id })
 }})
 
@@ -318,7 +354,7 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/posts\/\d+$/, handler: (ur
   const p = posts[idx]
   // F7 自删静默 + REQUIREMENTS §4.8：内容删除仅通知被删内容作者（非本人删除时），其余人静默
   if (p.author_id !== uid) {
-    addNotification(p.author_id, 'post_deleted', 'post', id, { deleted_by: operatorName(uid), title: p.title, content: (p.content || '').slice(0, 50) })
+    addNotification(p.author_id, 'post_deleted', 'post', id, { deleted_by: operatorName(uid), content: (p.content || '').slice(0, 50) })
   }
   posts.splice(idx, 1)
   return noContent()
@@ -463,9 +499,11 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/albums\/\d+$/, handler: (u
   if (!id) return notFound()
   const idx = albums.findIndex((x) => x.id === id)
   if (idx === -1) return notFound()
-  const a = albums[idx]
+  // 月度相册不可删除（只可隐藏，DESIGN §12.2）；此前漏判 + 漏删，删除后列表仍显示该相册
+  if (albums[idx].type === 'monthly') return { _s: 400, d: { error: '月度相册不可删除，只可隐藏' } }
   // 手动相册删除 → 释放媒体归属，媒体回到「未归属」状态
   for (const m of timelineMedia) if (m.album_id === id) m.album_id = null
+  albums.splice(idx, 1)
   return noContent()
 }})
 
@@ -583,21 +621,107 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/media\/\d+$/, handler: (ur
 }})
 
 
-routes.push({ method: 'GET', pattern: /^\/api\/v1\/media\/file\/\d+$/, handler: (url) => {
+// 媒体文件下发（契约对齐服务端 GET /api/v1/media/file/{id}）：
+//   v=thumb → 占位 SVG（零素材）；v=raw → fixtures/ 里的真实可播放样本（照片 JPEG / 视频 VP8 WebM / 录音 WAV）
+//   download=1 → Content-Disposition，文件名同服务端规则 {日期}_{照片|视频|录音}_{序号}.{ext}，中文走 RFC 5987
+//   Range → 206/Content-Range（大文件续传、播放器拖进度；服务端走 http.ServeContent 同语义）
+// 真实样本素材（tools/mock/fixtures/，均在本地离线生成，浏览器可直接播放）：
+//   照片 1200×800 JPEG（Pillow）；录音 8kHz 单声道 3s WAV（python wave）；视频 640×360 VP8 WebM（Chrome MediaRecorder 录屏）
+//   视频用 WebM 而不是 MP4：开发机没有 ffmpeg 也没有外网，只能在浏览器里录一段真视频；播放器代码路径与真实 H.264/MP4 相同。
+//   读取失败退回内联占位字节，保证 mock 在缺素材时仍能启动。
+const FIXTURE_DIR = resolve(dirname(fileURLToPath(import.meta.url)), 'fixtures')
+function fixture(name, fallback) {
+  try { return readFileSync(resolve(FIXTURE_DIR, name)) } catch { return fallback }
+}
+const MOCK_RAW = {
+  photo: { ext: '.jpg', ct: 'image/jpeg', buf: fixture('sample-photo.jpg', Buffer.from('/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAFAABAAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==', 'base64')) },
+  video: { ext: '.webm', ct: 'video/webm', buf: fixture('sample-video.webm', Buffer.alloc(4096, 0x21)) },
+  audio: { ext: '.wav', ct: 'audio/wav', buf: fixture('sample-audio.wav', Buffer.alloc(4096, 0x42)) },
+}
+
+// rfc5987：attr-char 之外逐字节 %XX（与 Go 侧 percentEncode 同口径）
+function rfc5987(s) {
+  const attrChar = '!#$&+-.^_|~'
+  let out = ''
+  const bytes = Buffer.from(s, 'utf8')
+  for (const c of bytes) {
+    const ch = String.fromCharCode(c)
+    out += /[A-Za-z0-9]/.test(ch) || attrChar.includes(ch)
+      ? ch
+      : '%' + c.toString(16).toUpperCase().padStart(2, '0')
+  }
+  return out
+}
+
+// 另存文件名（服务端 downloadName 的 mock 同款）：日期优先 taken_at、其次所属动态 created_at
+function mockDownloadName(mediaId, kind) {
+  const spec = MOCK_RAW[kind] || MOCK_RAW.photo
+  const row = timelineMedia.find((x) => x.id === mediaId)
+  const post = posts.find((p) => (p.media || []).some((mm) => mm.id === mediaId))
+  const date = (row?.taken_at || post?.created_at || new Date().toISOString()).slice(0, 10)
+  let seq = mediaId
+  const siblings = post ? post.media || [] : []
+  const at = siblings.findIndex((mm) => mm.id === mediaId)
+  if (at >= 0) seq = at + 1
+  // 词表与客户端共用一个来源（app/src/utils/mediaKind.ts），避免两处抄出不同口径
+  return `${date}_${mediaKindLabel(kind)}_${seq}${spec.ext}`
+}
+
+function asciiFallback(name) {
+  const stripped = name.replace(/[^\x20-\x7e]/g, '').replace(/"|\\/g, '')
+  return stripped.replace(/__+/g, '_') || 'love-life'
+}
+
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/media\/file\/\d+$/, handler: (url, _body, headers) => {
   const id = parseIntParam(url, /\/media\/file\/(\d+)/) || 1
-  // mock 不真存文件：按 kind 给不同占位
   const m = timelineMedia.find((x) => x.id === id)
   const kind = m?.kind || 'photo'
   const q = queryParams(url)
   const variant = q.v || 'raw'
-  const svg = kind === 'audio'
-    ? `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="100%" height="100%" fill="#a0c4ff"/><text x="50%" y="50%" font-size="28" fill="#fff" text-anchor="middle" dominant-baseline="middle">音频 ${id}</text></svg>`
-    : placeholder(id)
+
+  if (variant === 'thumb') {
+    const svg = kind === 'audio'
+      ? `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512"><rect width="100%" height="100%" fill="#a0c4ff"/><text x="50%" y="50%" font-size="28" fill="#fff" text-anchor="middle" dominant-baseline="middle">音频 ${id}</text></svg>`
+      : placeholder(id)
+    return (res) => {
+      res.setHeader('Content-Type', 'image/svg+xml;charset=utf-8')
+      res.setHeader('Cache-Control', 'public, max-age=86400')
+      res.statusCode = 200
+      res.end(svg)
+    }
+  }
+
+  const spec = MOCK_RAW[kind] || MOCK_RAW.photo
+  const buf = spec.buf
+  const disposition = q.download === '1'
+    ? `attachment; filename="${asciiFallback(mockDownloadName(id, kind))}"; filename*=UTF-8''${rfc5987(mockDownloadName(id, kind))}`
+    : ''
+  const range = /^bytes=(\d*)-(\d*)$/.exec((headers?.range || '').trim())
   return (res) => {
-    res.setHeader('Content-Type', 'image/svg+xml;charset=utf-8')
-    res.setHeader('Cache-Control', 'public, max-age=86400')
+    if (disposition) res.setHeader('Content-Disposition', disposition)
+    res.setHeader('Content-Type', spec.ct)
+    res.setHeader('Cache-Control', 'private, max-age=900')
+    res.setHeader('Accept-Ranges', 'bytes')
+    if (range) {
+      const start = range[1] ? Number(range[1]) : 0
+      const end = range[2] ? Number(range[2]) : buf.length - 1
+      if (Number.isNaN(start) || start >= buf.length || end < start) {
+        res.statusCode = 416
+        res.setHeader('Content-Range', `bytes */${buf.length}`)
+        res.end()
+        return
+      }
+      const stop = Math.min(end, buf.length - 1)
+      const slice = buf.subarray(start, stop + 1)
+      res.statusCode = 206
+      res.setHeader('Content-Range', `bytes ${start}-${stop}/${buf.length}`)
+      res.setHeader('Content-Length', String(slice.length))
+      res.end(slice)
+      return
+    }
     res.statusCode = 200
-    res.end(svg)
+    res.setHeader('Content-Length', String(buf.length))
+    res.end(buf)
   }
 }})
 
@@ -610,14 +734,15 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/anniversaries$/, handler: (u
   const b = JSON.parse(body || '{}')
   const id = ++seq.anniversary
   const type = b.type === 'lunar' ? 'lunar' : 'solar'
-  // 统一契约：date 一律 YYYY-MM-DD，type 决定语义（solar=公历；lunar=农历日期），不再存 lunar_* 冗余字段
+  // 统一契约：date 一律 YYYY-MM-DD，type 决定语义（solar=公历；lunar=农历日期）；闰月语义由 is_leap 标记承载
   const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : ''
   const a = {
     id,
     name: (b.name || '').trim() || '新纪念日',
     date,
     type,
-    remind_days_before: b.remind_days_before || 7,
+    is_leap: type === 'lunar' ? b.is_leap === true : undefined,
+    remind_days_before: b.remind_days_before ?? 1, // 默认 1 天（REQUIREMENTS §4.6）；显式 0=当天提醒，不得被 || 改写
     created_by: uid,
   }
   anniversaries.push(a)
@@ -694,11 +819,11 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/history$/, handler: () 
       params = act.params ?? {}
       if (act.resolved) {
         status = act.resolved === 'cancelled' ? 'cancelled' : (act.resolved === 'failed' ? 'failed' : 'executed')
-      } else if (Date.now() > act.created_at + 900000) {
+      } else if (Date.now() > act.created_at + ACTION_TTL_MS) {
         status = 'expired'
       } else {
         status = 'pending'
-        expiresIn = Math.max(1, Math.ceil((act.created_at + 900000 - Date.now()) / 1000))
+        expiresIn = Math.max(1, Math.ceil((act.created_at + ACTION_TTL_MS - Date.now()) / 1000))
       }
     }
     return { ...base, card: { action_id: cardId, tool, params, status, expires_in: expiresIn } }
@@ -724,6 +849,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/message$/, handler: (u
   // 意图 → 卡片参数（按 DESIGN §6 工具参数；mock 先定契约）
   let replyText = null
   let card = null
+  let searchResult = null // D2：搜索结果卡片（读工具，无确认卡，直接内联展示）
 
   if (attach.length && /相册/.test(msg)) {
     // 媒体只能随动态存在（D8 口径）：新照片不能直接落相册，只能发布成动态后从时间轴选入相册。
@@ -732,20 +858,39 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/message$/, handler: (u
     if (/建相册|新建相册|创建相册/.test(msg)) {
       const params = { name: msg.match(/(?:建|新建|创建)相册[：:]?\s*(\S+)?/)?.[1] || '新相册', media_refs: [] }
       actions.set(actionId, { tool: 'create_album', params, user_id: userId, created_at: Date.now(), resolved: null })
-      card = { action_id: actionId, tool: 'create_album', params, status: 'pending', expires_in: 900 }
+      card = { action_id: actionId, tool: 'create_album', params, status: 'pending', expires_in: ACTION_TTL_SEC }
     } else {
-      const params = { title: '', content: (msg.replace(/帮(我|你)(记|发|创建|把[^]*加(到)?相册)/, '').trim() || '记录一下今天'), mood: '', media_refs: mediaRefs }
+      const params = { content: (msg.replace(/帮(我|你)(记|发|创建|把[^]*加(到)?相册)/, '').trim() || '记录一下今天'), mood: '', media_refs: mediaRefs }
       actions.set(actionId, { tool: 'create_post', params, user_id: userId, created_at: Date.now(), resolved: null })
-      card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: 900 }
+      card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: ACTION_TTL_SEC }
     }
   } else if (attach.length && /(动态|发|记)/.test(msg)) {
     // 带媒体发布动态：卡片携带 media_refs（元数据），确认时客户端上传+落库
     const actionId = ++seq.action
-    const params = { title: '', content: msg.replace(/帮(我|你)(记|发|创建)/, '').trim() || '记录一下今天', mood: '', media_refs: mediaRefs }
+    const params = { content: msg.replace(/帮(我|你)(记|发|创建)/, '').trim() || '记录一下今天', mood: '', media_refs: mediaRefs }
     actions.set(actionId, { tool: 'create_post', params, user_id: userId, created_at: Date.now(), resolved: null })
-    card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: 900 }
+    card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: ACTION_TTL_SEC }
   } else if (attach.length) {
     replyText = `收到 ${attach.length} 张图片/视频${msg ? `（${msg}）` : ''}，你可以说「把它们加到相册」「建个相册」或「发条带图动态」。`
+  } else if (/搜索|搜一下|搜搜|查找|查一下|找一下|找找/.test(msg)) {
+    // D2 搜索结果卡片（REQUIREMENTS §5.1：卡片内联展示，不做跨模式跳转）
+    const query = msg.replace(/^(帮我|帮忙)?\s*(搜索|搜一下|搜搜|查找|查一下|找一下|找找)(一下)?/, '').replace(/[「」"']/g, '').trim()
+    const hits = posts
+      .filter((p) => !query || (p.content || '').includes(query))
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 6)
+    searchResult = {
+      tool: 'search_posts',
+      query,
+      items: hits.map((p) => ({
+        id: p.id,
+        content: (p.content || '').slice(0, 60),
+        thumb_url: p.media?.[0]?.thumb_url || '',
+      })),
+    }
+    replyText = hits.length
+      ? `找到 ${hits.length} 条${query ? `和「${query}」相关的` : '最近的'}回忆：`
+      : `没找到${query ? `和「${query}」相关的` : ''}回忆。`
   } else if (msg.includes('纪念日') || msg.includes('周年')) {
     const nameMatch = msg.match(/纪念日[：:]\s*(.+?)(?:\s|$)/)
     const dateMatch = msg.match(/(\d{4}[-/]\d{1,2}[-/]\d{1,2})/)
@@ -753,13 +898,13 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/message$/, handler: (u
     const params = { name: nameMatch ? nameMatch[1].trim() : '新纪念日', date: dateMatch ? dateMatch[1] : '' }
     // type 字段为可选（DESIGN §6 create_anniversary type?），mock 默认 anniversary
     actions.set(actionId, { tool: 'create_anniversary', params, user_id: userId, created_at: Date.now(), resolved: null })
-    card = { action_id: actionId, tool: 'create_anniversary', params, status: 'pending', expires_in: 900 }
+    card = { action_id: actionId, tool: 'create_anniversary', params, status: 'pending', expires_in: ACTION_TTL_SEC }
   } else if (msg.includes('动态') || msg.includes('记') || msg.includes('发')) {
     const contentMatch = msg.replace(/帮(我|你)(记|发|创建)/, '').trim()
     const actionId = ++seq.action
-    const params = { title: '', content: contentMatch || '今天过得怎么样？', mood: '' }
+    const params = { content: contentMatch || '今天过得怎么样？', mood: '' }
     actions.set(actionId, { tool: 'create_post', params, user_id: userId, created_at: Date.now(), resolved: null })
-    card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: 900 }
+    card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: ACTION_TTL_SEC }
   } else {
     replyText = '好的，我明白了！作为你的 AI 助手，我随时准备好帮你记录生活中的美好瞬间。你可以说「帮我记一条动态」或「创建一个纪念日」。'
   }
@@ -775,6 +920,9 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/message$/, handler: (u
     const send = (ev, data) => {
       res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
     }
+
+    // D2：搜索结果先推（客户端渲染内联卡片网格），随后照常推文字；空结果由客户端渲染「没找到」
+    if (searchResult) send('result', searchResult)
 
     if (card) {
       // 先推一段 text 提示，再推 card；推完结束流（否则 APP busy 永远不结束，右下角一直显示「进行中」）
@@ -818,6 +966,11 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
   if (!action) return { _s: 404, d: { error: '确认卡片不存在' } }
 
   if (action.resolved) return { _s: 409, d: { error: '卡片已处理过（单次有效）' } }
+  // D4 确认卡片 15 分钟有效期（REQUIREMENTS §4.8/§5.1）：过期后确认 → 410「已过期」，
+  // 与 /chat/history 的 expires_in 同口径；不改 resolved，保证重启/重进后仍显示 expired
+  if (Date.now() > action.created_at + ACTION_TTL_MS) {
+    return { _s: 410, d: { error: '确认卡片已过期，请重新发起' } }
+  }
 
   if (!confirmed) {
     action.resolved = 'cancelled'
@@ -837,16 +990,17 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
       timelineMedia.push(m)
       media.push(m)
     }
-    const newPost = { id, author_id: action.user_id, title: action.params.title || '', content: action.params.content || '', mood: action.params.mood || '', point_id: null, location_name: '', media, created_at: new Date().toISOString() }
+    const newPost = { id, author_id: action.user_id, content: action.params.content || '', mood: action.params.mood || '', point_id: null, location_name: '', media, created_at: new Date().toISOString() }
     posts.unshift(newPost)
     // 通知另一方 post_created（按 F7 任意操作均通知另一方；这里与 REQUIREMENTS 一致——新动态通知对方）
-    for (const r of partnerIds(action.user_id)) addNotification(r, 'post_created', 'post', id, { operator: operatorName(action.user_id), title: newPost.title, content: (newPost.content || '').slice(0, 50) })
+    for (const r of partnerIds(action.user_id)) addNotification(r, 'post_created', 'post', id, { operator: operatorName(action.user_id), content: (newPost.content || '').slice(0, 50) })
     return ok({ status: 'executed', result: `动态 #${id} 已发布${media.length ? `（含 ${media.length} 张媒体）` : ''}` })
   }
 
   if (action.tool === 'create_anniversary') {
     const id = ++seq.anniversary
-    const a = { id, name: action.params.name || '新纪念日', date: action.params.date || '2024-01-01', remind_days_before: action.params.remind_days_before ?? 1, created_by: action.user_id }
+    // type/is_leap 与表单契约对齐（DESIGN §6 create_anniversary）：lunar 时透传闰月标记
+    const a = { id, name: action.params.name || '新纪念日', date: action.params.date || '2024-01-01', type: action.params.type === 'lunar' ? 'lunar' : 'solar', is_leap: action.params.type === 'lunar' && action.params.is_leap === true ? true : undefined, remind_days_before: action.params.remind_days_before ?? 1, created_by: action.user_id }
     anniversaries.push(a)
     return ok({ status: 'executed', result: `纪念日「${a.name}」已创建` })
   }
@@ -1213,6 +1367,8 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/system-prompt$/, handl
   return ok(systemPrompt)
 } })
 // 输出风格库：内置固化（不可删改），自定义后台管理；default = 全局默认（APP 未设置风格时使用）
+// 用户端只读接口（APP 设置页风格选项；与 admin 接口同源数据）
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/styles$/, handler: () => ok({ items: styles, default_style_id: styleDefaults.id }) })
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/styles$/, handler: () => ok({ items: styles, default_style_id: styleDefaults.id }) })
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/styles$/, handler: (url, body) => {
   const b = JSON.parse(body || '{}')

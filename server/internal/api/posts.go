@@ -1,12 +1,13 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/geo"
@@ -385,7 +386,7 @@ func (a *postsAPI) serveMediaFile(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if m.ThumbPath.Valid {
-			a.serveFile(w, m.ThumbPath.String, "image/jpeg")
+			a.serveFile(w, r, m.ThumbPath.String, "image/jpeg", "thumb.jpg")
 			return
 		}
 	}
@@ -402,21 +403,107 @@ func (a *postsAPI) serveMediaFile(w http.ResponseWriter, r *http.Request) {
 	if ct == "" {
 		ct = "application/octet-stream"
 	}
-	a.serveFile(w, m.FilePath, ct)
+	// download=1：另存到本机（APP 查看器「保存」）。文件名由服务端生成——跨域下
+	// <a download> 指定中文名会被浏览器忽略，必须靠 Content-Disposition。
+	name := ""
+	if r.URL.Query().Get("download") == "1" {
+		name = a.downloadName(r.Context(), m)
+		w.Header().Set("Content-Disposition", contentDisposition(name))
+	}
+	a.serveFile(w, r, m.FilePath, ct, name)
 }
 
-func (a *postsAPI) serveFile(w http.ResponseWriter, relPath, contentType string) {
+// serveFile 下发媒体字节。用 http.ServeContent 而非 io.Copy：自动获得 Range/206、
+// Content-Length、Last-Modified —— 大视频/大音频另存可续传、播放器可拖进度，
+// 且不必整份读进内存（*os.File 即 io.ReadSeeker）。
+func (a *postsAPI) serveFile(w http.ResponseWriter, r *http.Request, relPath, contentType, name string) {
 	f, err := a.mp.Open(relPath)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "文件不存在")
 		return
 	}
 	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "服务器错误")
+		return
+	}
 	w.Header().Set("Content-Type", contentType)
 	w.Header().Set("Cache-Control", "private, max-age=900")
-	if _, err := io.Copy(w, f); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
-		// 客户端断开等场景静默
+	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// downloadName 生成另存文件名：{日期}_{照片|视频|录音}_{动态内序号}.{ext}
+// 例：2026-08-15_照片_1.jpg。数据层没有原始文件名（Media 只有 file_path），
+// 故按「拍摄时间优先、其次动态发布时间」+ 类型中文 + 该动态内序号拼。
+func (a *postsAPI) downloadName(ctx context.Context, m *store.MediaRow) string {
+	ext := fileExt(m.FilePath)
+	kindWord, ok := map[string]string{"photo": "照片", "video": "视频", "audio": "录音"}[m.Kind]
+	if !ok {
+		kindWord = "媒体"
 	}
+	date := ""
+	if m.TakenAt.Valid && len(m.TakenAt.String) >= 10 {
+		date = m.TakenAt.String[:10]
+	}
+	if date == "" {
+		if post, err := a.db.GetPost(ctx, m.PostID); err == nil && len(post.CreatedAt) >= 10 {
+			date = post.CreatedAt[:10]
+		} else if len(m.CreatedAt) >= 10 {
+			date = m.CreatedAt[:10]
+		}
+	}
+	seq := int(m.ID) // 兜底：拿不到同动态媒体列表时用媒体 id 保唯一
+	if byPost, err := a.db.GetMediaByPostIDs(ctx, []int64{m.PostID}); err == nil {
+		for i, x := range byPost[m.PostID] {
+			if x.ID == m.ID {
+				seq = i + 1
+				break
+			}
+		}
+	}
+	if date == "" {
+		return "love-life_" + kindWord + "_" + strconv.Itoa(seq) + ext
+	}
+	return date + "_" + kindWord + "_" + strconv.Itoa(seq) + ext
+}
+
+// contentDisposition 生成下载头：ASCII 兜底名 + RFC 5987 的 UTF-8 名。
+// 中文文件名在 Chrome / Safari / Android WebView 上都按 filename* 取，
+// filename= 只作老客户端兜底（去掉非 ASCII 字符并压掉重复下划线）。
+func contentDisposition(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r >= 0x20 && r < 0x7f && r != '"' && r != 0x5c {
+			b.WriteRune(r)
+		}
+	}
+	ascii := b.String()
+	for strings.Contains(ascii, "__") {
+		ascii = strings.ReplaceAll(ascii, "__", "_")
+	}
+	if ascii == "" || strings.HasPrefix(ascii, ".") {
+		ascii = "love-life" + fileExt(name)
+	}
+	return "attachment; filename=\"" + ascii + "\"; filename*=UTF-8''" + percentEncode(name)
+}
+
+// percentEncode RFC 5987 值编码：保留 attr-char，其余逐字节 %XX
+func percentEncode(s string) string {
+	const attrChar = "!#$&+-.^_|~"
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || strings.IndexByte(attrChar, c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0xf])
+		}
+	}
+	return b.String()
 }
 
 func fileExt(p string) string {
