@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Send, Search, CheckCircle2, XCircle, Timer, Check, Sparkles, Square, ImagePlus, X, Music } from 'lucide-vue-next'
-import { api, getBase, getToken } from '../api/client'
+import { ApiError, api, errText, getBase, getToken } from '../api/client'
+import AppToast from '../components/AppToast.vue'
+import { mediaSrc } from '../types'
 import { useAuth } from '../stores/auth'
 import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
 import NavActions from '../components/NavActions.vue'
 
+// 单次发送媒体上限（E7 保留）：防误传；与需求「连续追加」不冲突——未达上限前可继续追加选择
 const MAX_MEDIA = 9 // 与 PublishView 对齐
 
 interface ChatMedia {
@@ -24,11 +27,24 @@ interface PickedMedia {
   file: File
 }
 
+// D2 搜索结果卡片（REQUIREMENTS §5.1：内联展示，不做跨模式跳转）
+interface SearchItem {
+  id: number
+  content: string
+  thumb_url: string
+}
+interface SearchResult {
+  tool: string
+  query?: string
+  items: SearchItem[]
+}
+
 interface Bubble {
   role: 'user' | 'assistant' | 'tool'
   content: string
   cardID?: number
   media?: ChatMedia[]
+  result?: SearchResult
 }
 
 interface CardItem {
@@ -38,6 +54,7 @@ interface CardItem {
   status: 'pending' | 'executed' | 'cancelled' | 'expired' | 'failed'
   result?: string
   expires_in?: number
+  received_at?: number // D4：本地收到时刻，用于推算剩余有效期（expires_in 是相对值）
 }
 
 interface HistoryMsg {
@@ -63,7 +80,6 @@ const pickedMedia = ref<PickedMedia[]>([])
 const pendingCardFiles = new Map<number, PickedMedia[]>()
 const mediaInput = ref<HTMLInputElement | null>(null)
 const toast = ref('')
-let toastTimer: number | undefined
 const container = ref<HTMLElement>()
 const error = ref('')
 const chips = ['帮我发动态', '整理最近的照片', '上次去海边是什么时候']
@@ -71,8 +87,6 @@ let abortCtrl: AbortController | null = null
 
 function showToast(msg: string) {
   toast.value = msg
-  if (toastTimer) window.clearTimeout(toastTimer)
-  toastTimer = window.setTimeout(() => (toast.value = ''), 1800)
 }
 
 function scrollBottom() {
@@ -126,6 +140,7 @@ function applyHistory(items: HistoryMsg[]) {
         params: m.card.params ?? {},
         status: m.card.status,
         expires_in: m.card.expires_in,
+        received_at: Date.now(), // 服务端 expires_in 相对「本次响应」计算，收到即视为起点
       }
       nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, cardID: m.card_id, media: m.media ?? [] })
     } else {
@@ -221,6 +236,49 @@ function stopStream() {
   abortCtrl?.abort()
 }
 
+// ---------- D4：确认卡片 15 分钟有效期（客户端侧） ----------
+// 服务端 expires_in 是「相对收到时刻」的秒数；本地记 received_at 推算剩余分钟，
+// 到 0 直接置 expired（置灰不可确认），真正的过期裁决仍在服务端（410）
+const now = ref(Date.now())
+function remainingMin(c: CardItem): number {
+  if (!c.received_at) return Math.ceil((c.expires_in ?? 900) / 60)
+  // 用实时时钟算：now 每 30s 才跳一次，若拿它当基准会把 15 分钟显示成 16 分钟（最多虚高 1 分钟）
+  const left = c.received_at + (c.expires_in ?? 900) * 1000 - Date.now()
+  return Math.max(0, Math.ceil(left / 60000))
+}
+function isCardExpired(c: CardItem): boolean {
+  return remainingMin(c) <= 0
+}
+watch(now, () => {
+  for (const c of Object.values(cards.value)) {
+    if (c.status === 'pending' && isCardExpired(c)) c.status = 'expired'
+  }
+})
+
+// ---------- D2：搜索结果卡片（内联展开全文/大图，不跳转） ----------
+interface PostDetailItem {
+  id: number
+  content: string
+  media: { id?: number | string; kind?: string; url?: string; thumb_url?: string }[]
+}
+const resultDetail = ref<PostDetailItem | null>(null)
+const resultLoadingId = ref<number | null>(null)
+async function toggleResult(it: SearchItem) {
+  if (resultDetail.value?.id === it.id) {
+    resultDetail.value = null // 再次点击收起
+    return
+  }
+  resultLoadingId.value = it.id
+  try {
+    const p = await api<PostDetailItem>(`/api/v1/posts/${it.id}`)
+    resultDetail.value = { id: p.id, content: p.content || '', media: p.media ?? [] }
+  } catch (e) {
+    showToast(errText(e, '打开失败'))
+  } finally {
+    resultLoadingId.value = null
+  }
+}
+
 // 同一轮流式回复的文本累加目标气泡（多段 SSE text 合并在一个气泡，避免内容被拆散显示）
 let streamBubble: Bubble | null = null
 
@@ -274,22 +332,33 @@ async function send(text?: string) {
         const ev = lines.find((l) => l.startsWith('event: '))?.slice(7)
         const dataLine = lines.find((l) => l.startsWith('data: '))
         if (!ev || !dataLine) continue
-        const data = JSON.parse(dataLine.slice(6))
+        let data
+        try {
+          data = JSON.parse(dataLine.slice(6))
+        } catch {
+          continue // C8：单条脏帧（截断/非 JSON）跳过，不中断整轮流式
+        }
         if (ev === 'text') {
           // 服务端把一条回复分多段 text 事件下发（如每 2-3 字一片），
           // 这里合并进同一气泡，避免「内容被拆分显示」。
           // 服务端以「放大镜」emoji（U+1F50E）前缀标记工具调用；仅在首片剥离，改为 Lucide Search 图标呈现
-          const isToolStart = data.content.charCodeAt(0) === 0xd83d && data.content.charCodeAt(1) === 0xdd0e
-          const chunk = isToolStart ? data.content.replace(/^\uD83D\uDD0E\s*/, '') : data.content
+          const raw = typeof data.content === 'string' ? data.content : ''
+          if (!raw) continue // 非 string / 空内容：跳过，避免 charCodeAt 抛错整轮失败
+          const isToolStart = raw.charCodeAt(0) === 0xd83d && raw.charCodeAt(1) === 0xdd0e
+          const chunk = isToolStart ? raw.replace(/^\uD83D\uDD0E\s*/, '') : raw
           if (!streamBubble) {
             streamBubble = { role: isToolStart ? 'tool' : 'assistant', content: chunk }
             bubbles.value.push(streamBubble)
           } else if (chunk) {
             streamBubble.content += chunk
           }
+        } else if (ev === 'result') {
+          // D2：搜索结果卡片先行落一个气泡，随后的 text 分片并入同一条（文字在上、卡片在下）
+          streamBubble = { role: 'assistant', content: '', result: { tool: data.tool, query: data.query, items: data.items ?? [] } }
+          bubbles.value.push(streamBubble)
         } else if (ev === 'card') {
           streamBubble = null // 卡片前的一段提示作为独立气泡已落定，后续不再并入
-          cards.value[data.action_id] = { ...data, status: 'pending' }
+          cards.value[data.action_id] = { ...data, status: 'pending', received_at: Date.now() }
           if (sentFiles.length) pendingCardFiles.set(data.action_id, sentFiles)
           bubbles.value.push({ role: 'assistant', content: '' })
           bubbles.value[bubbles.value.length - 1].cardID = data.action_id
@@ -306,7 +375,7 @@ async function send(text?: string) {
     if (e instanceof Error && e.name === 'AbortError') {
       // 用户主动停止：不算错误
     } else {
-      error.value = e instanceof Error ? e.message : '发送失败'
+      error.value = errText(e, '发送失败')
     }
   } finally {
     streaming.value = false
@@ -318,6 +387,14 @@ async function send(text?: string) {
 // 气泡 → 确认卡片（模板去重：一次访问卡 ID 与卡片对象）
 function cardOf(b: Bubble): CardItem | undefined {
   return b.cardID == null ? undefined : cards.value[b.cardID]
+}
+
+// 媒体类型语义 helper（模板三处 startsWith 收拢）
+function isImage(t: string): boolean {
+  return t.startsWith('image/')
+}
+function isVideo(t: string): boolean {
+  return t.startsWith('video/')
 }
 
 async function confirmCard(id: number, confirmed: boolean) {
@@ -340,8 +417,10 @@ async function confirmCard(id: number, confirmed: boolean) {
     }
     scrollBottom()
   } catch (e) {
-    card.status = 'expired'
-    card.result = e instanceof Error ? e.message : '确认失败'
+    // 409=已处理 / 410=已过期（服务端判定，见 D4）；其余才是真失败，别一律标成「已过期」
+    const status = e instanceof ApiError ? e.status : 0
+    card.status = status === 409 || status === 410 ? 'expired' : 'failed'
+    card.result = errText(e, '确认失败')
   } finally {
     pendingCardFiles.delete(id)
     // 拿到后端处理结果即「结束」
@@ -349,7 +428,15 @@ async function confirmCard(id: number, confirmed: boolean) {
   }
 }
 
-onMounted(loadHistory)
+onMounted(() => {
+  void loadHistory()
+  expiryTimer = window.setInterval(() => (now.value = Date.now()), 30000)
+})
+
+let expiryTimer: number | undefined
+onBeforeUnmount(() => {
+  if (expiryTimer) window.clearInterval(expiryTimer)
+})
 </script>
 
 <template>
@@ -362,40 +449,67 @@ onMounted(loadHistory)
     <div ref="container" class="stream">
       <p v-if="bubbles.length === 0" class="empty"><Sparkles :size="30" stroke-width="1.2" class="spark" /><br />和我聊聊你们的日常吧</p>
       <template v-for="(b, i) in bubbles" :key="i">
-        <div v-if="b.content" class="bubble" :class="b.role">
+        <div v-if="b.content || b.result" class="row" :class="b.role">
+          <span v-if="b.role === 'assistant'" class="ai-avatar" title="AI 助手">
+            <Sparkles :size="14" stroke-width="2" />
+          </span>
+          <div class="bubble" :class="b.role">
           <span v-if="b.role === 'tool'" class="tool-icon"><Search :size="13" stroke-width="1.8" /></span>{{ b.content }}
           <div v-if="b.media?.length" class="bubble-media">
             <template v-for="m in b.media" :key="m.data_url">
-              <img v-if="m.type.startsWith('image/')" :src="m.data_url" alt="附件" loading="lazy" />
-              <video v-else-if="m.type.startsWith('video/')" :src="m.data_url" controls />
+              <img v-if="isImage(m.type)" :src="m.data_url" alt="附件" loading="lazy" />
+              <video v-else-if="isVideo(m.type)" :src="m.data_url" controls />
               <audio v-else :src="m.data_url" controls class="bubble-audio" />
             </template>
           </div>
+          <!-- D2 搜索结果卡片：内联展示，点击在流内展开全文/大图（不做跨模式跳转） -->
+          <div v-if="b.result" class="result-list">
+            <template v-if="b.result.items.length">
+              <div v-for="it in b.result.items" :key="it.id" class="result-card" @click="toggleResult(it)">
+                <div class="rc-head">
+                  <img v-if="it.thumb_url" :src="mediaSrc({ thumb_url: it.thumb_url }, 'thumb')" alt="" loading="lazy" />
+                  <span class="rc-text">{{ it.content || '（无文字）' }}</span>
+                </div>
+                <p v-if="resultLoadingId === it.id" class="rf-loading">加载中…</p>
+                <div v-if="resultDetail?.id === it.id" class="result-full">
+                  <p class="rf-text">{{ resultDetail.content || '（无文字）' }}</p>
+                  <div v-if="resultDetail.media.length" class="rf-media">
+                    <img v-for="(m, mi) in resultDetail.media" :key="mi" :src="mediaSrc(m, 'raw')" alt="" loading="lazy" />
+                  </div>
+                </div>
+              </div>
+            </template>
+            <p v-else class="result-empty">没找到相关回忆</p>
+          </div>
+          </div>
         </div>
-        <template v-if="cardOf(b)">
-          <div class="card" :class="cardOf(b)!.status">
-            <p class="desc">{{ describe(cardOf(b)!) }}</p>
-            <template v-if="cardOf(b)?.status === 'pending'">
+        <template v-for="c in [cardOf(b)]" :key="c?.action_id">
+          <div v-if="c" class="card" :class="c.status">
+            <p class="desc">{{ describe(c) }}</p>
+            <template v-if="c.status === 'pending'">
               <div class="btns">
                 <button class="ok" @click="confirmCard(b.cardID!, true)">
                   <Check :size="15" stroke-width="2" />确认执行
                 </button>
                 <button class="no" @click="confirmCard(b.cardID!, false)">取消</button>
               </div>
-              <p class="hint">15 分钟内有效 · 单次有效</p>
+              <p class="hint">
+                <template v-if="isCardExpired(c)">已过期，请重新发起</template>
+                <template v-else>剩余 {{ remainingMin(c) }} 分钟 · 单次有效</template>
+              </p>
             </template>
             <p v-else class="result">
-              <template v-if="cardOf(b)?.status === 'executed'">
+              <template v-if="c.status === 'executed'">
                 <span class="res-ok"><CheckCircle2 :size="14" stroke-width="1.8" />已执行</span>
               </template>
-              <span v-else-if="cardOf(b)?.status === 'cancelled'">已取消</span>
-              <span v-else-if="cardOf(b)?.status === 'expired'" class="res-warn">
+              <span v-else-if="c.status === 'cancelled'">已取消</span>
+              <span v-else-if="c.status === 'expired'" class="res-warn">
                 <Timer :size="14" stroke-width="1.8" />已过期
               </span>
-              <span v-else-if="cardOf(b)?.status === 'failed'" class="res-err">
+              <span v-else-if="c.status === 'failed'" class="res-err">
                 <XCircle :size="14" stroke-width="1.8" />失败
               </span>
-              {{ cardOf(b)?.result }}
+              {{ c.result }}
             </p>
           </div>
         </template>
@@ -410,8 +524,8 @@ onMounted(loadHistory)
     <footer class="input-bar">
       <div v-if="pickedMedia.length" class="media-strip">
         <div v-for="(m, i) in pickedMedia" :key="i" class="media-pick">
-          <img v-if="m.type.startsWith('image/')" :src="m.data_url" alt="" />
-          <video v-else-if="m.type.startsWith('video/')" :src="m.data_url" muted />
+          <img v-if="isImage(m.type)" :src="m.data_url" alt="" />
+          <video v-else-if="isVideo(m.type)" :src="m.data_url" muted />
           <div v-else class="media-audio"><Music :size="18" stroke-width="1.8" /><span class="audio-name">{{ m.name }}</span></div>
           <button class="rm" aria-label="移除附件" @click="pickedMedia.splice(i, 1)"><X :size="12" stroke-width="2" /></button>
         </div>
@@ -433,7 +547,7 @@ onMounted(loadHistory)
         </button>
       </div>
     </footer>
-    <div v-if="toast" class="toast" @click="toast = ''">{{ toast }}</div>
+    <AppToast :text="toast" bottom="5rem" pill @done="toast = ''" />
   </section>
 </template>
 
@@ -486,6 +600,90 @@ onMounted(loadHistory)
   color: var(--primary-deep);
   opacity: 0.6;
   margin-bottom: 0.6rem;
+}
+/* D1 AI 专属头像标识（REQUIREMENTS:238）：助手气泡左侧固定标识，用户气泡不加 */
+.row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.4rem;
+}
+.row.user {
+  justify-content: flex-end;
+}
+.ai-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--primary), var(--sem-purple));
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-bottom: 0.6rem;
+}
+/* D2 搜索结果卡片（内联，无跳转） */
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  margin-top: 0.5rem;
+}
+.result-card {
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  padding: 0.4rem 0.5rem;
+  cursor: pointer;
+  background: var(--bg);
+}
+.rc-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.rc-head img {
+  width: 42px;
+  height: 42px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.rc-text {
+  font-size: 0.8125rem;
+  color: var(--ink);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.result-full {
+  margin-top: 0.5rem;
+  border-top: 1px dashed var(--rule);
+  padding-top: 0.5rem;
+}
+.rf-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--ink);
+  white-space: pre-wrap;
+}
+.rf-media {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 0.4rem;
+}
+.rf-media img {
+  width: 108px;
+  height: 108px;
+  object-fit: cover;
+  border-radius: 8px;
+}
+.rf-loading,
+.result-empty {
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted-ink);
 }
 .bubble {
   max-width: 80%;
@@ -757,29 +955,9 @@ onMounted(loadHistory)
 .send:disabled {
   opacity: 0.45;
 }
-.toast {
-  position: fixed;
-  left: 50%;
-  bottom: 5rem;
-  transform: translateX(-50%);
-  background: rgba(30, 30, 30, 0.92);
-  color: #fff;
-  font-size: 0.8125rem;
-  padding: 0.5rem 1rem;
-  border-radius: 999px;
-  z-index: 60;
-  max-width: 80%;
-}
-
 .error {
   color: var(--danger);
   font-size: 0.8125rem;
   text-align: center;
-}
-.ghost {
-  border: none;
-  background: none;
-  color: var(--muted-ink);
-  padding: 0.25rem;
 }
 </style>
