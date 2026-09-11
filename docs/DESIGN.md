@@ -17,6 +17,10 @@
 10. [部署架构与技术栈](#10-部署架构与技术栈)
 11. [部署与网络](#11-部署与网络)
 12. [数据模型](#12-数据模型)
+13. [删除交互统一规范](#13-删除交互统一规范)
+14. [媒体另存到本机](#14-媒体另存到本机)
+15. [响应式框架与浮层定位](#15-响应式框架与浮层定位)
+16. [媒体查看器：三类媒体与播放](#16-媒体查看器三类媒体与播放)
 
 ---
 
@@ -249,7 +253,7 @@ flowchart TD
 
 | Tool Name | Description | Input Schema |
 |:---|:---|:---|
-| create_post | 创建一条新动态 | {title?, content, media_urls?, location?, mood?, related_anniversary_id?} |
+| create_post | 创建一条新动态 | {content, media_urls?, location?, mood?, related_anniversary_id?} |
 | delete_post | 删除动态（进入回收站） | {post_id} |
 | search_posts | 语义搜索历史动态 | {query, date_range?, media_type?} |
 | get_today_in_history | 获取那年今日内容 | {years_back?} |
@@ -285,12 +289,12 @@ flowchart TD
 
 | Tool Name | Description | Input Schema |
 |:---|:---|:---|
-| create_anniversary | 创建纪念日 | {name, date, type: 'solar'|'lunar', remind_days_before?}——date 统一 YYYY-MM-DD；solar=公历，lunar=农历日期（换算在客户端统一处理，不传/不存“本次公历”） |
+| create_anniversary | 创建纪念日 | {name, date, type: 'solar'|'lunar', is_leap?, remind_days_before?}——date 统一 YYYY-MM-DD；solar=公历，lunar=农历日期（is_leap=true 表闰月；倒计时/next 由服务端推算，不传/不存"本次公历"） |
 | delete_anniversary | 删除纪念日（进入回收站） | {anniversary_id} |
 | get_next_anniversary | 获取下一个纪念日信息 | {} |
 | configure_reminder | 配置纪念日提醒（提前天数；提醒站内+外部同发） | {anniversary_id, days_before} |
 
-> 注：`get_next_anniversary` 工具输出含 `next_solar_date`——服务端按 §12 约定复用同一离线算法（`internal/lunar`）**即时换算，不落库**；§12「换算由客户端处理」指展示层，本节「不存」指存储层无冗余字段（AD4 审核 2026-09-05 要求的输出增强）。
+> 注：`get_next_anniversary` 工具输出含 `next_solar_date`——服务端按 §12 约定复用同一离线算法（`internal/lunar`）**即时换算，不落库**（AD4 审核 2026-09-05 要求的输出增强）。
 
 ### 6.5 空间与数据
 
@@ -570,7 +574,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | 实体 | 关键字段 | 说明 |
 |:---|:---|:---|
 | User | id, username, password_hash, role(admin/girl/boy), nickname, avatar_media_id?, birthday, ai_style, chat_retention_days | 用户级 AI 偏好（输出风格、对话保留天数）内嵌本表，按用户生效；admin 由部署环境变量内置 |
-| Space | id, name, signature, love_start_date | 单行表（单空间部署） |
+| Space | id, name, signature, love_start_date | 单行表（单空间部署）；`GET /space` 额外返回即时聚合字段 members / days_together / next_anniversary / anniversary_count / album_count（APP 首页「全新部署空态」判定用：无动态 + 无纪念日 + 无相册；用计数而非 `next_anniversary.name`，否则「纪念日存在但日期全部无效」会被误判成空态） |
 | WebhookChannel | id, name, method(GET/POST), url, headers_json, body_template, events_json | 空间级外部通知渠道（admin 后台配置，无用户归属）；events_json = 订阅的事件类型（7 类） |
 | ModelProvider | id, api_type(openai-chat/openai-responses/anthropic/gemini), name, base_url, api_key_encrypted, sort_order | admin 域；Key 加密存储，客户端永不接触；sort_order = 故障切换链顺序 |
 | ProviderModel | provider_id, model_id, temperature?, max_tokens? | 供应商下模型条目，参数挂模型级（可空 = 调用不传）；default_model 为 Provider 上的指针字段，存模型 ID 字符串（供应商内 UNIQUE，删除供应商时模型条目级联） |
@@ -581,15 +585,15 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 
 | 实体 | 关键字段 | 说明 |
 |:---|:---|:---|
-| Post | id, author_id, title?, content, mood?, point_id?, location_name?(快照), related_anniversary_id?, created_at, deleted_at | 地点 = 外键 + 名称快照：点位被删/合并后动态详情仍显示快照名 |
+| Post | id, author_id, content, mood?, point_id?, location_name?(快照), related_anniversary_id?, created_at, deleted_at | 地点 = 外键 + 名称快照：点位被删/合并后时间轴仍显示快照名；无标题字段（REQUIREMENTS §4.5 发布表单不采集标题） |
 | Media | id, post_id, kind(photo/video/audio), file_path, thumb_path, width, height, size, duration?, taken_at?, author_id?, album_id?, created_at, deleted_at | 媒体不再独立存在，随动态发布（post_id 必填）；历史独立媒体只读兼容（不可新建、独立媒体接口 410）；kind 含 audio（mp3/m4a/wav，无缩略图、duration 必填）；taken_at 取 EXIF 拍摄时间，供时间轴与那年今日排序 |
 | Comment | id, post_id, author_id, content, created_at, deleted_at | 记录内容，软删进回收站 |
 | Like | (post_id, user_id), created_at | 可撤销关系数据，复合主键，不进回收站 |
 | Favorite | (post_id, user_id), created_at | 同上；首版收藏对象仅动态 |
-| Album | id, type(manual/monthly), name, description?, month_key?, is_hidden, cover_media_id?, created_at, deleted_at | 月度相册不可删除只可隐藏；封面默认取首图 |
+| Album | id, type(manual/monthly), name, description?, month_key?, is_hidden, cover_media_id?, created_at, deleted_at | 手动相册=用户建册后从时间轴选入（一文件一相册）；月度相册=纯逻辑展示概念（不落 album_items，详情按 month_key 虚拟查询该月未归属媒体），不可删除只可隐藏；封面默认取首图；列表行标签按 type 渲染（月度相册/手动相册） |
 | AlbumItem | (album_id, media_id), added_by, added_at + UNIQUE(media_id)（一文件一相册） | 相册是照片池之上的组织视图；手动相册全相册唯一 |
 | MapPoint | id, name, lat, lng, visit_date?, description?, source(post/manual), created_at, deleted_at | 同名地点复用同一点位（判定键 = 地点名），坐标以先创建者为准；城市统计/点位列表按点位本身统计；无合并链，无可见性开关（toggle_point_visibility 已移除，仅查看与删除） |
-| Anniversary | id, name, date, type(solar/lunar), remind_days_before(默认 1), created_at, deleted_at | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历（每年按公历重复）；lunar=农历日期（如 1996-05-15=农历1996年五月十五，按农历月/日每年重复）；**不存 lunar_month/lunar_day/lunar_leap 等冗余字段**；倒计时/排序/公历换算一律由客户端 `app/src/utils/lunar.ts` 统一处理（mock 与后端如需计算 next，使用同一离线算法）；提醒配置为内嵌单值字段（每纪念日仅一个提前天数）；**列表/表单按 iOS 风格**：列表行主标题(17px semibold)+副行（农历两行：`年 · 农历X月X日` 与 `下个公历 YYYY-MM-DD`），农历月/日选择器全部用汉字与农历日历写法（正月…腊月；初一…初十、二十、廿一…廿九、三十）；农历换算离线算法（1900–2100 社区表驱动，全量校准真实化见 docs/TODO.md A2） |
+| Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, deleted_at | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历（每年按公历重复）；lunar=农历日期（如 1996-05-15=农历1996年五月十五，按农历月/日每年重复）；**不存 lunar_month/lunar_day 冗余字段**，闰月语义由 `is_leap` 标记承载（true=闰月，缺省=平月）；倒计时/排序/下一次公历由服务端推算（mock 与后端使用同一离线算法，客户端仅展示服务端值，表单预览可用客户端换算）；提醒配置为内嵌单值字段（每纪念日仅一个提前天数）；**列表/表单按 iOS 风格**：列表行主标题(17px semibold)+副行（农历两行：`年 · 农历X月X日` 与 `下个公历 YYYY-MM-DD`），农历月/日选择器全部用汉字与农历日历写法（正月…腊月；初一…初十、二十、廿一…廿九、三十）；农历换算离线算法（1900–2100 社区表驱动，全量校准真实化见 docs/TODO.md A2） |
 
 ### 12.3 通知与 AI
 
@@ -612,3 +616,199 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 - 同名地点复用点位（判定键 = 地点名）；无合并链
 - Media 仅随 Post 存在（post_id 必填），删除动态即删除其媒体；Album/AlbumItem 仅为组织视图，删相册不动照片、移出相册不动媒体；AlbumItem UNIQUE(media_id) 全相册唯一
 - 软删除统一 `deleted_at`；点赞/收藏例外（关系数据，撤销即物理失效）
+
+## 13. 删除交互统一规范
+
+> 背景（2026-09-10）：动态 / 相册 / 纪念日 / 足迹四处的删除入口此前各写一套——有的行内常驻垃圾桶图标、
+> 有的只在详情页导航栏、有的进详情页才能删，「删除 / 移出」文案也不统一。前提是「两个人用、以展示为主、删除很少」，
+> 常驻删除图标既是视觉噪音又易误触，故统一为一套手势 + 一套文案。
+
+### 13.1 三条原则
+
+1. **列表即入口**：删除不做常驻图标——列表 / 网格卡片长按 500ms 触发；详情页不再放任何删除入口
+   （动态详情页整体移除，见 REQUIREMENTS §4.2）。
+2. **一次确认**：统一走底部 `ConfirmSheet`（标题 + 后果说明 + [取消] [移入回收站]），没有二次确认，也没有直接删除。
+3. **手势要教一次**：长按是隐形手势，每个列表页**首次进入**用 toast 提示一次（`localStorage` 标记
+   `love-life-hint-longpress-del`，`utils/storage.ts#onceHint`），之后不再打扰。
+
+长按与子元素动作不冲突：按钮 / 输入框 / 视频等交互元素上 `@pointerdown.stop`，且长按触发的 `click` 被吞掉
+（`useLongPress` 在 `pressing` 期间 `preventDefault`），按住期间条目给 `pressing` 背景反馈。
+
+### 13.2 各界面口径
+
+| 界面 | 入口 | 确认动作 | 后果文案（`recycleMsg` 的 extra） |
+|:---|:---|:---|:---|
+| 动态（时间轴卡片） | 长按卡片 | 移入回收站 | 动态里的照片与评论会一并移入回收站。 |
+| 评论（展开的评论行） | 长按评论行 | 移入回收站 | — |
+| 相册（集合列表卡片） | 长按卡片 | 移入回收站 | 有内容时补「照片本身不受影响（回到未归属状态）。」 |
+| 相册详情（照片格） | 长按照片 | 移出当前相册 | 只是移出相册，照片本身不会删除（仍在时间轴）。**非破坏性，确认按钮不用危险色** |
+| 纪念日（卡片） | 长按卡片 | 移入回收站 | — |
+| 足迹（列表行） | 长按列表行 | 移入回收站 | 动态里的地点名仍保留为快照。 |
+
+- 统一收尾：`把「{名称}」移入回收站？{后果}恢复需管理员在后台操作。`；删除**对方发布**的内容再补一句
+  「对方会收到站内通知。」（REQUIREMENTS §4.8，自删静默）。
+- 成功提示：`已移入回收站` / `已移出相册`；删除后就地移除该条，不整表重载（避免闪烁与滚动位置丢失）。
+- 文案单一来源 `app/src/utils/deleteCopy.ts`；手势 `app/src/composables/useLongPress.ts`（500ms、位移 >8px 取消、
+  抬起 / 离开 / 取消均撤销）。短按语义不变：卡片进详情、足迹行居中该点位。
+
+### 13.3 接口约定：删除一律 204
+
+删除接口返回 **204 No Content**（mock `noContent()`；真实服务端 `w.WriteHeader(http.StatusNoContent)`，
+见 `mapconfig.go` / `mappoints.go` / `providers.go` / `styles.go`）。客户端 `api()` 必须容忍 204 / 空响应体，
+否则「删除其实成功了，但前端抛 `Unexpected end of JSON input`」——表现为报错 toast + 列表留着旧数据。
+回归用例：`.verify/app-refresh-singleflight.mjs` 第 4 组（204 / 200 空体 / `errText` 兜底与透传）。
+
+---
+
+## 14. 媒体另存到本机
+
+全屏查看器底栏的「保存」（照片 / 视频 / 音频同一入口）。需求口径见 REQUIREMENTS §4.2、§8.1。
+
+### 14.1 边界
+
+- **单条保存**：只保存当前这一条；无批量选择、无「保存全部」、无保存通知。
+- **不是导出 / 备份**：平台定位不内置备份/导出/导入（见 §11.3）；「保存」只是把眼前这条另存到本机，与数据迁移无关。
+  列表长按仍是删除入口（§13），不给下载留位置。
+- 保存的是**原始文件**：服务端直发 `m.file_path`，不转码、不压缩、不剥 EXIF。
+
+### 14.2 手机优先：系统「另存为」（Android SAF）
+
+- 原生环境（Android APK / iOS / 桌面 Tauri）走 `dialog.save()`：Android 即 SAF `ACTION_CREATE_DOCUMENT` ——
+  **零存储权限**（不需要 `READ/WRITE_EXTERNAL_STORAGE`）、用户自选去处（相册 / 下载 / 文件管理器）、重名自动加后缀。
+- 选定路径后**按块流式写入**（`fs.open` → `write(chunk)` → `close`），大视频不进内存；`open` 不可用时退回 `writeFile` 一次性写。
+- 取消另存为 → 静默结束，**不下载任何字节**（文件名探测只取 1 字节，见 14.3）。
+- 前端经 `window.__TAURI__`（`tauri.conf.json` 的 `app.withGlobalTauri: true`）调用插件，APP 侧不引入额外 npm 依赖；
+  Rust 侧注册 `tauri-plugin-dialog` / `tauri-plugin-fs`（`src-tauri/src/lib.rs`），权限 `dialog:allow-save` + `fs:allow-write-file`
+  （`src-tauri/capabilities/default.json`）。
+
+### 14.3 文件名：服务端为准，客户端同规则兜底
+
+- `GET /api/v1/media/file/{id}?v=raw&download=1` 时服务端补 `Content-Disposition`：
+  `{YYYY-MM-DD}_{照片|视频|录音}_{序号}.{ext}`；日期取 `taken_at` → 动态 `created_at` → 媒体入库时间，
+  序号 = 该动态内媒体顺序（独立媒体兜底用 id）。
+- 中文走 RFC 5987 `filename*=UTF-8''…`：跨域时 `<a download>` 的自定义名会被浏览器忽略，只有响应头算数。
+- CORS 需 `Access-Control-Expose-Headers: Content-Disposition`（并允许 `Range` 请求头），否则前端读不到这个头。
+- 客户端 `app/src/utils/saveMedia.ts` 的 `mediaFileName()` 与服务端同规则，作为探测失败时的兜底名。兜底口径（2026-09-11 定）：
+  - **序号**：只有 `mode='post'` 的查看器（items 就是该动态的媒体）才传动态内下标；时间轴 / 相册模式的 items 是查看器自己的列表，下标**不能**冒充动态内序号 → 留空，兜底用媒体 id。绝不拿「查看器索引 + 1」当序号。
+  - **扩展名**：优先取媒体 URL 上的 `?ext=`（服务端与 mock 都带，因此生产的 `mp4` 与开发样本的 `webm` 都能对上真实字节），没有才退回 `mediaKindExt()` 的词表。
+- 词表（照片 / 视频 / 录音、兜底扩展名）只有一份：`app/src/utils/mediaKind.ts`。客户端组件与 `tools/mock/routes.mjs` 都 import 它（mock 已有 import app 侧 TS 的先例），避免三处手抄抄出「mock 给 webm、客户端兜底说 mp4」这类契约漂移。
+
+### 14.4 签名与重签
+
+媒体直链是 15 分钟 HMAC 签名（`server/internal/media/media.go`）。保存时若签名已过期（401 / 403），
+客户端 `refreshMediaUrl(id)`（`POST /api/v1/media/reurl` 单条）换新签名后**重试一次**；仍失败 → 提示「保存失败，请检查网络后重试」。
+页面停留期间的静默重签仍是 5 分钟一轮（AP3）。
+
+### 14.5 Web / 无 Tauri 降级
+
+1. 先探测 `GET …&download=1` + `Range: bytes=0-0`（只取 1 字节）：拿到 `Content-Disposition` → 说明服务端会给文件名，
+   把带 `download=1` 的直链交给浏览器下载管理器（流式、可续传、文件名由服务端给）。
+2. 探测失败（老服务端 / 跨域头缺失）→ `fetch` 取字节 → blob → `<a download>` 兜底，文件名用客户端规则。
+
+### 14.6 真机待验清单（当前开发环境无法验证）
+
+本仓库开发环境没有 Rust 工具链、没有 Android SDK，也无法安装 crates / npm 包：以下**只写了代码，未在设备上跑过**。
+
+- [ ] Android 打包：`pnpm -C app tauri android init`（仓库当前无 `src-tauri/gen/`）→ 构建 APK。
+- [ ] `dialog.save()` 在 Android 上返回的路径形态，以及 `fs` 能否直接写 `content://` URI。
+      **首要待验项**：若不支持，改为先写应用目录再用系统「打开 / 分享」交给用户，或引入社区 MediaStore 插件。
+- [ ] SAF 选择器里是否出现相册 / 下载目录；`fs:scope` 现给 `**`，真机若拒绝则按需收窄。
+- [ ] 大文件（>100MB 视频）流式写入的内存与耗时；保存过程中切到后台的行为。
+- [ ] 未登录 / 离线 / 服务端不可达时的提示；弱网下签名重签的表现。
+- [ ] iOS（若后续打包）：`save()` 走「文件」App，`fs` 写入沙盒内路径。
+
+### 14.7 验证
+
+- 服务端：`server/internal/api/media_download_test.go` —— `download=1` 的文件名与 RFC 5987 形态、不带参数时不出 `Content-Disposition`、
+  CORS 暴露头、`Range` → 206 + `Content-Range`、越界 → 416。
+- mock：`GET /api/v1/media/file/{id}` 对齐服务端（按 kind 给真实小字节、`download=1` 头、Range），断言在 `.verify/mock-new-contract.mjs`。
+- APP：`.verify/app-save-media.mjs` —— 文件名规则、服务端名解析、原生 / 浏览器两条分支、取消不下载、401 重签重试、错误文案；
+  原生分支用桩覆盖（真机项见 14.6）。
+
+
+## 15. 响应式框架与浮层定位
+
+> 需求侧口径见 [REQUIREMENTS.md](REQUIREMENTS.md) §6.7；本章只讲实现契约，避免「每个浮层各写一套定位」。
+
+### 15.1 框架令牌（`app/src/App.vue` 唯一定义）
+
+| 令牌 | 手机 <768px | 平板 768–1279px | 桌面 ≥1280px | 用途 |
+|:---|:---|:---|:---|:---|
+| `--frame-max` | 480px | 100% | 832px | 外壳 / 独立整页的宽度上限 |
+| `--frame-inset` | 0 | 0 | 16px | 卡片与视口的外距（上下左右同值） |
+| `--frame-radius` | 0 | 0 | 18px | 卡片圆角 |
+| `--frame-shadow` | none | none | 大阴影 | 卡片阴影 |
+| `--col-max` | 480px | 100% | 720px | 内容列宽度（外壳内部的第二层） |
+
+消费方只有两处：`MainView .main`（登录后的外壳）与 `App .page-col`（登录 / 通知 / 设置 / AI 对话 / 聊天等独立整页）。
+**新页面一律套 `.page-col`**，不要再自己写宽度、高度、圆角与阴影——桌面档的卡片尺寸只允许有一个来源。
+（`--sheet-max` 已删除：无任何引用。）
+
+### 15.2 浮层定位约定
+
+| 浮层 | 手机 / 平板 | 桌面 |
+|:---|:---|:---|
+| 底部弹层 `components/Sheet.vue`（`ConfirmSheet` 等全部实用弹层都走它） | 贴屏幕底、`min(420px, 100%)` 宽，遮罩铺满整屏 | 贴**面板下边缘**：弹窗 `width: min(var(--frame-max), calc(100% - 2 * var(--frame-inset)))`、四角 18；**着色遮罩只覆盖面板矩形**（`mask` 本身仍铺满视口，暗色由 `::before` 画、`pointer-events: none`，因此「点面板外空白也能关闭」的手感不变）；标题 / 正文 / 按钮限宽 520px 居中 |
+| 全屏查看器 `MediaViewer .mv` | `inset: 0` 铺满 | 面板矩形：`top/bottom: var(--frame-inset)`、左右居中且同宽、`border-radius: var(--frame-radius)` |
+| 相册「选择」页 `AlbumDetailView .pick-overlay` | `inset: 0` 铺满 | 同上，收进面板矩形 |
+| toast `AppToast` | 视口水平居中 | 不用改：面板本身就居中，视口居中即面板居中 |
+
+### 15.3 三个坑（都真实踩过，改浮层前先看这里）
+
+1. **`box-sizing`**：`.sheet-card` 原来只写 `width`，默认 `content-box` → 加上 16px 内边距后弹窗比屏幕 / 面板**宽出 32px**（手机贴边溢出、桌面探出面板）。容器类元素设宽度时一并写 `box-sizing: border-box`。
+2. **scoped 样式优先级**：各页 scoped 的 `height: 100%`（`.settings-page[data-v-x]` = 0,2,0）会压过全局 `.page-col`（0,1,0）→ 桌面档卡片被撑到贴住视口下边缘、只剩上外距（登录页「底部没有间距」）。桌面档规则用 `.page-col.page-col.page-col`（0,3,0）压过去。
+3. **元素 `opacity` 会连带子元素**：弹层「取消」按钮原来写 `background: var(--muted-ink); opacity: .12` → 文字跟着一起变淡，读起来像禁用态。压背景请用 `var(--sk)`（半透明灰），不要用 `opacity`；`ConfirmSheet` 的后果说明文字同理改成正文色（muted 灰会被读成「不可用」）。
+
+底栏 / 底栏类横向操作的排版同理：**按钮一行、提示文案一行**，不要并排——并排时窄屏会把提示压成窄条、文字换行，看着像错乱。参考 `MediaViewer .mv-bar`（`.mv-actions` + `.mv-note`，保存状态临时顶替提示行）。
+
+### 15.4 验证
+
+浏览器实测（真实 mock + Vite，比对 `.main` 与 `.page-col` 的 x / width / top / height / bottom / radius / shadow 七个字段）：
+390×844、834×1112、1024×768、1280×800、1440×900、1920×1080 六档全部**逐字段一致**；
+桌面档弹层 rect == 面板 rect（1440×900 下同为 `x304 / w832 / bottom884`）；桌面档大图查看器 rect == 面板 rect；手机档弹层贴屏幕底且不再溢出 32px。
+
+> 环境注记：Vite dev server 偶发不感知外部写入（`Sheet.vue` 的样式改动在硬盘上、dev server 仍返回旧 CSS 模块），浏览器因此看不到新样式。`touch` 该文件即可触发失效；排查方式是直接 `curl` 该 SFC 的 `?vue&type=style` 子请求比对。
+
+## 16. 媒体查看器：三类媒体与播放
+
+> 需求口径见 [REQUIREMENTS.md](REQUIREMENTS.md) §4.2 / §4.5 与 §8.1「媒体查看器」。组件只有一个：`app/src/components/MediaViewer.vue`，时间轴 / 动态 / 相册三处共用。
+
+### 16.1 三类分支
+
+| kind | 呈现 | 交互 |
+|:---|:---|:---|
+| `photo` | `.mv-img`（原生尺寸 + `max-width/height: 100%`） | 双击 / 滚轮 / 捏合缩放，放大后可拖动，左右滑动切条 |
+| `video` | `.mv-video`（`controls playsinline`）+ 居中 `.mv-play` 播放按钮 | 点按钮播放；播放中按钮隐去；点画面暂停 / 继续；播完复位 |
+| `audio` | `.mv-audio` 卡片：封面 `.mv-audio-cover` + 「录音」+ 日期 / 时长 + `.mv-play.audio` + 原生 `<audio controls>` | 按钮播放 / 暂停；原生控制条负责进度、音量、倍速 |
+
+顶部 `.mv-kind` 类型标识（图标 + 照片 / 视频 / 录音）与计数器同排，三种类型一眼可辨。
+
+### 16.2 为什么「点了才播」而不是自动播放
+
+带声音的 `autoplay` 会被浏览器拦截（未手势时实测 `paused: true, readyState: 0`，等于进了详情什么都不动），静音自动播放又要再做一层「点击取消静音」。
+**点击就是用户手势**，可以直接出声，与 iOS 照片 App 的心智一致。
+
+### 16.3 状态管理
+
+- `playing`（按钮显隐 / 图标）、`failed`（兜底文案）、`mediaDuration`（`loadedmetadata` 取真实时长，回退到接口 `duration`）全部由播放器元素的事件驱动。
+- `go()` 切条、`close()` 关闭都先 `pause()` 上一条（`stopMedia()`），避免「换了一张图，背景还在响」。
+- `error` 事件 → `.mv-fail` 卡片：说明文件可能损坏或格式不受支持，并引导先「保存」到本机；此时播放按钮隐藏，底栏「保存」仍在。
+- 底栏提示按类型换文案：照片「单击媒体可放大 / 左右滑动切换」，视频 / 音频「点击播放 / 左右滑动切换」。
+
+### 16.4 mock 真实样本（本地能不能看到播放的前提）
+
+`tools/mock/fixtures/` 存真实可播样本，`routes.mjs` 的 `MOCK_RAW` 按 kind 下发（文件缺失时退回内联占位字节，保证 mock 永远能起）：
+
+| kind | 文件 | 形态 | 生成方式 |
+|:---|:---|:---|:---|
+| photo | `sample-photo.jpg` | 1200×800 JPEG，26.9KB | Pillow 画渐变 |
+| video | `sample-video.webm` | 640×360 VP8，73.5KB | Chrome `MediaRecorder` 录 canvas 3s |
+| audio | `sample-audio.wav` | 8kHz 单声道 3s WAV，48KB | python `wave` 正弦音 |
+
+**视频为什么是 WebM**：开发机没有 ffmpeg，也没有外网（`pip` / `npm` 均不可达），只能在浏览器里录一段真视频。播放器代码路径与真实 H.264 / MP4 完全一致，**对外契约仍以服务端为准**（服务端下发 MP4）。
+`fixtures.mjs` 的 `ext` 与样本字节对齐（photo→`jpg`、video→`webm`、audio→`wav`），另存文件名随之变化；客户端兜底命名读 URL 的 `?ext=`，所以两边的扩展名始终一致（口径见 §14.3）。
+
+### 16.5 验证
+
+- `.verify/mock-new-contract.mjs`：三类样本的 `Content-Type` + 真实容器头（JPEG `ffd8ff`、WebM `1a45dfa3`、WAV `RIFF..WAVE`）+ 体积 >4KB；另存文件名扩展名 `.jpg` / `.webm` / `.wav`；Range → 206 / 416。
+- 浏览器实测（390×844 与 1440×900，真实 mock）：时间轴走到三类条目，标识分别为 照片 / 视频 / 录音；点播放按钮后视频 `paused=false currentTime 0.9s duration 2.9s videoWidth=640`、录音 `paused=false currentTime 0.18 duration 3`；切条后仍在播放的媒体数 1 → 0（上一条已停）；把 `src` 换成坏数据 → `.mv-fail` 出现且播放按钮隐藏。
