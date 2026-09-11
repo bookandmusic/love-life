@@ -19,6 +19,7 @@ demo/
 .impeccable/
 .dsh/
 .gocache/
+.zcode/
 
 # 临时台账与计划文档：保留文件但不入版本控制
 # TODO 为推进台账（阶段进展），dev 为改动计划文档（改动前产出、验证后删除）
