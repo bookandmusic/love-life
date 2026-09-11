@@ -21,6 +21,8 @@ func TestSpaceAndProfile(t *testing.T) {
 		NextAnniversary struct {
 			Name string `json:"name"`
 		} `json:"next_anniversary"`
+		AnniversaryCount int `json:"anniversary_count"`
+		AlbumCount       int `json:"album_count"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&space)
 	res.Body.Close()
@@ -29,6 +31,10 @@ func TestSpaceAndProfile(t *testing.T) {
 	}
 	if space.DaysTogether != nil {
 		t.Fatal("未设恋爱开始日时 days_together 应为 null")
+	}
+	// S5：全新库计数为 0（APP 首页据此判定「全新部署空态」，不依赖 next_anniversary.name）
+	if space.AnniversaryCount != 0 || space.AlbumCount != 0 {
+		t.Fatalf("空库计数应为 0: anniv=%d album=%d", space.AnniversaryCount, space.AlbumCount)
 	}
 
 	// girl 也能改空间信息（双方对等）+ 设恋爱开始日 + 建纪念日
@@ -52,6 +58,18 @@ func TestSpaceAndProfile(t *testing.T) {
 	}
 	if space.NextAnniversary.Name != "恋爱纪念日" {
 		t.Fatalf("next anniversary: %+v", space.NextAnniversary)
+	}
+	if space.AnniversaryCount != 1 {
+		t.Fatalf("建纪念日后计数应为 1: %d", space.AnniversaryCount)
+	}
+	// 相册同理：建一个手动相册 → album_count 跟随
+	res = doJSON(t, "POST", ts.URL+"/api/v1/albums", girlToken, map[string]string{"name": "海边合集"})
+	res.Body.Close()
+	res = doJSON(t, "GET", ts.URL+"/api/v1/space", girlToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&space)
+	res.Body.Close()
+	if space.AlbumCount != 1 {
+		t.Fatalf("建相册后 album_count 应为 1: %d", space.AlbumCount)
 	}
 
 	// 个人资料与 AI 偏好（ai_style 合法性 = 风格库中存在，AD2）

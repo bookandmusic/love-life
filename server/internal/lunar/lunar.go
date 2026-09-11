@@ -84,6 +84,10 @@ func LunarToSolar(y, m, d int, isLeap bool) (time.Time, bool) {
 	if isLeap && lm != m {
 		return time.Time{}, false
 	}
+	// 闰月自身的天数与平月不同：日期上限用 leapDays
+	if isLeap && d > leapDays(y) {
+		return time.Time{}, false
+	}
 	offset := 0
 	for i := baseYear; i < y; i++ {
 		offset += yearDays(i)
@@ -94,8 +98,9 @@ func LunarToSolar(y, m, d int, isLeap bool) (time.Time, bool) {
 			offset += leapDays(y)
 		}
 	}
+	// 闰 m 月排在平 m 月之后：先加平月 m 整月；d-1 自然落在闰月内
 	if isLeap {
-		offset += leapDays(y)
+		offset += monthDays(y, m)
 	}
 	offset += d - 1
 	return baseDate.AddDate(0, 0, offset), true

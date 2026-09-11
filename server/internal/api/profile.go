@@ -58,7 +58,15 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 		Date      string `json:"date,omitempty"`
 		DaysUntil int    `json:"days_until"`
 	}
+	// 计数供 APP 首页空态判定（S5）：单看 next_anniversary 无法区分「没有纪念日」
+	// 与「纪念日存在但日期全部无效」，会把有数据的空间误判成全新部署
+	anniversaryCount := 0
+	albumCount := 0
+	if list, err := a.db.ListAlbums(r.Context(), true); err == nil {
+		albumCount = len(list)
+	}
 	if list, err := a.db.ListAnniversaries(r.Context()); err == nil {
+		anniversaryCount = len(list)
 		now := time.Now()
 		best := -1
 		for i, ann := range list {
@@ -81,6 +89,7 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name": space.Name, "signature": space.Signature, "love_start_date": loveStart,
 		"members": members, "days_together": daysTogether, "next_anniversary": nextAnniversary,
+		"anniversary_count": anniversaryCount, "album_count": albumCount,
 	})
 }
 

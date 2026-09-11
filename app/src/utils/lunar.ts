@@ -7,7 +7,7 @@
 //   0x10000>>m    = 第 m 个月为大月(30 天)（m=1..12）
 //   其余月份为小月(29 天)
 
-export const LUNAR_INFO = [
+const LUNAR_INFO = [
   0x04bd8, 0x04ae0, 0x0a570, 0x054d5, 0x0d260, 0x0d950, 0x16554, 0x056a0, 0x09ad0, 0x055d2, // 1900
   0x04ae0, 0x0a5b6, 0x0a4d0, 0x0d250, 0x1d255, 0x0b540, 0x0d6a0, 0x0ada2, 0x095b0, 0x14977, // 1910
   0x04970, 0x0a4b0, 0x0b4b5, 0x06a50, 0x06d40, 0x1ab54, 0x02b60, 0x09570, 0x052f2, 0x04970, // 1920
@@ -33,39 +33,42 @@ export const LUNAR_INFO = [
 
 const BASE_YEAR = 1900
 
-export function leapMonth(y: number): number {
+function leapMonth(y: number): number {
   return LUNAR_INFO[y - BASE_YEAR] & 0xf
 }
 
-export function leapDays(y: number): number {
+function leapDays(y: number): number {
   const lm = leapMonth(y)
   return lm ? (LUNAR_INFO[y - BASE_YEAR] & 0x10000 ? 30 : 29) : 0
 }
 
-export function monthDays(y: number, m: number): number {
+function monthDays(y: number, m: number): number {
   return LUNAR_INFO[y - BASE_YEAR] & (0x10000 >> m) ? 30 : 29 // 大月 30，小月 29
 }
 
-export function yearDays(y: number): number {
+function yearDays(y: number): number {
   let sum = 348
   for (let i = 0x8000; i > 0x8; i >>= 1) sum += LUNAR_INFO[y - BASE_YEAR] & i ? 1 : 0
   return sum + leapDays(y)
 }
 
 /** 农历 → 公历（返回 JS Date；超出表范围时返回 null） */
-export function lunarToSolar(y: number, m: number, d: number, isLeap = false): Date | null {
+function lunarToSolar(y: number, m: number, d: number, isLeap = false): Date | null {
   if (y < BASE_YEAR || y > BASE_YEAR + LUNAR_INFO.length - 1) return null
   const lm = leapMonth(y)
   if (m < 1 || m > 12) return null
   if (d < 1 || d > monthDays(y, m)) return null // 小月无“三十”，该农历日不存在
   if (isLeap && lm !== m) return null
+  // 闰月自身的天数与平月不同：日期上限用 leapDays
+  if (isLeap && d > leapDays(y)) return null
   let offset = 0
   for (let i = BASE_YEAR; i < y; i++) offset += yearDays(i)
   for (let i = 1; i < m; i++) {
     offset += monthDays(y, i)
     if (i === lm) offset += leapDays(y)
   }
-  if (isLeap) offset += leapDays(y)
+  // 闰 m 月排在平 m 月之后：先加平月 m 整月；d-1 自然落在闰月内
+  if (isLeap) offset += monthDays(y, m)
   offset += d - 1
   const date = new Date(1900, 0, 31)
   date.setDate(date.getDate() + offset)
@@ -73,11 +76,13 @@ export function lunarToSolar(y: number, m: number, d: number, isLeap = false): D
 }
 
 /** 农历某月某日的下一次（含今天）公历日期，返回 YYYY-MM-DD；找不到返回 null */
-export function nextLunarOccurrence(m: number, d: number, todayISO?: string): string | null {
+export function nextLunarOccurrence(m: number, d: number, isLeap = false, todayISO?: string): string | null {
   const today = todayISO ? new Date(todayISO + 'T00:00:00') : new Date()
   const startYear = today.getFullYear()
+  // isLeap=false 时平月优先、闰月兜底（老行为：mock/存量无闰标记数据按此解读）
+  const leaps = isLeap ? [true] : [false, true]
   for (let y = startYear; y <= BASE_YEAR + LUNAR_INFO.length - 1; y++) {
-    for (const leap of [false, true]) {
+    for (const leap of leaps) {
       if (leap && leapMonth(y) !== m) continue
       const dt = lunarToSolar(y, m, d, leap)
       if (!dt) continue
@@ -94,8 +99,8 @@ export function nextLunarOccurrence(m: number, d: number, todayISO?: string): st
   return null
 }
 
-/** 农历月名（1-12：正月…冬月、腊月） */
-export const LUNAR_MONTHS = ['', '正', '二', '三', '四', '五', '六', '七', '八', '九', '十', '冬', '腊']
+/** 农历月名（1-12：正月…冬月、腊月）——仅本模块使用（外部只需 lunarMonthText/lunarDayText） */
+const LUNAR_MONTHS = ['', '正', '二', '三', '四', '五', '六', '七', '八', '九', '十', '冬', '腊']
 
 /** 农历日名（1-30：初一…初十、十一…十九、二十、十一…廿九、三十）——农历日历写法 */
 export const LUNAR_DAYS = ['', '初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十', '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十', '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十']
@@ -105,7 +110,7 @@ export function lunarMonthText(m: number): string {
   return `农历${LUNAR_MONTHS[m] || m}月`
 }
 
-/** 农历月/日 → 中文（如“农历八月十五”） */
-export function lunarDayText(m: number, d: number): string {
-  return `农历${LUNAR_MONTHS[m] || m}月${LUNAR_DAYS[d] || d}`
+/** 农历月/日 → 中文（如“农历八月十五”/“农历闰八月十五”） */
+export function lunarDayText(m: number, d: number, isLeap = false): string {
+  return `农历${isLeap ? '闰' : ''}${LUNAR_MONTHS[m] || m}月${LUNAR_DAYS[d] || d}`
 }
