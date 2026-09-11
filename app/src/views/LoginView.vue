@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { computed, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import { Eye, EyeOff, Heart, PenLine } from 'lucide-vue-next'
+import Sheet from '../components/Sheet.vue'
 import { useAuth } from '../stores/auth'
-import { getLanBase, getWanBase, setDualBase } from '../api/client'
+import { errText, getLanBase, getWanBase, setDualBase } from '../api/client'
 import { probeAndSelect, type ProbeStatus } from '../utils/netProbe'
 
 const router = useRouter()
@@ -10,12 +12,16 @@ const auth = useAuth()
 
 // 服务端地址（AP1 双通道，DESIGN §11.2）：内网（在家直连）/ 公网（在外 HTTPS），
 // 各自可空——只填一个时直接用该地址；双地址探测优选内网。
+// 主界面只留一行摘要，编辑收进 Sheet：每天动线是「进空间」，改地址是低频配置。
 type Schema = 'http' | 'https'
 const lan = reactive({ schema: 'http' as Schema, addr: '' })
 const wan = reactive({ schema: 'https' as Schema, addr: '' })
 const username = ref('')
 const password = ref('')
+const showPass = ref(false)
+const showAddr = ref(false)
 const error = ref('')
+const addrError = ref('')
 const loading = ref(false)
 const probing = ref(false)
 const probe = ref<ProbeStatus | null>(null)
@@ -60,7 +66,8 @@ function validateAddress(raw: string): string | null {
   return null
 }
 
-function fullUrl(row: { schema: Schema; addr: string }): string {
+// 与 client 的 fullUrl（相对路径转绝对地址）同名异义，改名避免误用
+function resolveUrl(row: { schema: Schema; addr: string }): string {
   const addr = row.addr.trim()
   if (!addr) return ''
   if (/^https?:\/\//i.test(addr)) return addr
@@ -81,16 +88,39 @@ async function saveAndProbe(): Promise<boolean> {
     error.value = '请至少填写一个服务地址'
     return false
   }
-  setDualBase(fullUrl(lan), fullUrl(wan))
+  setDualBase(resolveUrl(lan), resolveUrl(wan))
   probe.value = await probeAndSelect()
   return true
 }
 
-// 检测按钮：保存 + 探测 + 展示连通状态
-async function probeNow() {
+// 主界面摘要：优先内网（在家场景），未配置时给出去编辑的入口文案
+const addrLabel = computed(() => lan.addr.trim() || wan.addr.trim() || '未配置')
+const addrConfigured = computed(() => !!(lan.addr.trim() || wan.addr.trim()))
+// 行内状态点：只在本次探测有结果时显示（App.vue 挂载时已做过一次优选探测，不重复请求）
+const addrState = computed(() => {
+  const p = probe.value
+  if (!p) return null
+  if ((p.lanConfigured && p.lan) || (p.wanConfigured && p.wan)) return true
+  if (p.lanConfigured || p.wanConfigured) return false
+  return null
+})
+
+// 打开编辑：清掉上一次的探测结果，避免展示陈旧状态
+function openAddr() {
+  addrError.value = ''
+  probe.value = null
+  showAddr.value = true
+}
+
+// 保存并检测：校验失败留在 Sheet 内提示；成功保持打开以展示两路探测结果
+async function saveAddr() {
+  addrError.value = ''
   probing.value = true
   try {
-    await saveAndProbe()
+    if (!(await saveAndProbe())) {
+      addrError.value = error.value || '地址无效'
+      error.value = ''
+    }
   } finally {
     probing.value = false
   }
@@ -118,7 +148,7 @@ async function submit() {
     await auth.login(username.value, password.value)
     router.replace('/home')
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '登录失败'
+    error.value = errText(e, '登录失败')
   } finally {
     loading.value = false
   }
@@ -126,147 +156,396 @@ async function submit() {
 </script>
 
 <template>
-  <main class="login">
-    <div class="hero">
-      <h1>情侣生活记录</h1>
-      <p>只属于我们的私密生活空间</p>
+  <div class="login-page page-col">
+    <header class="navbar glass">
+      <span class="title">情侣生活记录</span>
+    </header>
+
+    <div class="content">
+      <div class="form-wrap">
+        <div class="brand">
+          <span class="brand-tile" aria-hidden="true"><Heart :size="20" :stroke-width="1.8" /></span>
+          <p class="brand-line">只属于我们的私密生活空间</p>
+        </div>
+
+        <form class="form" @submit.prevent="submit">
+          <div class="group">
+            <label class="row" for="user">
+              <span class="label">用户名</span>
+              <input
+                id="user"
+                v-model="username"
+                autocomplete="username"
+                autocapitalize="off"
+                spellcheck="false"
+                :autofocus="addrConfigured"
+              />
+            </label>
+            <label class="row" for="pass">
+              <span class="label">密码</span>
+              <span class="pass-row">
+                <input
+                  id="pass"
+                  v-model="password"
+                  :type="showPass ? 'text' : 'password'"
+                  autocomplete="current-password"
+                  enterkeyhint="go"
+                />
+                <button
+                  type="button"
+                  class="eye"
+                  :aria-label="showPass ? '隐藏密码' : '显示密码'"
+                  :aria-pressed="showPass"
+                  @click="showPass = !showPass"
+                >
+                  <EyeOff v-if="showPass" :size="18" :stroke-width="1.8" />
+                  <Eye v-else :size="18" :stroke-width="1.8" />
+                </button>
+              </span>
+            </label>
+            <button type="button" class="row addr" @click="openAddr">
+              <span class="label">服务地址</span>
+              <span class="value">{{ addrLabel }}</span>
+              <span v-if="addrState !== null" class="dot" :class="probeDot(addrState)" aria-hidden="true" />
+              <PenLine :size="14" :stroke-width="1.8" class="edit" aria-hidden="true" />
+            </button>
+          </div>
+
+          <p v-if="error" class="error" role="alert">{{ error }}</p>
+
+          <button class="primary" :class="{ busy: loading }" type="submit" :disabled="loading" :aria-busy="loading">
+            <span class="glow" aria-hidden="true" />
+            <span>{{ loading ? '正在进入…' : '进入空间' }}</span>
+          </button>
+        </form>
+      </div>
     </div>
 
-    <form class="form" @submit.prevent="submit">
-      <div class="group">
-        <div class="field">
-          <label for="addr-lan">内网地址（在家直连）</label>
-          <div class="addr-row">
-            <button type="button" class="schema" :aria-label="`协议 ${lan.schema}，点击切换`" @click="toggleSchema(lan)">
-              {{ lan.schema }}
-            </button>
-            <span class="sep">://</span>
-            <input
-              id="addr-lan"
-              v-model="lan.addr"
-              class="addr-input"
-              placeholder="192.168.1.100:8080"
-              inputmode="url"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-            />
-            <span class="dot" :class="probeDot(probe?.lanConfigured ? probe.lan : null)" aria-hidden="true" />
-          </div>
-        </div>
-        <div class="field">
-          <label for="addr-wan">公网地址（在外访问）</label>
-          <div class="addr-row">
-            <button type="button" class="schema" :aria-label="`协议 ${wan.schema}，点击切换`" @click="toggleSchema(wan)">
-              {{ wan.schema }}
-            </button>
-            <span class="sep">://</span>
-            <input
-              id="addr-wan"
-              v-model="wan.addr"
-              class="addr-input"
-              placeholder="example.com"
-              inputmode="url"
-              autocomplete="off"
-              autocapitalize="off"
-              spellcheck="false"
-            />
-            <span class="dot" :class="probeDot(probe?.wanConfigured ? probe.wan : null)" aria-hidden="true" />
-          </div>
-        </div>
-        <div class="probe-row">
-          <button type="button" class="probe-btn" :disabled="probing" @click="probeNow">
-            {{ probing ? '检测中…' : '检测连通性' }}
-          </button>
-          <span v-if="probe" class="probe-hint">
-            {{ probeHint }}
-          </span>
-        </div>
-        <div class="field">
-          <label for="user">用户名</label>
-          <input id="user" v-model="username" autocomplete="username" />
-        </div>
-        <div class="field">
-          <label for="pass">密码</label>
-          <input id="pass" v-model="password" type="password" autocomplete="current-password" />
-        </div>
+    <Sheet
+      v-model:show="showAddr"
+      title="服务地址"
+      confirm-text="保存并检测"
+      cancel-text="关闭"
+      :confirm-disabled="probing"
+      @confirm="saveAddr"
+    >
+      <p class="s-hint">在家填内网地址、在外填公网地址；两个都填时自动优选可用的一个。</p>
+
+      <label class="s-label" for="addr-lan">内网（在家直连）</label>
+      <div class="addr-row">
+        <button type="button" class="schema" :aria-label="`协议 ${lan.schema}，点击切换`" @click="toggleSchema(lan)">
+          {{ lan.schema }}
+        </button>
+        <span class="sep">://</span>
+        <input
+          id="addr-lan"
+          v-model="lan.addr"
+          class="addr-input"
+          placeholder="192.168.1.100:8080"
+          inputmode="url"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+        />
+        <span class="dot" :class="probeDot(probe?.lanConfigured ? probe.lan : null)" aria-hidden="true" />
       </div>
 
-      <p v-if="error" class="error">{{ error }}</p>
-      <button class="primary" type="submit" :disabled="loading">
-        {{ loading ? '正在进入…' : '进入空间' }}
-      </button>
-    </form>
-  </main>
+      <label class="s-label" for="addr-wan">公网（在外访问）</label>
+      <div class="addr-row">
+        <button type="button" class="schema" :aria-label="`协议 ${wan.schema}，点击切换`" @click="toggleSchema(wan)">
+          {{ wan.schema }}
+        </button>
+        <span class="sep">://</span>
+        <input
+          id="addr-wan"
+          v-model="wan.addr"
+          class="addr-input"
+          placeholder="example.com"
+          inputmode="url"
+          autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+        />
+        <span class="dot" :class="probeDot(probe?.wanConfigured ? probe.wan : null)" aria-hidden="true" />
+      </div>
+
+      <p v-if="probeHint" class="probe-hint">{{ probeHint }}</p>
+      <p v-if="addrError" class="s-err" role="alert">{{ addrError }}</p>
+    </Sheet>
+  </div>
 </template>
 
 <style scoped>
-.login {
+/* 独立整页：与通知/设置/AI 对话同壳（.page-col 桌面档切浮窗） */
+.login-page {
   height: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: center;
-  padding: 24px;
-  box-sizing: border-box;
-  max-width: var(--sheet-max);
-  margin: 0 auto;
-  background: var(--app-veil);
 }
 
-/* hero：克制标题 + 副标语，无图标 */
-.hero {
-  margin-bottom: 28px;
+/* 本页没有返回按钮撑高导航栏，用 min-height 对齐其他页 51px 的栏高，
+   并把标题改为 flex 居中（全局 .navbar .title 是绝对定位，居中依赖同排控件的高度） */
+.navbar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 51px;
+  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
+  flex-shrink: 0;
+  z-index: 10;
 }
-.hero h1 {
-  font-size: 26px;
-  font-weight: 700;
+.navbar .title {
+  position: static;
+  transform: none;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.content {
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  padding: 16px 16px calc(28px + env(safe-area-inset-bottom));
+}
+
+/* margin:auto 而非 justify-content:center：内容高于视口时（小屏 + 软键盘）不裁顶 */
+.form-wrap {
+  width: 100%;
+  max-width: 420px;
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  text-align: center;
+}
+.brand-tile {
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  display: grid;
+  place-items: center;
+  color: var(--primary-deep);
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+}
+.brand-line {
   margin: 0;
-  letter-spacing: -0.02em;
-}
-.hero p {
-  margin: 8px 0 0;
-  font-size: 14px;
+  font-size: 13px;
   color: var(--muted-ink);
 }
 
-/* 表单：iOS 分组卡 + 0.5px 分割线 */
 .form {
   display: flex;
   flex-direction: column;
   gap: 16px;
 }
-.group {
-  padding: 4px 16px;
+
+/* 字段行：沿用全局 .group .row 的 iOS 分组行（13px 16px + 0.5px 分割线） */
+/* 行高下限 48dp（Android 触控规范）；border-box 才能让 48 含 13px 上下内边距 */
+.row {
+  position: relative;
+  box-sizing: border-box;
+  min-height: 48px;
 }
-.field {
-  padding: 12px 0;
+.row .label {
+  flex-shrink: 0;
+  font-size: 15px;
+  color: var(--ink);
 }
-.field + .field {
-  border-top: 0.5px solid var(--rule);
-}
-.field label {
-  display: block;
-  font-size: 12px;
-  color: var(--muted-ink);
-  margin-bottom: 6px;
-}
-.field input {
-  width: 100%;
+.row input {
+  flex: 1;
+  min-width: 0;
   border: none;
   background: none;
   padding: 0;
   font-size: 16px;
   color: var(--ink);
+  text-align: right;
 }
-.field input:focus {
+.row input:focus {
   outline: none;
 }
+/* 焦点态 = 整行等长的强调色下划线（不随输入框宽度变化）+ 标签变色。
+   之前画在输入框自身：黑色 2px 过重，且密码行被眼睛按钮挤短 37px */
+.row::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--primary-deep);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+.row:focus-within::after {
+  opacity: 1;
+}
+.row:focus-within .label {
+  color: var(--primary-deep);
+}
+@media (prefers-reduced-motion: reduce) {
+  .row::after {
+    transition: none;
+  }
+}
 
-/* 服务端地址：schema 切换 + 单行地址输入 */
+.pass-row {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.eye {
+  flex-shrink: 0;
+  /* 触控目标 ≥48dp（Android 规范）；负外边距让命中区不外扩成高行 */
+  width: 48px;
+  height: 48px;
+  margin: -12px -10px -12px 0;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 10px;
+  background: none;
+  color: var(--muted-ink);
+  cursor: pointer;
+}
+.eye:active {
+  background: var(--sk);
+}
+
+/* 服务地址行：低频配置入口（主界面只显示当前生效地址）。
+   按钮需显式清掉浏览器默认样式（buttonface 底 + 1px 边 + 13.33px 居中字） */
+.addr {
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.addr .value {
+  margin-left: auto;
+  max-width: 56%;
+  font-size: 15px;
+  color: var(--muted-ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.addr .edit {
+  flex-shrink: 0;
+  color: var(--muted-ink);
+}
+
+.dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sk);
+}
+.dot.ok {
+  background: var(--sem-green);
+}
+.dot.bad {
+  background: var(--danger);
+}
+
+.error {
+  margin: 0;
+  padding: 0 4px;
+  font-size: 13px;
+  color: var(--danger);
+}
+
+.primary {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 12px;
+  padding: 14px;
+  font-size: 16px;
+  font-weight: 600;
+  background: var(--primary);
+  color: var(--on-primary);
+  cursor: pointer;
+  transition: transform 0.18s ease, opacity 0.18s ease;
+}
+.primary:disabled {
+  opacity: 0.58;
+  cursor: default;
+}
+.primary:active:not(:disabled) {
+  transform: scale(0.985);
+}
+.primary:focus-visible {
+  outline: 2px solid var(--ink);
+  outline-offset: 2px;
+}
+/* 加载态：缓慢呼吸的光晕（REQUIREMENTS §6.5，非旋转菊花） */
+.glow {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(120% 140% at 50% 0%, color-mix(in srgb, var(--on-primary) 55%, transparent), transparent 70%);
+}
+.primary.busy .glow {
+  opacity: 1;
+  animation: breathe 1.8s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .primary {
+    transition: none;
+  }
+  .primary.busy .glow {
+    animation: none;
+    opacity: 0.5;
+  }
+}
+
+/* Sheet 内：地址编辑（沿用 .s-input 那套「描边 + 底色」字段语言） */
+.s-hint {
+  margin: 0 0 10px;
+  font-size: 13px;
+  color: var(--muted-ink);
+}
+.s-label {
+  display: block;
+  margin: 6px 0;
+  font-size: 13px;
+  color: var(--muted-ink);
+}
 .addr-row {
   display: flex;
   align-items: center;
   gap: 6px;
+  padding: 9px 12px;
+  border: 1px solid var(--rule);
+  border-radius: 10px;
+  background: var(--bg);
+  margin-bottom: 10px;
+}
+.addr-row:focus-within {
+  border-color: var(--primary);
 }
 .schema {
   flex-shrink: 0;
@@ -275,8 +554,8 @@ async function submit() {
   padding: 4px 8px;
   font-size: 13px;
   font-weight: 600;
-  background: rgba(120, 120, 128, 0.14);
-  color: var(--primary-deep);
+  background: var(--sk);
+  color: var(--ink); /* 该按钮是功能信息，--primary-deep 在白/浅灰底仅 3.06:1（< AA） */
   cursor: pointer;
 }
 .schema:active {
@@ -284,74 +563,30 @@ async function submit() {
 }
 .sep {
   flex-shrink: 0;
-  color: var(--muted-ink);
   font-size: 15px;
+  color: var(--muted-ink);
   user-select: none;
 }
 .addr-input {
   flex: 1;
   min-width: 0;
-  font-variant-numeric: tabular-nums;
-}
-
-/* 探测状态点与检测行 */
-.dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: rgba(120, 120, 128, 0.3);
-}
-.dot.ok {
-  background: #34c759;
-}
-.dot.bad {
-  background: var(--danger);
-}
-.probe-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 0 4px;
-}
-.probe-btn {
   border: none;
-  border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  background: rgba(120, 120, 128, 0.14);
-  color: var(--primary-deep);
-  cursor: pointer;
+  background: none;
+  padding: 0;
+  font-size: 16px;
+  color: var(--ink);
 }
-.probe-btn:disabled {
-  opacity: 0.5;
+.addr-input:focus {
+  outline: none;
 }
 .probe-hint {
+  margin: 8px 0 0;
   font-size: 12px;
   color: var(--muted-ink);
 }
-
-.error {
-  color: var(--danger);
+.s-err {
+  margin: 8px 0 0;
   font-size: 13px;
-  margin: 0;
-  padding: 0 4px;
-}
-.primary {
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  padding: 14px;
-  font-size: 16px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.primary:disabled {
-  opacity: 0.5;
-}
-.primary:active {
-  transform: scale(0.98);
+  color: var(--danger);
 }
 </style>
