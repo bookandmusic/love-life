@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 type Post struct {
@@ -126,18 +125,33 @@ func (d *DB) GetPost(ctx context.Context, id int64) (*Post, error) {
 	return p, err
 }
 
-func (d *DB) SoftDeletePost(ctx context.Context, id int64) error {
-	res, err := d.ExecContext(ctx,
-		`UPDATE posts SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
-		time.Now().UTC().Format(time.RFC3339), id)
+// SoftDeletePost 软删除动态并级联其媒体（媒体只能随动态存在，D8 口径）；
+// actorType ∈ ('user','ai')、actorID 为发起人，供回收站「删除者」列（AD5）。
+func (d *DB) SoftDeletePost(ctx context.Context, id int64, actorType string, actorID int64) error {
+	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
+		`UPDATE posts SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
+		actorID, actorType, id)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return nil
+
+	// 级联媒体：随动态一并进回收站（各自作为「照片」条目，可单独恢复）
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE media SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE post_id = ? AND deleted_at IS NULL`,
+		actorID, actorType, id); err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (d *DB) GetMediaByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]*MediaRow, error) {

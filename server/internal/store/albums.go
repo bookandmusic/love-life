@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 type Album struct {
@@ -85,10 +84,10 @@ func (d *DB) GetAlbum(ctx context.Context, id int64) (*Album, error) {
 
 // SoftDeleteAlbum 仅手动相册可删（月度相册规则见需求 §4.5）；
 // 同时释放媒体归属（对齐 mock「删除相册→媒体回未归属」，关系数据不进回收站）。
-func (d *DB) SoftDeleteAlbum(ctx context.Context, id int64) error {
+func (d *DB) SoftDeleteAlbum(ctx context.Context, id int64, actorType string, actorID int64) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE albums SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL AND type = 'manual'`,
-		time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE albums SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL AND type = 'manual'`,
+		actorID, actorType, id)
 	if err != nil {
 		return err
 	}

@@ -149,9 +149,10 @@ func (d *DB) FindOrCreatePoint(ctx context.Context, in PointInput) (*MapPoint, b
 }
 
 // SoftDeletePoint 软删点位（进回收站体系）；不存在或已删返回 ErrNotFound。
-func (d *DB) SoftDeletePoint(ctx context.Context, id int64) error {
+func (d *DB) SoftDeletePoint(ctx context.Context, id int64, actorType string, actorID int64) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE map_points SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL`, id)
+		`UPDATE map_points SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
+		actorID, actorType, id)
 	if err != nil {
 		return err
 	}

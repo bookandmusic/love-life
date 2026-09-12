@@ -40,7 +40,10 @@ CREATE TABLE posts (
     location_name          TEXT,
     related_anniversary_id INTEGER,
     created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
-    deleted_at             TEXT
+    deleted_at             TEXT,
+    -- 删除者归属（AD5 回收站「删除者」列，DESIGN §9）；软删除时与 deleted_at 一并写入
+    deleted_by             INTEGER REFERENCES users(id),
+    deleted_by_type        TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 CREATE INDEX idx_posts_created ON posts(created_at DESC);
 CREATE INDEX idx_posts_author ON posts(author_id);
@@ -57,7 +60,9 @@ CREATE TABLE media (
     duration   REAL,
     taken_at   TEXT,
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-    deleted_at TEXT
+    deleted_at TEXT,
+    deleted_by      INTEGER REFERENCES users(id),
+    deleted_by_type TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 CREATE INDEX idx_media_post ON media(post_id);
 
@@ -81,7 +86,9 @@ CREATE TABLE comments (
     author_id  INTEGER NOT NULL REFERENCES users(id),
     content    TEXT    NOT NULL,
     created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-    deleted_at TEXT
+    deleted_at TEXT,
+    deleted_by      INTEGER REFERENCES users(id),
+    deleted_by_type TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 CREATE INDEX idx_comments_post ON comments(post_id, id DESC);
 
@@ -94,7 +101,9 @@ CREATE TABLE albums (
     is_hidden      INTEGER NOT NULL DEFAULT 0,
     cover_media_id INTEGER,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
-    deleted_at     TEXT
+    deleted_at     TEXT,
+    deleted_by      INTEGER REFERENCES users(id),
+    deleted_by_type TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 CREATE UNIQUE INDEX idx_albums_month ON albums(month_key) WHERE type = 'monthly' AND month_key IS NOT NULL;
 
@@ -118,7 +127,9 @@ CREATE TABLE map_points (
     source      TEXT    NOT NULL DEFAULT 'manual' CHECK (source IN ('post', 'manual', 'ai')),
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     deleted_at  TEXT,
-    created_by  INTEGER NOT NULL REFERENCES users(id)
+    created_by  INTEGER NOT NULL REFERENCES users(id),
+    deleted_by      INTEGER REFERENCES users(id),
+    deleted_by_type TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 CREATE INDEX idx_map_points_name ON map_points(name);
 CREATE INDEX idx_map_points_deleted ON map_points(deleted_at);
@@ -130,7 +141,9 @@ CREATE TABLE anniversaries (
     type               TEXT    NOT NULL DEFAULT 'solar' CHECK (type IN ('solar', 'lunar')),
     remind_days_before INTEGER NOT NULL DEFAULT 1,
     created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
-    deleted_at         TEXT
+    deleted_at         TEXT,
+    deleted_by         INTEGER REFERENCES users(id),
+    deleted_by_type    TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 
 -- ============ 通知与 AI（DESIGN 12.3） ============
@@ -187,9 +200,52 @@ CREATE TABLE audit_logs (
     actor_id      INTEGER NOT NULL,
     action        TEXT    NOT NULL,
     params_digest TEXT    NOT NULL DEFAULT '',
+    -- 人类可读参数全文（AD7 审计页展示，如 content: "周末出游"）；params_digest 保留供检索
+    params        TEXT    NOT NULL DEFAULT '',
     result        TEXT    NOT NULL DEFAULT '',
+    -- 模型响应耗时，仅 ai/pat 调用有值；user 直接写库为 NULL（契约 routes.mjs audit）
+    latency_ms    INTEGER,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
+
+-- 个人访问令牌 PAT（AD8，DESIGN §8.2）：单实例双通道的外部通道凭证。
+-- 仅绑定情侣用户（girl/boy），admin 不签发；明文只在生成响应中出现一次，库内只存哈希。
+CREATE TABLE personal_access_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL,
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    tier         TEXT    NOT NULL CHECK (tier IN ('readonly', 'readwrite')),
+    token_hash   TEXT    NOT NULL UNIQUE,
+    status       TEXT    NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'revoked')),
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT,
+    revoked_at   TEXT
+);
+CREATE INDEX idx_pat_hash ON personal_access_tokens(token_hash);
+
+-- AI 调用统计（L5）：每次模型调用落一行，供仪表盘 ai-usage 近 14 天聚合与审计 latency。
+CREATE TABLE ai_usage_logs (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider_id       INTEGER,
+    model             TEXT    NOT NULL DEFAULT '',
+    prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens      INTEGER NOT NULL DEFAULT 0,
+    latency_ms        INTEGER NOT NULL DEFAULT 0,
+    status            TEXT    NOT NULL DEFAULT 'success' CHECK (status IN ('success', 'failed')),
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_ai_usage_created ON ai_usage_logs(created_at DESC);
+
+-- 回收站恢复日志（AD5）：操作人/时间/恢复内容摘要；不可删除，永久保留（DESIGN §5/§9）
+CREATE TABLE restore_logs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    operator   TEXT    NOT NULL,
+    summary    TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_restore_logs_created ON restore_logs(created_at DESC);
 
 -- ============ 情侣空间与地图（DESIGN 12.1 / 4.7） ============
 CREATE TABLE space (

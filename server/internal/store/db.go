@@ -8,6 +8,13 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// ActorType 常量：审计日志 actor_type 字段的取值（DESIGN §8.2）。
+const (
+	ActorTypeUser = "user"
+	ActorTypeAI   = "ai"
+	ActorTypePAT  = "pat"
+)
+
 type DB struct {
 	*sql.DB
 }

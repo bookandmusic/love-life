@@ -73,10 +73,10 @@ func (d *DB) UpdateAnniversaryReminder(ctx context.Context, id int64, daysBefore
 	return nil
 }
 
-func (d *DB) SoftDeleteAnniversary(ctx context.Context, id int64) error {
+func (d *DB) SoftDeleteAnniversary(ctx context.Context, id int64, actorType string, actorID int64) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE anniversaries SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL`,
-		time.Now().UTC().Format(time.RFC3339), id)
+		`UPDATE anniversaries SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
+		actorID, actorType, id)
 	if err != nil {
 		return err
 	}

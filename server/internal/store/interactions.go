@@ -207,8 +207,10 @@ func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	return &c, nil
 }
 
-func (d *DB) SoftDeleteComment(ctx context.Context, id int64) error {
-	res, err := d.ExecContext(ctx, `UPDATE comments SET deleted_at = datetime('now') WHERE id = ? AND deleted_at IS NULL`, id)
+func (d *DB) SoftDeleteComment(ctx context.Context, id int64, actorType string, actorID int64) error {
+	res, err := d.ExecContext(ctx,
+		`UPDATE comments SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
+		actorID, actorType, id)
 	if err != nil {
 		return err
 	}
