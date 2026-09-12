@@ -447,7 +447,7 @@ sequenceDiagram
   - 建立后仅可修改昵称、重置密码；用户名 / 角色不可变更（登录身份与数据归属）
   - admin 账号只读展示，由部署环境管理，后台不提供增改
   - 数据保留：回收站保留期限（7~365 天，默认 30；超期内容由系统定时任务自动永久删除）+ AI 对话记录默认保留时长（空间级默认值，用户可在 APP 自行调整）；回收站页的期限提示只读展示，读自同一数据源
-  - 接口：GET/POST /api/v1/admin/users、POST /admin/users/couple（原子创建）、PUT /admin/users/{id}（仅昵称）、POST /admin/users/{id}/reset-password、GET/PUT /space（空间信息）、GET/PUT /admin/security（保留策略）
+  - 接口：GET/POST /api/v1/admin/users、POST /admin/users/couple（原子创建）、PUT /admin/users/{id}（仅昵称）、POST /admin/users/{id}/reset-password、GET/PUT /space（空间信息）、GET/PUT /admin/security（保留策略，部分更新：两项保留设置各自独立保存，请求体可只含本次变更字段——`recycleRetentionDays` / `chatRetention`，服务端须按字段合并，不得整体覆盖）
 - **AI 配置（4 tabs）**
   - **接入与模型（/ai/providers）**
     - AI 供应商管理：添加/编辑/删除/排序；供应商 = 协议类型（OpenAI Chat Completions / OpenAI Responses / Anthropic / Gemini）+ 服务地址 + API Key（加密存储，只写不读）
@@ -470,6 +470,7 @@ sequenceDiagram
   - **地图配置（/integrations/map）**
     - 瓦片源多卡片管理：卡片网格等高展示已保存源（类型限公开 XYZ 模板 / 天地图密钥认证两种，可添加多个），末尾固定「添加瓦片源」卡；卡片支持启用（全局至多一个使用中，启用校验配置完整）、删除（两步确认，使用中的源不可删），**不提供编辑**——配置有误删除后重加；密钥加密只存服务端；接口 GET/POST /admin/map-config、DELETE /{id}、PUT /{id}/enable
     - 后台操作反馈统一走全局 toast（AppToast 顶部轻提示：成功/失败/信息，自动消失），不使用原生 alert/confirm/prompt 与页面内联提示（避免布局跳动）；危险操作确认用应用内 ConfirmDialog
+    - 非破坏性确认（如回收站恢复）的确认按钮不用危险色，取非危险档位；口径与 §13 各界面口径的非破坏性约定一致
 - **回收站管理**
   - 查看已删除内容列表：按删除时间排序；按类型筛选（动态/评论/照片/相册/纪念日/地图点位）；显示删除时间、删除者（用户/AI）；保留期限提示只读展示，读自空间管理·数据保留
   - 恢复操作：单条恢复（二次确认）；批量恢复（二次确认）
