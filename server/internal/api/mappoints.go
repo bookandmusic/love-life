@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
+	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
@@ -14,6 +15,7 @@ import (
 // 同名复用返回 200 已有点位，新建 201；软删进回收站体系）。
 type mapPointsAPI struct {
 	db *store.DB
+	dp *notify.Dispatcher
 }
 
 type mapPointRequest struct {
@@ -81,6 +83,13 @@ func (a *mapPointsAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if created {
+		// 足迹更新：手动/AI 报点通知另一方（同名复用静默；动态带地点自动建点不发，该次发布已有 post_created）
+		snapshot, _ := json.Marshal(map[string]any{
+			"name": req.Name, "latitude": req.Lat, "longitude": req.Lng, "operator": claims.Username,
+		})
+		ids, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
+		a.dp.Dispatch(r.Context(), ids, "map_point_created", "map_point", p.ID, string(snapshot),
+			"足迹更新", claims.Username+"把「"+req.Name+"」记到了地图上")
 		writeJSON(w, http.StatusCreated, toMapPointItem(p))
 		return
 	}

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/lunar"
@@ -56,14 +57,29 @@ func (d *Deps) AuditWithLatency(ctx context.Context, userID int64, tool, digest,
 	_ = d.DB.InsertAuditLogFull(ctx, store.ActorTypeAI, userID, tool, digest, "", result, &latencyMs)
 }
 
-// notifyPartnerNewPost AI 代发动态走与手动发布一致的通知口径（新动态通知另一方+外部推送，admin 不在情侣里）。
-func (d *Deps) notifyPartnerNewPost(ctx context.Context, authorID, postID int64, content string) {
-	recipients, err := d.DB.ListPartnerIDs(ctx, authorID)
+// aiOperatorLabel AI 操作者名称查不到时的回退标签（正常路径用真实用户名，REQ §8.1 外部推送需含操作者）。
+const aiOperatorLabel = "AI助手"
+
+// notifyPartners 通用通知分发辅助（内部工具通知另一方+外部推送）。
+// snapshot 由调用方序列化（忽略失败按空串处理）；通知失败记 warning 但不阻断主流程（业务写入已完成）。
+func (d *Deps) notifyPartners(ctx context.Context, userID int64, eventType, entityType string, entityID int64, snapshot, title, body string) {
+	partnerIDs, err := d.DB.ListPartnerIDs(ctx, userID)
 	if err != nil {
+		slog.Warn("list partner ids failed", "err", err, "user_id", userID, "event", eventType)
 		return
 	}
-	snapshot, _ := json.Marshal(map[string]any{"content": content, "via": "ai"})
-	d.DP.Dispatch(ctx, recipients, "post_created", "post", postID, string(snapshot), "新动态", content)
+	d.DP.Dispatch(ctx, partnerIDs, eventType, entityType, entityID, snapshot, title, body)
+}
+
+// aiOperatorName AI 代操作的通知署名：取真实用户名（与 REST/create_comment 同口径）。
+// 查名失败不阻断主流程——回退 aiOperatorLabel 并记 warning。
+func (d *Deps) aiOperatorName(ctx context.Context, userID int64) string {
+	u, err := d.DB.GetUserByID(ctx, userID)
+	if err != nil || u.Username == "" {
+		slog.Warn("resolve ai operator name failed", "err", err, "user_id", userID)
+		return aiOperatorLabel
+	}
+	return u.Username
 }
 
 func str(args map[string]any, key string) string {
@@ -409,7 +425,8 @@ func Registry() []*Tool {
 					}
 					return nil, err
 				}
-				d.notifyPartnerNewPost(ctx, userID, postID, content)
+				snapshot, _ := json.Marshal(map[string]any{"content": content, "via": "ai"})
+				d.notifyPartners(ctx, userID, "post_created", "post", postID, string(snapshot), "新动态", content)
 				return &ExecResult{Content: fmt.Sprintf("动态 #%d 已发布", postID), Data: map[string]any{"post_id": postID}}, nil
 			},
 		},
@@ -435,6 +452,14 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
+
+				// 相册上新：站内通知另一方 + 按订阅外推（口径对齐 api/albums.go 的手动建相册，
+				// operator 记真实发起人、via 标记 AI 代操作）
+				operator := d.aiOperatorName(ctx, userID)
+				snapshot, _ := json.Marshal(map[string]any{"name": name, "operator": operator, "via": "ai"})
+				d.notifyPartners(ctx, userID, "album_created", "album", albumID, string(snapshot),
+					"相册上新", operator+"（AI）创建了相册「"+name+"」")
+
 				return &ExecResult{Content: fmt.Sprintf("相册「%s」已创建", name), Data: map[string]any{"album_id": albumID}}, nil
 			},
 		},
@@ -748,9 +773,8 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				recipients, _ := d.DB.ListPartnerIDs(ctx, userID)
 				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username})
-				d.DP.Dispatch(ctx, recipients, "post_commented", "post", postID, string(snapshot),
+				d.notifyPartners(ctx, userID, "post_commented", "post", postID, string(snapshot),
 					"收到评论", operator.Username+"："+textutil.Trunc(content, 50))
 				d.audit(ctx, userID, "create_comment", textutil.Trunc(content, 50), fmt.Sprintf("comment=%d", commentID))
 				return &ExecResult{Content: "评论已发表", Data: map[string]any{"comment_id": commentID}}, nil
@@ -870,6 +894,18 @@ func Registry() []*Tool {
 				if !created {
 					content = fmt.Sprintf("「%s」已在地图上，复用了既有点位", name)
 				}
+
+				// 足迹更新：仅新建时通知另一方（复用点位不通知）；手动/AI 报点同口径，
+				// 动态带地点自动建点不发（该次发布已有 post_created）
+				if created {
+					operator := d.aiOperatorName(ctx, userID)
+					snapshot, _ := json.Marshal(map[string]any{
+						"name": name, "latitude": lat, "longitude": lng, "operator": operator, "via": "ai",
+					})
+					d.notifyPartners(ctx, userID, "map_point_created", "map_point", p.ID, string(snapshot),
+						"足迹更新", operator+"（AI）把「"+name+"」记到了地图上")
+				}
+
 				return &ExecResult{Content: content, Data: map[string]any{"point_id": p.ID, "created": created}}, nil
 			},
 		},

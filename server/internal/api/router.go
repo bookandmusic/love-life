@@ -107,7 +107,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.Handle("/api/v1/map/tile", authSvc.AllowTokenQuery(mapMux))
 
 	// 地图点位（登录用户；双来源同池、同名复用，软删进回收站体系——DESIGN §4.7）
-	pointsAPI := &mapPointsAPI{db: db}
+	pointsAPI := &mapPointsAPI{db: db, dp: dp}
 	pointsMux := http.NewServeMux()
 	pointsMux.HandleFunc("GET /api/v1/map/points", pointsAPI.list)
 	pointsMux.HandleFunc("POST /api/v1/map/points", pointsAPI.create)

@@ -38,11 +38,16 @@ func newToolDB(t *testing.T) *store.DB {
 	return db
 }
 
-// create_map_point：创建 / 同名复用 / 审计落库；delete_map_point：软删 / 二次删报错。
+// create_map_point：创建 / 同名复用 / 审计落库 / 仅新建通知另一方；delete_map_point：软删 / 二次删报错。
 func TestMapPointTools(t *testing.T) {
 	db := newToolDB(t)
-	d := &Deps{DB: db}
+	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
+	// 收件人：newToolDB 只建了 girl(1)，补 boy(2) 才能观察「通知另一方」
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
+		t.Fatalf("create boy: %v", err)
+	}
 
 	create := findTool(t, "create_map_point")
 	res, err := create.Exec(ctx, d, 1, map[string]any{"name": "杭州·西湖", "latitude": 30.2467, "longitude": 120.4599, "visit_date": "2026-09-03", "description": "湖边散步"})
@@ -55,6 +60,9 @@ func TestMapPointTools(t *testing.T) {
 	}
 	pointID := data["point_id"].(int64)
 
+	// 新建 → 另一方收到 map_point_created，快照含真实 operator 与 via 标记
+	assertMapPointNotif(t, db, 1)
+
 	// 同名复用
 	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "杭州·西湖", "latitude": 1.0, "longitude": 1.0})
 	if err != nil {
@@ -64,6 +72,8 @@ func TestMapPointTools(t *testing.T) {
 	if data["created"] != false || data["point_id"].(int64) != pointID {
 		t.Fatalf("reuse data: %+v (want id=%d)", data, pointID)
 	}
+	// 复用不重复通知
+	assertMapPointNotif(t, db, 1)
 
 	// name 空 → 报错
 	if _, err = create.Exec(ctx, d, 1, map[string]any{}); err == nil {
@@ -100,7 +110,7 @@ func TestMapPointTools(t *testing.T) {
 // T1：get_next_anniversary 取最近一个，输出含 type 与 next_solar_date（DESIGN §6.4/§12.2）。
 func TestNextAnniversaryTool(t *testing.T) {
 	db := newToolDB(t)
-	d := &Deps{DB: db}
+	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
 	now := time.Now()
 	if _, err := db.CreateAnniversary(ctx, "生日", now.AddDate(0, 0, 10).Format("2006-01-02"), "solar", 1); err != nil {
@@ -183,14 +193,40 @@ func TestDeletePostAndHistoryTools(t *testing.T) {
 	}
 }
 
-// 相册类：remove/list/delete_album（月度相册不可删）与 suggest_photo_grouping 聚合。
+// 相册类：create_album 通知口径 / remove/list/delete_album（月度相册不可删）与 suggest_photo_grouping 聚合。
 func TestAlbumToolsExtra(t *testing.T) {
 	db := newToolDB(t)
-	d := &Deps{DB: db, MP: mediaPlaceholder(t)}
+	d := &Deps{DB: db, MP: mediaPlaceholder(t), DP: notify.New(db)}
 	ctx := t.Context()
-	albumID, err := db.CreateAlbum(ctx, "manual", "旅行", "", "", 1)
+	// 收件人：newToolDB 只建了 girl(1)，补 boy(2) 才能观察「通知另一方」
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
+		t.Fatalf("create boy: %v", err)
+	}
+	// 走 create_album 工具（而非直接落库），断言相册上新通知另一方的口径
+	ca := findTool(t, "create_album")
+	if _, err := ca.Exec(ctx, d, 1, map[string]any{"name": "旅行"}); err != nil {
+		t.Fatalf("create album tool: %v", err)
+	}
+	albumID, err := db.CreateAlbum(ctx, "manual", "旧相册", "", "", 1)
 	if err != nil {
 		t.Fatalf("create album: %v", err)
+	}
+	var notifN int
+	var notifSnap string
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*), COALESCE(MAX(snapshot_json),'') FROM notifications WHERE recipient_id = 2 AND event_type = 'album_created'").Scan(&notifN, &notifSnap); err != nil {
+		t.Fatalf("query album notifications: %v", err)
+	}
+	if notifN != 1 {
+		t.Fatalf("partner album notification = %d, want 1", notifN)
+	}
+	var albumSnap map[string]any
+	if err := json.Unmarshal([]byte(notifSnap), &albumSnap); err != nil {
+		t.Fatalf("unmarshal album snapshot %q: %v", notifSnap, err)
+	}
+	if albumSnap["operator"] != "girl" || albumSnap["via"] != "ai" || albumSnap["name"] != "旅行" {
+		t.Fatalf("album snapshot = %+v, want operator=girl via=ai name=旅行", albumSnap)
 	}
 	if _, err := db.CreateMonthlyAlbum(ctx, "2026-09", "2026年9月", 1); err != nil {
 		t.Fatalf("create monthly: %v", err)
@@ -235,7 +271,7 @@ func TestAlbumToolsExtra(t *testing.T) {
 // 地图查询类：search_locations 模糊命中 + get_location_posts 反查动态。
 func TestMapSearchTools(t *testing.T) {
 	db := newToolDB(t)
-	d := &Deps{DB: db}
+	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
 	p, _, err := db.FindOrCreatePoint(ctx, store.PointInput{Name: "杭州·西湖", Lat: 30.2, Lng: 120.1, Source: "ai", UserID: 1})
 	if err != nil {
@@ -352,6 +388,28 @@ func countGroups(t *testing.T, data any) int {
 		t.Fatalf("unmarshal groups: %v", err)
 	}
 	return len(groups)
+}
+
+// assertMapPointNotif 校验「另一方的足迹通知」：count 条 map_point_created，
+// 快照 operator = 真实用户名（非回退标签）、via = ai。
+func assertMapPointNotif(t *testing.T, db *store.DB, count int) {
+	t.Helper()
+	var n int
+	var snap string
+	if err := db.QueryRowContext(t.Context(),
+		"SELECT COUNT(*), COALESCE(MAX(snapshot_json),'') FROM notifications WHERE recipient_id = 2 AND event_type = 'map_point_created'").Scan(&n, &snap); err != nil {
+		t.Fatalf("query map_point notifications: %v", err)
+	}
+	if n != count {
+		t.Fatalf("partner map_point notification = %d, want %d", n, count)
+	}
+	var s map[string]any
+	if err := json.Unmarshal([]byte(snap), &s); err != nil {
+		t.Fatalf("unmarshal snapshot %q: %v", snap, err)
+	}
+	if s["operator"] != "girl" || s["via"] != "ai" || s["name"] != "杭州·西湖" {
+		t.Fatalf("snapshot = %+v, want operator=girl via=ai name=杭州·西湖", s)
+	}
 }
 
 // mediaPlaceholder Deps.MP 占位：list_albums 封面签名的 pipeline 依赖。

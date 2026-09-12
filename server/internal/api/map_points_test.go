@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/bookandmusic/love-life/server/internal/auth"
+	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
 // 地图点位全链路：创建（含城市判定）/同名复用/软删/城市列表/geocode/动态同步。
@@ -12,6 +15,11 @@ func TestMapPoints(t *testing.T) {
 	token, code := loginToken(t, ts.URL, "admin", "admin-pw", "app")
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
+	}
+	// 收件人：newTestServer 只建了 admin，补 girl 才能观察「通知另一方」
+	hash, _ := auth.HashPassword("girl-pw")
+	if _, err := ts.db.CreateUser(t.Context(), &store.User{Username: "girl", PasswordHash: hash, Role: "girl", Nickname: "她"}); err != nil {
+		t.Fatalf("create girl: %v", err)
 	}
 
 	// 未认证 → 401
@@ -53,6 +61,26 @@ func TestMapPoints(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || reused.ID != created.ID {
 		t.Fatalf("reuse: status=%d id=%d want %d", res.StatusCode, reused.ID, created.ID)
+	}
+
+	// 新建点位 → 另一方收到足迹更新；同名复用不重复通知（admin 建、girl 收）
+	var notifN int
+	var notifSnap string
+	if err := ts.db.QueryRow("SELECT COUNT(*), COALESCE(MAX(snapshot_json),'') FROM notifications WHERE event_type='map_point_created'").Scan(&notifN, &notifSnap); err != nil {
+		t.Fatalf("query map_point notifications: %v", err)
+	}
+	if notifN != 1 {
+		t.Fatalf("map_point_created notifications = %d, want 1 (复用不重复)", notifN)
+	}
+	var snap map[string]any
+	if err := json.Unmarshal([]byte(notifSnap), &snap); err != nil {
+		t.Fatalf("unmarshal snapshot %q: %v", notifSnap, err)
+	}
+	if snap["operator"] != "admin" || snap["name"] != "杭州·西湖" {
+		t.Fatalf("snapshot = %+v, want operator=admin name=杭州·西湖", snap)
+	}
+	if _, hasVia := snap["via"]; hasVia {
+		t.Fatalf("手动建点快照不应带 via 标记: %+v", snap)
 	}
 
 	// 自由命名无坐标 → 201；city 留空（前缀回退无「·」）

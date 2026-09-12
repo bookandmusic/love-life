@@ -1009,6 +1009,8 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
     const id = ++seq.album
     const al = { id, type: 'manual', name: action.params.name || '新相册', description: '', is_hidden: false, cover_url: '/api/v1/media/file/5', item_count: 0, created_by: action.user_id }
     albums.push(al)
+    // AI 建相册同样通知另一方（对齐手动 POST /albums 与服务端口径：operator 真实发起人 + via 标记来源）
+    for (const r of partnerIds(action.user_id)) addNotification(r, 'album_created', 'album', id, { operator: operatorName(action.user_id), name: al.name, via: 'ai' })
     return ok({ status: 'executed', result: `相册「${al.name}」已创建` })
   }
 
@@ -1130,6 +1132,8 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/map\/points$/, handler: (url
   // source 服务端判定：REST 手动创建恒为 manual
   const p = { id: ++seq.mapPoint, name, lat: Number(b.lat) || 0, lng: Number(b.lng) || 0, visit_date: b.visit_date || null, description: b.description || '', source: 'manual', created_at: new Date().toISOString(), deleted_at: null, created_by: uid }
   mapPoints.push(p)
+  // 足迹更新：手动建点通知另一方（同名复用静默；动态带地点自动建点不发，已有 post_created）
+  for (const r of partnerIds(uid)) addNotification(r, 'map_point_created', 'map_point', p.id, { operator: operatorName(uid), name: p.name, latitude: p.lat, longitude: p.lng })
   return created(p)
 }})
 
