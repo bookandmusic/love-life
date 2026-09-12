@@ -6,6 +6,8 @@ import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
 import AppIcon from '../components/AppIcon.vue'
 import AppBadge from '../components/AppBadge.vue'
+import AppAlert from '../components/AppAlert.vue'
+import AppModal from '../components/AppModal.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { toast } from '../lib/toast'
 
