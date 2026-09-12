@@ -27,10 +27,6 @@ export function clearAuth(): void {
   localStorage.removeItem(ROLE_KEY)
 }
 
-export function clearToken(): void {
-  localStorage.removeItem(TOKEN_KEY)
-}
-
 export function getRole(): string | null {
   return localStorage.getItem(ROLE_KEY)
 }
@@ -39,8 +35,12 @@ export function setRole(role: string): void {
   localStorage.setItem(ROLE_KEY, role)
 }
 
-export function clearRole(): void {
-  localStorage.removeItem(ROLE_KEY)
+/**
+ * 统一错误文案：仅 ApiError 透出服务端 message，其余（网络层异常等）一律用兜底文案，
+ * 避免把 `TypeError: Failed to fetch` 这类内部英文信息显示给用户（与 app 端 errText 同口径）。
+ */
+export function errMsg(e: unknown, fallback: string): string {
+  return e instanceof ApiError && e.message ? e.message : fallback
 }
 
 export class ApiError extends Error {
@@ -114,7 +114,7 @@ export async function http<T = unknown>(
   if (!res.ok) {
     if (res.status === 401 && !authPath) {
       clearAuth()
-      window.location.replace('/login')
+      window.location.replace(import.meta.env.BASE_URL + 'login')
     }
     const body = (await res.json().catch(() => ({}))) as { error?: string }
     throw new ApiError(body.error ?? `HTTP ${res.status}`, res.status)

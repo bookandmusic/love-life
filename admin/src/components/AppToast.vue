@@ -54,7 +54,7 @@ const icons: Record<string, string> = {
 }
 .toast-success { border-color: var(--color-success); }
 .toast-success :deep(.icon, svg) { color: var(--color-success); }
-.toast-error { border-color: var(--color-danger, #d9534f); }
+.toast-error { border-color: var(--color-error); }
 .toast-info { border-color: var(--color-accent); }
 
 .toast-enter-active,

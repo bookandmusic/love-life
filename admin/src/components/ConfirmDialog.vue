@@ -2,12 +2,17 @@
 import AppModal from './AppModal.vue'
 import AppButton from './AppButton.vue'
 
-defineProps<{
-  title: string
-  message: string
-  confirmLabel?: string
-  busy?: boolean
-}>()
+withDefaults(
+  defineProps<{
+    title: string
+    message: string
+    confirmLabel?: string
+    busy?: boolean
+    variant?: 'primary' | 'secondary' | 'danger'
+  }>(),
+  // 默认危险色：现有调用点多为删除等破坏性操作，非破坏性操作（如恢复）显式传 primary
+  { variant: 'danger' },
+)
 const emit = defineEmits<{ (e: 'close'): void; (e: 'confirm'): void }>()
 </script>
 
@@ -16,7 +21,7 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'confirm'): void }>()
     <p class="confirm-message">{{ message }}</p>
     <template #footer>
       <AppButton size="sm" @click="emit('close')">取消</AppButton>
-      <AppButton size="sm" variant="danger" :disabled="busy" @click="emit('confirm')">
+      <AppButton size="sm" :variant="variant" :disabled="busy" @click="emit('confirm')">
         {{ confirmLabel ?? '确认' }}
       </AppButton>
     </template>

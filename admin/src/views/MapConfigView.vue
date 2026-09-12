@@ -2,7 +2,10 @@
 import { onMounted, ref } from 'vue'
 import { mapApi } from '../api'
 import type { MapSource, MapSourceType } from '../api/map'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
+import { useConfirmAction } from '../lib/confirm'
+import ConfirmDialog from '../components/ConfirmDialog.vue'
 import AppCard from '../components/AppCard.vue'
 import AppModal from '../components/AppModal.vue'
 import AppButton from '../components/AppButton.vue'
@@ -12,10 +15,7 @@ import AppIcon from '../components/AppIcon.vue'
 
 const sources = ref<MapSource[]>([])
 const loaded = ref(false)
-const loadError = ref('')
-
-// 删除两步确认（避免误删；不用原生 confirm）
-const confirmingDelete = ref<number | null>(null)
+const loadFailed = ref(false)
 
 // 添加卡（新源默认不启用，启用前需配置完整；不支持编辑——配错删掉重加）
 const adding = ref(false)
@@ -26,12 +26,14 @@ const newLayer = ref('vec_w')
 const creating = ref(false)
 
 async function load() {
-  loadError.value = ''
   try {
     sources.value = (await mapApi.listMapSources()).items
     loaded.value = true
+    loadFailed.value = false
   } catch (e) {
-    loadError.value = e instanceof Error ? e.message : '加载失败'
+    // 操作反馈统一走全局 toast（DESIGN §后台）；占位段只表达加载状态，不渲染原始错误串
+    loadFailed.value = true
+    toast.error(errMsg(e, '加载失败'))
   }
 }
 
@@ -45,27 +47,17 @@ async function enable(s: MapSource) {
     toast.success(`已启用「${typeLabel(s.type)}」`)
     await load()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '启用失败')
+    toast.error(errMsg(e, '启用失败'))
   }
 }
 
-async function remove(s: MapSource) {
-  // 两步确认：第一次点变「确认删除？」，3 秒未确认自动复位
-  if (confirmingDelete.value !== s.id) {
-    confirmingDelete.value = s.id
-    setTimeout(() => {
-      if (confirmingDelete.value === s.id) confirmingDelete.value = null
-    }, 3000)
-    return
-  }
-  confirmingDelete.value = null
-  try {
-    await mapApi.deleteMapSource(s.id)
-    toast.success('瓦片源已删除')
-    await load()
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '删除失败')
-  }
+// 删除走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈
+const remove = useConfirmAction<MapSource>('删除失败')
+
+async function runRemove(s: MapSource) {
+  await mapApi.deleteMapSource(s.id)
+  toast.success('瓦片源已删除')
+  await load()
 }
 
 function openAdd() {
@@ -90,7 +82,7 @@ async function create() {
     adding.value = false
     await load()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '添加失败')
+    toast.error(errMsg(e, '添加失败'))
   } finally {
     creating.value = false
   }
@@ -106,7 +98,9 @@ onMounted(load)
         服务端瓦片代理：APP 统一请求后端瓦片接口，密钥只存服务端永不下发。可添加多个瓦片源（类型限公开 XYZ 模板 / 天地图），任意时刻仅一个「使用中」；配置有误直接删除后重新添加。
       </AppAlert>
 
-      <p v-if="!loaded" class="form-hint" style="margin-top: 16px">{{ loadError ? loadError : '加载中…' }}</p>
+      <p v-if="!loaded" class="form-hint" style="margin-top: 16px">
+        {{ loadFailed ? '加载失败，请刷新页面重试' : '加载中…' }}
+      </p>
 
       <div v-else class="source-grid">
         <!-- 已保存的瓦片源卡片（等高：展示 + 底部操作行） -->
@@ -131,9 +125,9 @@ onMounted(load)
               size="sm"
               variant="danger"
               icon="trash-2"
-              @click="remove(s)"
+              @click="remove.target.value = s"
             >
-              {{ confirmingDelete === s.id ? '确认删除？' : '删除' }}
+              删除
             </AppButton>
           </div>
         </AppCard>
@@ -183,6 +177,16 @@ onMounted(load)
           </AppButton>
         </template>
       </AppModal>
+
+      <ConfirmDialog
+        v-if="remove.target.value"
+        title="删除瓦片源"
+        :message="`删除${typeLabel(remove.target.value.type)}？删除后需重新添加；使用中的源不可删除。`"
+        confirm-label="删除"
+        :busy="remove.busy.value"
+        @close="remove.target.value = null"
+        @confirm="remove.confirm(runRemove)"
+      />
     </div>
   </div>
 </template>

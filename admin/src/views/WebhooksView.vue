@@ -9,7 +9,9 @@ import AppBadge from '../components/AppBadge.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppModal from '../components/AppModal.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
+import { useConfirmAction } from '../lib/confirm'
 
 const { WEBHOOK_EVENTS, WEBHOOK_PRESETS } = webhooksApi
 
@@ -72,7 +74,7 @@ async function load() {
     const res = await webhooksApi.listWebhooks()
     channels.value = res.items
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '渠道列表加载失败')
+    toast.error(errMsg(e, '渠道列表加载失败'))
   }
 }
 
@@ -114,7 +116,7 @@ async function save() {
     toast.success(editingId.value === null ? '渠道已创建' : '渠道已保存')
     await load()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
   }
 }
 
@@ -123,28 +125,17 @@ async function test(c: WebhookChannel) {
     await webhooksApi.testWebhook(c.id)
     toast.success('已发送测试推送')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '发送失败')
+    toast.error(errMsg(e, '发送失败'))
   }
 }
 
 // 删除走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈
-const confirmRemove = ref<WebhookChannel | null>(null)
-const removing = ref(false)
+const remove = useConfirmAction<WebhookChannel>('删除失败')
 
-async function doRemove() {
-  const c = confirmRemove.value
-  if (!c) return
-  removing.value = true
-  try {
-    await webhooksApi.deleteWebhook(c.id)
-    toast.success('渠道已删除')
-    confirmRemove.value = null
-    await load()
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '删除失败')
-  } finally {
-    removing.value = false
-  }
+async function runRemove(c: WebhookChannel) {
+  await webhooksApi.deleteWebhook(c.id)
+  toast.success('渠道已删除')
+  await load()
 }
 
 onMounted(load)
@@ -186,7 +177,7 @@ onMounted(load)
                 <div class="flex gap-2" style="justify-content: flex-end">
                   <AppButton variant="secondary" size="sm" icon="edit" @click="openEdit(c)">编辑</AppButton>
                   <AppButton variant="secondary" size="sm" icon="send" @click="test(c)">测试</AppButton>
-                  <AppButton variant="danger" size="sm" icon="trash" @click="confirmRemove = c">删除</AppButton>
+                  <AppButton variant="danger" size="sm" icon="trash" @click="remove.target.value = c">删除</AppButton>
                 </div>
               </td>
             </tr>
@@ -272,13 +263,13 @@ onMounted(load)
     </AppModal>
 
     <ConfirmDialog
-      v-if="confirmRemove"
+      v-if="remove.target.value"
       title="删除通知渠道"
-      :message="`删除渠道「${confirmRemove.name || confirmRemove.url}」？删除后该渠道将不再收到推送。`"
+      :message="`删除渠道「${remove.target.value.name || remove.target.value.url}」？删除后该渠道将不再收到推送。`"
       confirm-label="删除"
-      :busy="removing"
-      @close="confirmRemove = null"
-      @confirm="doRemove"
+      :busy="remove.busy.value"
+      @close="remove.target.value = null"
+      @confirm="remove.confirm(runRemove)"
     />
   </div>
 </template>

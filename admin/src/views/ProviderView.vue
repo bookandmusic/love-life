@@ -8,7 +8,9 @@ import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppModal from '../components/AppModal.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
+import { useConfirmAction } from '../lib/confirm'
 import AppAlert from '../components/AppAlert.vue'
 
 const providers = ref<AiProvider[]>([])
@@ -17,7 +19,7 @@ async function load() {
   try {
     providers.value = await providersApi.listProviders()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '供应商列表加载失败')
+    toast.error(errMsg(e, '供应商列表加载失败'))
   }
 }
 onMounted(load)
@@ -89,7 +91,7 @@ async function fetchModelList() {
     }
     toast.success('模型列表已获取')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '获取模型列表失败')
+    toast.error(errMsg(e, '获取模型列表失败'))
   } finally {
     fetching.value = false
   }
@@ -154,28 +156,17 @@ async function submitForm() {
     toast.success(editingId.value === null ? '供应商已创建' : '供应商已保存')
     await load()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
   }
 }
 
 // 删除走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈
-const confirmRemove = ref<AiProvider | null>(null)
-const removing = ref(false)
+const remove = useConfirmAction<AiProvider>('删除失败')
 
-async function doRemoveProvider() {
-  const p = confirmRemove.value
-  if (!p) return
-  removing.value = true
-  try {
-    await providersApi.deleteProvider(p.id)
-    toast.success(`已删除供应商「${p.name}」`)
-    confirmRemove.value = null
-    await load()
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '删除失败')
-  } finally {
-    removing.value = false
-  }
+async function runRemoveProvider(p: AiProvider) {
+  await providersApi.deleteProvider(p.id)
+  toast.success(`已删除供应商「${p.name}」`)
+  await load()
 }
 
 // 排序即故障切换链：乐观更新 + 服务端持久化，失败回滚重载
@@ -188,7 +179,7 @@ async function move(idx: number, dir: -1 | 1) {
   try {
     providers.value = await providersApi.reorderProviders(next.map((p) => p.id))
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '排序保存失败')
+    toast.error(errMsg(e, '排序保存失败'))
     await load()
   }
 }
@@ -231,7 +222,7 @@ async function move(idx: number, dir: -1 | 1) {
               <td class="text-right">
                 <div class="flex gap-2" style="justify-content: flex-end">
                   <AppButton variant="secondary" size="sm" icon="edit" @click="openEdit(p)">编辑</AppButton>
-                  <AppButton variant="danger" size="sm" icon="trash" @click="confirmRemove = p">删除</AppButton>
+                  <AppButton variant="danger" size="sm" icon="trash" @click="remove.target.value = p">删除</AppButton>
                 </div>
               </td>
             </tr>
@@ -322,13 +313,13 @@ async function move(idx: number, dir: -1 | 1) {
     </AppModal>
 
     <ConfirmDialog
-      v-if="confirmRemove"
+      v-if="remove.target.value"
       title="删除供应商"
-      :message="`删除供应商「${confirmRemove.name}」（${confirmRemove.base_url}）？删除后使用该供应商的模型调用将失败。`"
+      :message="`删除供应商「${remove.target.value.name}」（${remove.target.value.base_url}）？删除后使用该供应商的模型调用将失败。`"
       confirm-label="删除"
-      :busy="removing"
-      @close="confirmRemove = null"
-      @confirm="doRemoveProvider"
+      :busy="remove.busy.value"
+      @close="remove.target.value = null"
+      @confirm="remove.confirm(runRemoveProvider)"
     />
   </div>
 </template>

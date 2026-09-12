@@ -9,7 +9,9 @@ import AppBadge from '../components/AppBadge.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppModal from '../components/AppModal.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
+import { useConfirmAction } from '../lib/confirm'
 
 const tokens = ref<PatToken[]>([])
 const users = ref<UserItem[]>([])
@@ -34,7 +36,7 @@ async function load() {
   try {
     ;[tokens.value, users.value] = await Promise.all([tokensApi.listTokens(), usersApi.listUsers()])
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '令牌列表加载失败')
+    toast.error(errMsg(e, '令牌列表加载失败'))
   }
 }
 
@@ -51,7 +53,7 @@ async function submitCreate() {
     toast.success('访问令牌已生成')
     await load()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '生成失败')
+    toast.error(errMsg(e, '生成失败'))
   }
 }
 
@@ -66,23 +68,13 @@ async function copyToken() {
 }
 
 // 吊销走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈
-const confirmRevoke = ref<PatToken | null>(null)
-const revoking = ref(false)
+const revoke = useConfirmAction<PatToken>('吊销失败')
 
-async function doRevoke() {
-  const t = confirmRevoke.value
-  if (!t) return
-  revoking.value = true
-  try {
-    await tokensApi.revokeToken(t.id)
-    t.status = 'revoked'
-    toast.success(`已吊销令牌「${t.name}」`)
-    confirmRevoke.value = null
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '吊销失败')
-  } finally {
-    revoking.value = false
-  }
+async function runRevoke(t: PatToken) {
+  // 吊销是幂等的状态迁移，不依赖响应体（服务端可能返回 204 空体）
+  await tokensApi.revokeToken(t.id)
+  t.status = 'revoked'
+  toast.success(`已吊销令牌「${t.name}」`)
 }
 
 onMounted(load)
@@ -118,7 +110,7 @@ onMounted(load)
                   variant="danger"
                   size="sm"
                   icon="trash"
-                  @click="confirmRevoke = t"
+                  @click="revoke.target.value = t"
                 >
                   吊销
                 </AppButton>
@@ -182,13 +174,13 @@ onMounted(load)
     </AppModal>
 
     <ConfirmDialog
-      v-if="confirmRevoke"
+      v-if="revoke.target.value"
       title="吊销访问令牌"
-      :message="`吊销令牌「${confirmRevoke.name}」？吊销后该 Agent 将立即失去访问权限。`"
+      :message="`吊销令牌「${revoke.target.value.name}」？吊销后该 Agent 将立即失去访问权限。`"
       confirm-label="吊销"
-      :busy="revoking"
-      @close="confirmRevoke = null"
-      @confirm="doRevoke"
+      :busy="revoke.busy.value"
+      @close="revoke.target.value = null"
+      @confirm="revoke.confirm(runRevoke)"
     />
   </div>
 </template>

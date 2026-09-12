@@ -7,6 +7,7 @@ import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppIcon from '../components/AppIcon.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
 
 const stats = ref<DashboardStat[]>([])
@@ -46,7 +47,7 @@ async function load() {
     usage.value = u.items
     alerts.value = al.items
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '仪表盘加载失败')
+    toast.error(errMsg(e, '仪表盘加载失败'))
   }
 }
 

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { spaceApi, securityApi, usersApi } from '../api'
+import { errMsg } from '../lib/http'
 import type { SpaceInfo } from '../api/space'
-import type { SecuritySettings } from '../api/security'
+import type { ChatRetention } from '../api/security'
 import type { UserItem, CoupleSidePayload } from '../api/users'
 import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
@@ -21,7 +22,7 @@ function daysTogether(): string {
   if (!space.value?.love_start_date) return '—'
   const start = new Date(space.value.love_start_date)
   const diff = Math.floor((Date.now() - start.getTime()) / 86400000)
-  return diff > 0 ? String(diff) : '—'
+  return diff >= 0 ? String(diff) : '—'
 }
 
 async function saveSpace() {
@@ -31,7 +32,7 @@ async function saveSpace() {
     editing.value = false
     toast.success('空间信息已保存')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
   }
 }
 
@@ -52,14 +53,18 @@ const creating = ref(false)
 
 async function loadAll() {
   try {
-    ;[space.value, retention.value, users.value] = await Promise.all([
+    const [sp, sec, us] = await Promise.all([
       spaceApi.getSpace(),
       securityApi.getSecuritySettings(),
       usersApi.listUsers(),
     ])
+    space.value = sp
+    users.value = us
+    recycleDays.value = sec.recycleRetentionDays
+    chatRetention.value = sec.chatRetention
     if (space.value) spaceForm.value = { ...space.value }
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '空间管理加载失败')
+    toast.error(errMsg(e, '空间管理加载失败'))
   }
 }
 
@@ -71,7 +76,7 @@ async function submitCouple() {
     toast.success('情侣成员已创建')
     await loadAll()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '创建失败')
+    toast.error(errMsg(e, '创建失败'))
   } finally {
     creating.value = false
   }
@@ -97,7 +102,7 @@ async function submitEdit() {
     toast.success('昵称已更新')
     await loadAll()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
   }
 }
 
@@ -120,19 +125,36 @@ async function submitReset() {
     pwTarget.value = null
     toast.success('密码已重置')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '重置失败')
+    toast.error(errMsg(e, '重置失败'))
   }
 }
 
-// ---------- 数据保留（两类空间级保留策略集中于此） ----------
-const retention = ref<SecuritySettings>({ recycleRetentionDays: 30, chatRetention: '30' })
+// ---------- 数据保留（两类空间级保留策略集中于此；两卡各自独立保存，互不携带对方未确认的修改） ----------
+const recycleDays = ref(30)
+const chatRetention = ref<ChatRetention>('30')
 
-async function saveRetention() {
+async function saveRecycle() {
+  const days = recycleDays.value
+  // 范围有文档依据（DESIGN §9 / REQUIREMENTS §8.3），超范围行为无规定：不静默改写，直接报错不发请求
+  if (!Number.isInteger(days) || days < 7 || days > 365) {
+    toast.error('保留期限需在 7 ~ 365 天之间')
+    return
+  }
   try {
-    await securityApi.saveSecuritySettings(retention.value)
-    toast.success('保留策略已保存')
+    await securityApi.saveSecuritySettings({ recycleRetentionDays: days })
+    recycleDays.value = days
+    toast.success('回收站保留期限已保存')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
+  }
+}
+
+async function saveChat() {
+  try {
+    await securityApi.saveSecuritySettings({ chatRetention: chatRetention.value })
+    toast.success('对话保留策略已保存')
+  } catch (e) {
+    toast.error(errMsg(e, '保存失败'))
   }
 }
 
@@ -285,7 +307,7 @@ onMounted(loadAll)
           <div class="form-group" style="margin: 0; flex: 1">
             <label class="form-label">保留天数（7 ~ 365）</label>
             <input
-              v-model.number="retention.recycleRetentionDays"
+              v-model.number="recycleDays"
               class="form-input"
               type="number"
               min="7"
@@ -293,7 +315,7 @@ onMounted(loadAll)
               style="max-width: 160px"
             />
           </div>
-          <AppButton variant="secondary" size="sm" icon="save" @click="saveRetention()">保存</AppButton>
+          <AppButton variant="secondary" size="sm" icon="save" @click="saveRecycle()">保存</AppButton>
         </div>
         <p class="form-hint">超过此天数的已删除内容将被系统定时任务自动永久删除；回收站页顶部展示的期限提示读自此处。</p>
       </AppCard>
@@ -302,14 +324,14 @@ onMounted(loadAll)
         <div class="flex gap-2" style="align-items: flex-end">
           <div class="form-group" style="margin: 0; flex: 1">
             <label class="form-label">AI 对话记录默认保留时长</label>
-            <select v-model="retention.chatRetention" class="form-select" style="max-width: 160px">
+            <select v-model="chatRetention" class="form-select" style="max-width: 160px">
               <option value="7">7 天</option>
               <option value="30">30 天</option>
               <option value="90">90 天</option>
               <option value="permanent">永久保留</option>
             </select>
           </div>
-          <AppButton variant="secondary" size="sm" icon="save" @click="saveRetention()">保存</AppButton>
+          <AppButton variant="secondary" size="sm" icon="save" @click="saveChat()">保存</AppButton>
         </div>
         <p class="form-hint">空间级默认值，用户可在 APP 中自行调整。</p>
       </AppCard>

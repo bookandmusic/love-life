@@ -8,7 +8,15 @@ import AppBadge from '../components/AppBadge.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppIcon from '../components/AppIcon.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
+import { useConfirmAction } from '../lib/confirm'
+
+// 恢复目标：单条与批量共用（ids 恒为数组，summary 用于确认文案）
+interface RestoreTarget {
+  ids: number[]
+  summary: string
+}
 
 const items = ref<RecycleItem[]>([])
 const restoreLog = ref<RestoreLogEntry[]>([])
@@ -44,7 +52,7 @@ async function load() {
     restoreLog.value = log.items
     selected.value = new Set()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '回收站加载失败')
+    toast.error(errMsg(e, '回收站加载失败'))
   }
 }
 
@@ -77,38 +85,27 @@ function toggleOne(id: number) {
 }
 
 // 恢复走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈，操作记录审计日志
-const confirmRestore = ref<{ ids: number[]; summary: string } | null>(null)
-const restoring = ref(false)
+const restoreAction = useConfirmAction<RestoreTarget>('恢复失败')
 
 function restore(item: RecycleItem) {
-  confirmRestore.value = { ids: [item.id], summary: item.summary }
+  restoreAction.target.value = { ids: [item.id], summary: item.summary }
 }
 
 function restoreSelected() {
   const ids = [...selected.value]
   if (ids.length === 0) return
-  confirmRestore.value = { ids, summary: `选中的 ${ids.length} 条内容` }
+  restoreAction.target.value = { ids, summary: `选中的 ${ids.length} 条内容` }
 }
 
-async function doRestore() {
-  const target = confirmRestore.value
-  if (!target) return
-  restoring.value = true
-  try {
-    if (target.ids.length === 1) {
-      await recycleApi.restoreRecycle(target.ids[0])
-      toast.success(`已恢复「${target.summary}」`)
-    } else {
-      await recycleApi.restoreMany(target.ids)
-      toast.success(`已恢复 ${target.ids.length} 条内容`)
-    }
-    confirmRestore.value = null
-    await load()
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '恢复失败')
-  } finally {
-    restoring.value = false
+async function runRestore(target: RestoreTarget) {
+  if (target.ids.length === 1) {
+    await recycleApi.restoreRecycle(target.ids[0])
+    toast.success(`已恢复「${target.summary}」`)
+  } else {
+    await recycleApi.restoreMany(target.ids)
+    toast.success(`已恢复 ${target.ids.length} 条内容`)
   }
+  await load()
 }
 </script>
 
@@ -190,13 +187,14 @@ async function doRestore() {
     </AppCard>
 
     <ConfirmDialog
-      v-if="confirmRestore"
+      v-if="restoreAction.target.value"
       title="恢复回收站内容"
-      :message="`确认恢复「${confirmRestore.summary}」？该操作会被记录审计日志。`"
+      :message="`确认恢复「${restoreAction.target.value.summary}」？该操作会被记录审计日志。`"
       confirm-label="恢复"
-      :busy="restoring"
-      @close="confirmRestore = null"
-      @confirm="doRestore"
+      variant="primary"
+      :busy="restoreAction.busy.value"
+      @close="restoreAction.target.value = null"
+      @confirm="restoreAction.confirm(runRestore)"
     />
   </div>
 </template>

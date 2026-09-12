@@ -15,7 +15,8 @@ export function getSecuritySettings(): Promise<SecuritySettings> {
   return http<SecuritySettings>('/api/v1/admin/security')
 }
 
-export function saveSecuritySettings(settings: SecuritySettings): Promise<void> {
+/** 部分更新：两类保留策略各自独立保存，只提交变更字段 */
+export function saveSecuritySettings(settings: Partial<SecuritySettings>): Promise<void> {
   return http<void>('/api/v1/admin/security', {
     method: 'PUT',
     body: JSON.stringify(settings),

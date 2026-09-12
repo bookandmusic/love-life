@@ -7,7 +7,9 @@ import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppModal from '../components/AppModal.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
+import { useConfirmAction } from '../lib/confirm'
 
 
 // ---------- System Prompt（全局主干模板） ----------
@@ -18,7 +20,7 @@ async function loadPrompt() {
   try {
     prompt.value = (await providersApi.getSystemPrompt()).content
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : 'System Prompt 加载失败')
+    toast.error(errMsg(e, 'System Prompt 加载失败'))
   }
 }
 
@@ -28,7 +30,7 @@ async function savePrompt() {
     await providersApi.saveSystemPrompt(prompt.value)
     toast.success('System Prompt 已保存')
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
   } finally {
     promptSaving.value = false
   }
@@ -47,7 +49,7 @@ async function loadStyles() {
     stylesData.value = await stylesApi.listStyles()
     defaultStyleId.value = stylesData.value.default_style_id
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '风格库加载失败')
+    toast.error(errMsg(e, '风格库加载失败'))
   }
 }
 
@@ -56,7 +58,7 @@ async function onDefaultStyleChange() {
     stylesData.value = await stylesApi.setDefaultStyle(defaultStyleId.value)
     defaultStyleId.value = stylesData.value.default_style_id
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '设置默认风格失败')
+    toast.error(errMsg(e, '设置默认风格失败'))
     await loadStyles()
   }
 }
@@ -96,28 +98,17 @@ async function submitStyle() {
     showStyleForm.value = false
     await loadStyles()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '保存失败')
+    toast.error(errMsg(e, '保存失败'))
   }
 }
 
 // 删除走确认弹窗（不用原生 confirm）；结果用全局 toast 反馈
-const confirmRemoveStyle = ref<Style | null>(null)
-const removingStyle = ref(false)
+const remove = useConfirmAction<Style>('删除失败')
 
-async function doRemoveStyle() {
-  const s = confirmRemoveStyle.value
-  if (!s) return
-  removingStyle.value = true
-  try {
-    await stylesApi.deleteStyle(s.id)
-    toast.success(`已删除风格「${s.name}」`)
-    confirmRemoveStyle.value = null
-    await loadStyles()
-  } catch (e) {
-    toast.error(e instanceof Error ? e.message : '删除失败')
-  } finally {
-    removingStyle.value = false
-  }
+async function runRemove(s: Style) {
+  await stylesApi.deleteStyle(s.id)
+  toast.success(`已删除风格「${s.name}」`)
+  await loadStyles()
 }
 
 onMounted(() => {
@@ -163,7 +154,7 @@ onMounted(() => {
               <td class="text-right">
                 <div v-if="!s.builtin" class="flex gap-2" style="justify-content: flex-end">
                   <AppButton variant="secondary" size="sm" icon="edit" @click="openEditStyle(s)">编辑</AppButton>
-                  <AppButton variant="danger" size="sm" icon="trash" @click="confirmRemoveStyle = s">删除</AppButton>
+                  <AppButton variant="danger" size="sm" icon="trash" @click="remove.target.value = s">删除</AppButton>
                 </div>
               </td>
             </tr>
@@ -197,13 +188,13 @@ onMounted(() => {
     </AppModal>
 
     <ConfirmDialog
-      v-if="confirmRemoveStyle"
+      v-if="remove.target.value"
       title="删除自定义风格"
-      :message="`删除自定义风格「${confirmRemoveStyle.name}」？删除后不可恢复。`"
+      :message="`删除自定义风格「${remove.target.value.name}」？删除后不可恢复。`"
       confirm-label="删除"
-      :busy="removingStyle"
-      @close="confirmRemoveStyle = null"
-      @confirm="doRemoveStyle"
+      :busy="remove.busy.value"
+      @close="remove.target.value = null"
+      @confirm="remove.confirm(runRemove)"
     />
   </div>
 </template>

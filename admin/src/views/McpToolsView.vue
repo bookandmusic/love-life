@@ -10,6 +10,7 @@ import AppTabs from '../components/AppTabs.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppModal from '../components/AppModal.vue'
 import AppIcon from '../components/AppIcon.vue'
+import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
 
 const tools = ref<McpTool[]>([])
@@ -31,7 +32,7 @@ onMounted(async () => {
   try {
     tools.value = await toolsApi.listTools()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '工具列表加载失败')
+    toast.error(errMsg(e, '工具列表加载失败'))
   }
 })
 
@@ -56,7 +57,7 @@ async function toggleTool(t: McpTool, enabled: boolean) {
     toast.success(`已${enabled ? '启用' : '停用'}「${t.name}」`)
   } catch (e) {
     t.enabled = prev
-    toast.error(e instanceof Error ? e.message : '操作失败')
+    toast.error(errMsg(e, '操作失败'))
   }
 }
 

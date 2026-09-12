@@ -3,7 +3,6 @@ import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { authApi } from '../api'
 import AppIcon from '../components/AppIcon.vue'
-import AppToast from '../components/AppToast.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -68,6 +67,5 @@ function logout() {
         <RouterView />
       </div>
     </main>
-    <AppToast />
   </div>
 </template>

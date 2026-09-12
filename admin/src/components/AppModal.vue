@@ -1,8 +1,15 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted } from 'vue'
 import AppIcon from './AppIcon.vue'
 
 defineProps<{ title: string; width?: number }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') emit('close')
+}
+onMounted(() => window.addEventListener('keydown', onKeydown))
+onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 </script>
 
 <template>

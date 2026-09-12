@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { auditApi } from '../api'
-import type { AuditEntry, AuditActorType, AuditResult } from '../api/audit'
+import type { AuditEntry, AuditActorType } from '../api/audit'
 import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppIcon from '../components/AppIcon.vue'
+import { errMsg } from '../lib/http'
+import { toCsv } from '../lib/csv'
 import { toast } from '../lib/toast'
 
 const entries = ref<AuditEntry[]>([])
@@ -22,7 +24,7 @@ onMounted(async () => {
   try {
     entries.value = await auditApi.listAudit()
   } catch (e) {
-    toast.error(e instanceof Error ? e.message : '审计日志加载失败')
+    toast.error(errMsg(e, '审计日志加载失败'))
   }
 })
 
@@ -36,7 +38,8 @@ function latency(e: AuditEntry): string {
   return e.latencyMs >= 1000 ? (e.latencyMs / 1000).toFixed(1) + 's' : e.latencyMs + 'ms'
 }
 
-// CSV 导出（含 BOM，Excel 直接打开不乱码）；导出范围为当前筛选结果
+// CSV 导出（含 BOM，Excel 直接打开不乱码）；导出范围为当前筛选结果。
+// 公式注入防御与转义在 lib/csv.ts（纯 TS，便于 .verify/admin-csv.mjs 回归）。
 function exportLog() {
   const header = ['时间', '操作者类型', '操作者', '操作', '参数摘要', '结果', '耗时(ms)']
   const rows = filtered.value.map((e) => [
@@ -48,9 +51,7 @@ function exportLog() {
     e.result === 'success' ? '成功' : '失败',
     e.latencyMs === null ? '' : String(e.latencyMs),
   ])
-  const csv =
-    '\uFEFF' +
-    [header, ...rows].map((r) => r.map((c) => `"${String(c).replaceAll('"', '""')}"`).join(',')).join('\r\n')
+  const csv = toCsv(header, rows)
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

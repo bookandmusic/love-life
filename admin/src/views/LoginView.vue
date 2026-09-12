@@ -2,22 +2,22 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { login } from '../api/auth'
+import { errMsg } from '../lib/http'
+import { toast } from '../lib/toast'
 import AppIcon from '../components/AppIcon.vue'
 
 const router = useRouter()
 const username = ref('')
 const password = ref('')
-const error = ref('')
 const loading = ref(false)
 
 async function submit() {
   loading.value = true
-  error.value = ''
   try {
     await login(username.value, password.value)
     router.push('/dashboard')
   } catch (e) {
-    error.value = e instanceof Error ? e.message : '登录失败'
+    toast.error(errMsg(e, '登录失败'))
   } finally {
     loading.value = false
   }
@@ -43,6 +43,7 @@ async function submit() {
             type="text"
             placeholder="admin"
             autocomplete="username"
+            required
           />
         </div>
         <div class="form-group">
@@ -53,9 +54,9 @@ async function submit() {
             type="password"
             placeholder="••••••••"
             autocomplete="current-password"
+            required
           />
         </div>
-        <p v-if="error" class="form-error">{{ error }}</p>
         <button class="btn btn-primary full-width" type="submit" :disabled="loading">
           {{ loading ? '登录中…' : '登录' }}
         </button>
