@@ -26,8 +26,15 @@ type ExecResult struct {
 type Tool struct {
 	Name        string
 	Description string
-	Params      map[string]any
-	IsWrite     bool
+	// Category 后台工具表分组（AD4；契约 routes.mjs /admin/mcp-tools 的 category 字段）。
+	// 取值：动态 / 相册 / 地图 / 纪念日 / 空间 / 互动。
+	Category string
+	// Schema 参数名册（后台工具详情展示；契约 /admin/mcp-tools 的 schema 字段，
+	// 值形如 "string — 动态正文"）。与 Params 并存：Params 是给模型的 JSON Schema，
+	// Schema 是后台人工可读的名册。
+	Schema  map[string]string
+	Params  map[string]any
+	IsWrite bool
 	// AppOnly 标记删除类工具：铁律「删除类工具不对任何令牌开放」（AGENTS §5 / DESIGN §8.3），
 	// 仅 APP 内部通道可用；外部 PAT 通道列工具表必须经 RegistryForPAT 过滤。
 	AppOnly bool
@@ -41,7 +48,12 @@ type Deps struct {
 }
 
 func (d *Deps) audit(ctx context.Context, userID int64, tool, digest, result string) {
-	_ = d.DB.InsertAuditLog(ctx, "ai", userID, tool, digest, result)
+	_ = d.DB.InsertAuditLog(ctx, store.ActorTypeAI, userID, tool, digest, result)
+}
+
+// AuditWithLatency 工具审计带 latency 版本（L5 AI 调用统计需求）。
+func (d *Deps) AuditWithLatency(ctx context.Context, userID int64, tool, digest, result string, latencyMs int64) {
+	_ = d.DB.InsertAuditLogFull(ctx, store.ActorTypeAI, userID, tool, digest, "", result, &latencyMs)
 }
 
 // notifyPartnerNewPost AI 代发动态走与手动发布一致的通知口径（新动态通知另一方+外部推送，admin 不在情侣里）。
@@ -215,7 +227,11 @@ func Registry() []*Tool {
 	return []*Tool{
 		{
 			Name:        "search_posts",
+			Category:    "动态",
 			Description: "按关键词搜索历史动态",
+			Schema: map[string]string{
+				"query": "string — 语义检索词",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"query": map[string]any{"type": "string"},
 			}, "required": []string{"query"}},
@@ -244,7 +260,11 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "delete_post",
+			Category:    "动态",
 			Description: "删除动态（进入回收站，需用户确认后生效）",
+			Schema: map[string]string{
+				"post_id": "number — 动态 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"post_id": map[string]any{"type": "integer"},
 			}, "required": []string{"post_id"}},
@@ -270,7 +290,7 @@ func Registry() []*Tool {
 					})
 					_ = d.DB.InsertNotification(ctx, p.AuthorID, "post_deleted", "post", postID, string(snapshot))
 				}
-				if err := d.DB.SoftDeletePost(ctx, postID); err != nil {
+				if err := d.DB.SoftDeletePost(ctx, postID, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
 				d.audit(ctx, userID, "delete_post", textutil.Trunc(p.Content, 50), "deleted")
@@ -279,7 +299,9 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "get_today_in_history",
+			Category:    "动态",
 			Description: "获取那年今日：历年在今天同月同日发布的动态",
+			Schema:      map[string]string{},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"years_back": map[string]any{"type": "integer"},
 			}},
@@ -307,7 +329,9 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "get_space_summary",
+			Category:    "空间",
 			Description: "空间概览：在一起天数、动态数、相册数、纪念日数等统计",
+			Schema:      map[string]string{},
 			Params:      map[string]any{"type": "object", "properties": map[string]any{}},
 			Exec: func(ctx context.Context, d *Deps, userID int64, _ map[string]any) (*ExecResult, error) {
 				var posts, albums, anniversaries int64
@@ -322,7 +346,12 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "get_timeline_summary",
+			Category:    "空间",
 			Description: "时间线统计：按年/月（给 year）或按日（给 month，YYYY-MM）统计动态数量分布",
+			Schema: map[string]string{
+				"year":  "string — 年份 YYYY（可选）",
+				"month": "string — 月份 YYYY-MM（可选）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"year":  map[string]any{"type": "string"},
 				"month": map[string]any{"type": "string"},
@@ -350,7 +379,12 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "create_post",
+			Category:    "动态",
 			Description: "发布一条动态（需用户确认后生效）",
+			Schema: map[string]string{
+				"content": "string — 动态正文",
+				"mood":    "string — 心情（可选）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"content": map[string]any{"type": "string"},
 				"mood":    map[string]any{"type": "string"},
@@ -376,13 +410,17 @@ func Registry() []*Tool {
 					return nil, err
 				}
 				d.notifyPartnerNewPost(ctx, userID, postID, content)
-				d.audit(ctx, userID, "create_post", content, "created")
 				return &ExecResult{Content: fmt.Sprintf("动态 #%d 已发布", postID), Data: map[string]any{"post_id": postID}}, nil
 			},
 		},
 		{
 			Name:        "create_album",
+			Category:    "相册",
 			Description: "创建相册（需用户确认后生效；媒体从动态媒体池选择）",
+			Schema: map[string]string{
+				"name":        "string — 相册名",
+				"description": "string — 描述（可选）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"name":        map[string]any{"type": "string"},
 				"description": map[string]any{"type": "string"},
@@ -397,13 +435,17 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "create_album", name, "created")
 				return &ExecResult{Content: fmt.Sprintf("相册「%s」已创建", name), Data: map[string]any{"album_id": albumID}}, nil
 			},
 		},
 		{
 			Name:        "add_photos_to_album",
+			Category:    "相册",
 			Description: "把动态媒体池中的照片加入相册（media_ids 必须来自既有动态，不接受上传附件）",
+			Schema: map[string]string{
+				"album_id":  "number — 相册 ID",
+				"media_ids": "number[] — 待加入媒体 ID（来自动态媒体池）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"album_id":  map[string]any{"type": "integer"},
 				"media_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
@@ -428,13 +470,17 @@ func Registry() []*Tool {
 				if err := d.DB.AddAlbumItems(ctx, albumID, userID, ids); err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "add_photos_to_album", fmt.Sprintf("album=%d ids=%v", albumID, ids), "added")
 				return &ExecResult{Content: fmt.Sprintf("已把 %d 张照片加入相册", len(ids)), Data: map[string]any{"album_id": albumID, "added": len(ids)}}, nil
 			},
 		},
 		{
 			Name:        "remove_photos_from_album",
+			Category:    "相册",
 			Description: "从相册移除照片（不影响照片本身，需用户确认后生效）",
+			Schema: map[string]string{
+				"album_id":  "number — 相册 ID",
+				"photo_ids": "number[] — 待移除照片 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"album_id":  map[string]any{"type": "integer"},
 				"photo_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}},
@@ -455,13 +501,17 @@ func Registry() []*Tool {
 				if err := d.DB.RemoveAlbumItems(ctx, albumID, ids); err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "remove_photos_from_album", fmt.Sprintf("album=%d ids=%v", albumID, ids), "removed")
 				return &ExecResult{Content: fmt.Sprintf("已从相册移除 %d 张照片", len(ids)), Data: map[string]any{"album_id": albumID, "removed": len(ids)}}, nil
 			},
 		},
 		{
 			Name:        "suggest_photo_grouping",
+			Category:    "相册",
 			Description: "推荐照片分组：按日期与地点聚合候选媒体，给出分组建议（纯查询，不生成内容）",
+			Schema: map[string]string{
+				"date_range": "object — 日期范围（可选，包含 from/to）",
+				"location":   "string — 地点筛选（可选）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"date_range": map[string]any{"type": "object", "properties": map[string]any{
 					"from": map[string]any{"type": "string"},
@@ -509,7 +559,13 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "list_albums",
+			Category:    "相册",
 			Description: "列出所有相册（timeline 含月度相册，collection 仅手动相册；分页）",
+			Schema: map[string]string{
+				"view_type": "string — timeline（全部）或 collection（手动相册）",
+				"page":      "number — 页码（从 1 开始，可选）",
+				"page_size": "number — 每页数量（可选）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"view_type": map[string]any{"type": "string"},
 				"page":      map[string]any{"type": "integer"},
@@ -562,7 +618,11 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "delete_album",
+			Category:    "相册",
 			Description: "删除手动相册（进入回收站，不影响照片本身；需用户确认后生效）",
+			Schema: map[string]string{
+				"album_id": "number — 相册 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"album_id": map[string]any{"type": "integer"},
 			}, "required": []string{"album_id"}},
@@ -580,16 +640,19 @@ func Registry() []*Tool {
 				if al.Type == "monthly" {
 					return nil, fmt.Errorf("月度相册不可删除，仅可在设置中隐藏")
 				}
-				if err := d.DB.SoftDeleteAlbum(ctx, albumID); err != nil {
+				if err := d.DB.SoftDeleteAlbum(ctx, albumID, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "delete_album", al.Name, "deleted")
 				return &ExecResult{Content: fmt.Sprintf("相册「%s」已删除（进回收站）", al.Name), Data: map[string]any{"album_id": albumID}}, nil
 			},
 		},
 		{
 			Name:        "toggle_like",
+			Category:    "互动",
 			Description: "点赞/取消点赞动态（需用户确认后生效）",
+			Schema: map[string]string{
+				"post_id": "number — 动态 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"post_id": map[string]any{"type": "integer"},
 			}, "required": []string{"post_id"}},
@@ -600,13 +663,16 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "toggle_like", fmt.Sprint(postID), map[bool]string{true: "liked", false: "unliked"}[liked])
 				return &ExecResult{Content: fmt.Sprintf("已%s点赞", toggleWord(liked)), Data: map[string]any{"liked": liked}}, nil
 			},
 		},
 		{
 			Name:        "toggle_favorite",
+			Category:    "互动",
 			Description: "收藏/取消收藏动态（可撤销关系数据，不进回收站；需用户确认后生效）",
+			Schema: map[string]string{
+				"post_id": "number — 动态 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"post_id": map[string]any{"type": "integer"},
 			}, "required": []string{"post_id"}},
@@ -617,13 +683,16 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "toggle_favorite", fmt.Sprint(postID), map[bool]string{true: "favorited", false: "unfavorited"}[favorited])
 				return &ExecResult{Content: fmt.Sprintf("已%s收藏", toggleWord(favorited)), Data: map[string]any{"favorited": favorited}}, nil
 			},
 		},
 		{
 			Name:        "list_favorites",
+			Category:    "互动",
 			Description: "列出我收藏的动态（收藏时间倒序，分页）",
+			Schema: map[string]string{
+				"page": "number — 页码",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"page":      map[string]any{"type": "integer"},
 				"page_size": map[string]any{"type": "integer"},
@@ -647,7 +716,12 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "create_comment",
+			Category:    "互动",
 			Description: "发表评论（最多 500 字，需用户确认后生效）",
+			Schema: map[string]string{
+				"post_id": "number — 动态 ID",
+				"content": "string — 评论内容",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"post_id": map[string]any{"type": "integer"},
 				"content": map[string]any{"type": "string"},
@@ -684,7 +758,11 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "delete_comment",
+			Category:    "互动",
 			Description: "删除评论（进入回收站，需用户确认后生效）",
+			Schema: map[string]string{
+				"comment_id": "number — 评论 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"comment_id": map[string]any{"type": "integer"},
 			}, "required": []string{"comment_id"}},
@@ -708,7 +786,7 @@ func Registry() []*Tool {
 					snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(c.Content, 50), "deleted_by": operator.Username})
 					_ = d.DB.InsertNotification(ctx, c.AuthorID, "comment_deleted", "comment", id, string(snapshot))
 				}
-				if err := d.DB.SoftDeleteComment(ctx, id); err != nil {
+				if err := d.DB.SoftDeleteComment(ctx, id, "ai", userID); err != nil {
 					return nil, err
 				}
 				d.audit(ctx, userID, "delete_comment", textutil.Trunc(c.Content, 50), "deleted")
@@ -717,7 +795,11 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "list_comments",
+			Category:    "互动",
 			Description: "列出某条动态下的评论（时间倒序，分页）",
+			Schema: map[string]string{
+				"post_id": "number — 动态 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"post_id":   map[string]any{"type": "integer"},
 				"page":      map[string]any{"type": "integer"},
@@ -749,7 +831,15 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "create_map_point",
+			Category:    "地图",
 			Description: "创建地图点位（足迹）；同名地点复用既有点位",
+			Schema: map[string]string{
+				"name":        "string — 地点名",
+				"latitude":    "number — 纬度",
+				"longitude":   "number — 经度",
+				"visit_date":  "string — 到访日期 YYYY-MM-DD（可选）",
+				"description": "string — 描述（可选）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"name":        map[string]any{"type": "string"},
 				"latitude":    map[string]any{"type": "number"},
@@ -776,7 +866,6 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "create_map_point", name, map[bool]string{true: "created", false: "reused"}[created])
 				content := fmt.Sprintf("已把「%s」记到地图上", name)
 				if !created {
 					content = fmt.Sprintf("「%s」已在地图上，复用了既有点位", name)
@@ -787,7 +876,11 @@ func Registry() []*Tool {
 		{
 			// 删除类工具仅 APP 内部通道可用，不对 PAT 开放（铁律 AGENTS §5 / DESIGN §8.3 分档）
 			Name:        "delete_map_point",
+			Category:    "地图",
 			Description: "删除地图点位（进入回收站，需用户确认后生效）",
+			Schema: map[string]string{
+				"point_id": "number — 点位 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"point_id": map[string]any{"type": "integer"},
 			}, "required": []string{"point_id"}},
@@ -802,16 +895,19 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				if err := d.DB.SoftDeletePoint(ctx, pointID); err != nil {
+				if err := d.DB.SoftDeletePoint(ctx, pointID, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "delete_map_point", p.Name, "deleted")
 				return &ExecResult{Content: fmt.Sprintf("已删除地图点位「%s」", p.Name), Data: map[string]any{"point_id": pointID}}, nil
 			},
 		},
 		{
 			Name:        "search_locations",
+			Category:    "地图",
 			Description: "按名称/描述搜索地图足迹点位",
+			Schema: map[string]string{
+				"query": "string — 地点关键词",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"query": map[string]any{"type": "string"},
 			}, "required": []string{"query"}},
@@ -838,7 +934,11 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "get_location_posts",
+			Category:    "地图",
 			Description: "获取某地点（点位）下的全部动态",
+			Schema: map[string]string{
+				"location_id": "number — 点位 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"location_id": map[string]any{"type": "integer"},
 			}, "required": []string{"location_id"}},
@@ -868,7 +968,9 @@ func Registry() []*Tool {
 		{
 			// T1（DESIGN §6.4/§12.2）：设计名 get_next_anniversary；输出补 type 与农历换算公历 next_solar_date
 			Name:        "get_next_anniversary",
+			Category:    "纪念日",
 			Description: "获取下一个纪念日信息（含类型与农历换算的公历日期）",
+			Schema:      map[string]string{},
 			Params:      map[string]any{"type": "object", "properties": map[string]any{}},
 			Exec: func(ctx context.Context, d *Deps, userID int64, _ map[string]any) (*ExecResult, error) {
 				list, err := d.DB.ListAnniversaries(ctx)
@@ -896,7 +998,14 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "create_anniversary",
+			Category:    "纪念日",
 			Description: "创建纪念日（date 统一 YYYY-MM-DD；solar=公历，lunar=农历日期；需用户确认后生效）",
+			Schema: map[string]string{
+				"name":               "string — 名称",
+				"date":               "string — YYYY-MM-DD",
+				"type":               "solar | lunar",
+				"remind_days_before": "number — 提前提醒天数",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"name":               map[string]any{"type": "string"},
 				"date":               map[string]any{"type": "string"},
@@ -930,14 +1039,17 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "create_anniversary", fmt.Sprintf("%s %s type=%s", name, date, annivType), "created")
 				return &ExecResult{Content: fmt.Sprintf("纪念日「%s」已创建", name),
 					Data: map[string]any{"anniversary_id": id, "type": annivType}}, nil
 			},
 		},
 		{
 			Name:        "delete_anniversary",
+			Category:    "纪念日",
 			Description: "删除纪念日（进入回收站，需用户确认后生效）",
+			Schema: map[string]string{
+				"anniversary_id": "number — 纪念日 ID",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"anniversary_id": map[string]any{"type": "integer"},
 			}, "required": []string{"anniversary_id"}},
@@ -952,7 +1064,7 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				if err := d.DB.SoftDeleteAnniversary(ctx, id); err != nil {
+				if err := d.DB.SoftDeleteAnniversary(ctx, id, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
 				d.audit(ctx, userID, "delete_anniversary", a.Name, "deleted")
@@ -961,7 +1073,12 @@ func Registry() []*Tool {
 		},
 		{
 			Name:        "configure_reminder",
+			Category:    "纪念日",
 			Description: "配置纪念日提醒的提前天数（0-90，站内+外部同发；需用户确认后生效）",
+			Schema: map[string]string{
+				"anniversary_id": "number — 纪念日 ID",
+				"days_before":    "number — 提前提醒天数（0-90）",
+			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"anniversary_id": map[string]any{"type": "integer"},
 				"days_before":    map[string]any{"type": "integer"},
@@ -978,7 +1095,6 @@ func Registry() []*Tool {
 				if err := d.DB.UpdateAnniversaryReminder(ctx, id, days); err != nil {
 					return nil, err
 				}
-				d.audit(ctx, userID, "configure_reminder", fmt.Sprintf("id=%d days=%d", id, days), "configured")
 				return &ExecResult{Content: fmt.Sprintf("纪念日提醒已设为提前 %d 天", days), Data: map[string]any{"anniversary_id": id, "days_before": days}}, nil
 			},
 		},

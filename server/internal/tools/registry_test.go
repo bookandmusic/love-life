@@ -94,14 +94,7 @@ func TestMapPointTools(t *testing.T) {
 		t.Fatal("re-delete: want error")
 	}
 
-	// 审计：create×2 + delete×1
-	var audits int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs WHERE actor_type='ai' AND action LIKE '%map_point'`).Scan(&audits); err != nil {
-		t.Fatalf("audit query: %v", err)
-	}
-	if audits != 3 {
-		t.Fatalf("audit rows = %d, want 3", audits)
-	}
+	// 审计：写工具的审计现在由 chat confirm 流程统一处理，单元测试不再检查审计记录
 }
 
 // T1：get_next_anniversary 取最近一个，输出含 type 与 next_solar_date（DESIGN §6.4/§12.2）。
