@@ -428,6 +428,11 @@ sequenceDiagram
 
 > 注：MCP 旧版 HTTP+SSE 传输已被官方废弃，新实现一律使用 Streamable HTTP；不引入 WebSocket——全部通信为客户端发起的单向流式响应，SSE 足够。
 
+- 端点：`POST /api/v1/mcp`，鉴权用 `Authorization: Bearer <PAT>`（与内部通道的 JWT 相互独立）
+- 方法：`initialize` / `tools/list` / `tools/call` / `ping`；通知类消息（无 `id`）按 JSON-RPC 约定不返回响应体
+- 工具可见范围按 PAT 档位过滤，删除类工具不对任何令牌开放（§8.3）；后台停用的工具在两个通道同时不可见、不可调用
+- 审计按令牌维度记录（`actor_type=pat`、`actor_id=令牌 ID`），`tools/call` 记人类可读参数与调用耗时
+
 ---
 
 ## 9. 后台管理页面

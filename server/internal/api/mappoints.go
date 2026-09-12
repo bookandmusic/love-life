@@ -89,12 +89,13 @@ func (a *mapPointsAPI) create(w http.ResponseWriter, r *http.Request) {
 
 // remove DELETE /api/v1/map/points/{id}（软删，进回收站体系）
 func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效 ID")
 		return
 	}
-	err = a.db.SoftDeletePoint(r.Context(), id)
+	err = a.db.SoftDeletePoint(r.Context(), id, store.ActorTypeUser, claims.UserID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "点位不存在")
 		return

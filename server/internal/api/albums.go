@@ -167,6 +167,7 @@ func (a *albumsAPI) mediaItemsOut(ctx context.Context, medias []*store.MediaRow)
 }
 
 func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效 ID")
@@ -186,7 +187,7 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "月度相册不可删除，仅可隐藏")
 		return
 	}
-	if err := a.db.SoftDeleteAlbum(r.Context(), id); err != nil {
+	if err := a.db.SoftDeleteAlbum(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}

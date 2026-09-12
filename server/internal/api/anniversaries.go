@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/lunar"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -105,12 +106,13 @@ func (a *anniversariesAPI) updateReminder(w http.ResponseWriter, r *http.Request
 }
 
 func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效 ID")
 		return
 	}
-	if err := a.db.SoftDeleteAnniversary(r.Context(), id); err != nil {
+	if err := a.db.SoftDeleteAnniversary(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "纪念日不存在")
 			return

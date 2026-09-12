@@ -10,6 +10,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/chat"
 	"github.com/bookandmusic/love-life/server/internal/config"
 	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/mcp"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -64,6 +65,34 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("DELETE /api/v1/admin/styles/{id}", stylesAPI.remove)
 	adminMux.HandleFunc("GET /api/v1/admin/system-prompt", stylesAPI.getPrompt)
 	adminMux.HandleFunc("PUT /api/v1/admin/system-prompt", stylesAPI.setPrompt)
+	// 数据安全设置（AD6）：PUT 为部分更新，按字段合并
+	securityAPI := &securityAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/security", securityAPI.get)
+	adminMux.HandleFunc("PUT /api/v1/admin/security", securityAPI.put)
+	// 回收站管理（AD5）：列表 / 单条恢复 / 批量恢复 / 恢复日志
+	recycleAPI := &recycleAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/recycle", recycleAPI.list)
+	adminMux.HandleFunc("POST /api/v1/admin/recycle/restore", recycleAPI.restoreMany)
+	adminMux.HandleFunc("GET /api/v1/admin/recycle/restore-log", recycleAPI.restoreLog)
+	adminMux.HandleFunc("POST /api/v1/admin/recycle/{id}/restore", recycleAPI.restoreOne)
+	// MCP 工具注册表与启停（AD4）：清单 + 单项启停
+	mcpToolsAPI := &mcpToolsAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/mcp-tools", mcpToolsAPI.list)
+	adminMux.HandleFunc("PATCH /api/v1/admin/mcp-tools/{name}", mcpToolsAPI.patch)
+	// 个人访问令牌（AD8）：列表 / 签发（明文仅一次）/ 吊销
+	patAPI := &patAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/tokens", patAPI.list)
+	adminMux.HandleFunc("POST /api/v1/admin/tokens", patAPI.create)
+	adminMux.HandleFunc("POST /api/v1/admin/tokens/{id}/revoke", patAPI.revoke)
+	// 仪表盘（AD3）：统计 / 近期活动 / AI 用量时序（L5 数据源）/ 异常告警
+	dashAPI := &dashboardAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/dashboard/stats", dashAPI.stats)
+	adminMux.HandleFunc("GET /api/v1/admin/dashboard/activity", dashAPI.activity)
+	adminMux.HandleFunc("GET /api/v1/admin/dashboard/ai-usage", dashAPI.aiUsage)
+	adminMux.HandleFunc("GET /api/v1/admin/dashboard/alerts", dashAPI.alerts)
+	// 审计日志查询（AD7）
+	auditAPI := &auditAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/audit", auditAPI.list)
 	mux.Handle("/api/v1/admin/", authSvc.RequireAuth(requireAdmin(adminMux)))
 
 	// 输出风格列表（登录用户，形状同 admin 列表；AI 偏好属个人体验项，需求 §7.1）
@@ -98,6 +127,11 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	chatMux.HandleFunc("POST /api/v1/chat/confirm", chatSvc.Confirm)
 	chatMux.HandleFunc("GET /api/v1/chat/history", chatSvc.History)
 	mux.Handle("/api/v1/chat/", authSvc.RequireAuth(chatMux))
+
+	// 外部 MCP 通道（DESIGN §7/§8）：PAT 认证（非 JWT），Streamable HTTP 唯一传输。
+	// 与内部通道共用工具注册表；AppOnly 删除类工具经 allowed() 过滤，不对任何令牌开放。
+	mcpSvc := mcp.NewService(db, &tools.Deps{DB: db, MP: mp, DP: dp})
+	mux.HandleFunc("POST /api/v1/mcp", mcpSvc.Handle)
 
 	// 空间信息与个人资料（登录用户；配置信息可修改，需求 §7.1）
 	profileAPI := &profileAPI{db: db}

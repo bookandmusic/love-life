@@ -1,0 +1,195 @@
+package mcp
+
+import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/tools"
+)
+
+func newEnv(t *testing.T) (*store.DB, *Service, int64, int64) {
+	t.Helper()
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := t.Context()
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, nickname) VALUES (1,'admin','x','admin','Admin')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO users (id, username, password_hash, role, nickname) VALUES (2,'girl','x','girl','Girl')`); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(db, &tools.Deps{DB: db})
+	_, _, err = db.CreatePAT(ctx, "t", 2, "readonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return db, svc, 1, 2
+}
+
+func call(t *testing.T, svc *Service, token, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", bytes.NewBufferString(body))
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	rec := httptest.NewRecorder()
+	svc.Handle(rec, req)
+	return rec
+}
+
+// 未带/错误 PAT → 401；admin 不可签发 PAT。
+func TestMCPAuthAndPATRules(t *testing.T) {
+	db, svc, adminID, _ := newEnv(t)
+	ctx := t.Context()
+
+	if rec := call(t, svc, "", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("no token: want 401, got %d", rec.Code)
+	}
+	if rec := call(t, svc, "llp_deadbeef", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("bad token: want 401, got %d", rec.Code)
+	}
+	// admin 不签发 PAT（铁律）
+	if _, _, err := db.CreatePAT(ctx, "x", adminID, "readonly"); err == nil {
+		t.Fatal("admin must not be able to hold a PAT")
+	}
+}
+
+// 档位过滤：readonly 只见读工具；删除类（AppOnly）对任何档位都不开放。
+func TestMCPTierFiltering(t *testing.T) {
+	db, svc, _, _ := newEnv(t)
+	ctx := t.Context()
+
+	ro, _, err := db.CreatePAT(ctx, "ro", 2, "readonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rw, _, err := db.CreatePAT(ctx, "rw2", 2, "readwrite")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	list := func(tok string) []map[string]any {
+		rec := call(t, svc, tok, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list status %d", rec.Code)
+		}
+		var resp struct {
+			Result struct {
+				Tools []map[string]any `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		return resp.Result.Tools
+	}
+
+	roTools, rwTools := list(ro), list(rw)
+	// DESIGN §8.3：只读 11 个、读写 21 个（11 读 + 10 写）；删除类 5 个永不出现
+	if len(roTools) != 11 {
+		t.Fatalf("readonly tools = %d, want 11", len(roTools))
+	}
+	if len(rwTools) != 21 {
+		t.Fatalf("readwrite tools = %d, want 21", len(rwTools))
+	}
+	forbidden := map[string]bool{"delete_post": true, "delete_comment": true, "delete_album": true, "delete_anniversary": true, "delete_map_point": true}
+	for _, tools := range [][]map[string]any{roTools, rwTools} {
+		for _, tl := range tools {
+			if forbidden[tl["name"].(string)] {
+				t.Fatalf("delete tool %v must not be exposed to any token", tl["name"])
+			}
+		}
+	}
+	// readonly 不得含写工具
+	for _, tl := range roTools {
+		if tl["name"] == "create_post" {
+			t.Fatal("readonly must not expose write tools")
+		}
+	}
+}
+
+// 越权调用：readonly 令牌显式调用写工具 → 拒绝（不能只靠清单隐藏）。
+func TestMCPWriteToolBlockedForReadonly(t *testing.T) {
+	db, svc, _, _ := newEnv(t)
+	ro, _, err := db.CreatePAT(t.Context(), "ro2", 2, "readonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, svc, ro, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_post","arguments":{"content":"x"}}}`)
+	var resp struct {
+		Error *struct {
+			Code int `json:"code"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Error == nil {
+		t.Fatalf("readonly calling write tool must be rejected: %s", rec.Body.String())
+	}
+}
+
+// 后台停用的工具对外部通道同样不可见/不可调用（AD4 一致性）。
+func TestMCPDisabledToolHidden(t *testing.T) {
+	db, svc, _, _ := newEnv(t)
+	ctx := t.Context()
+	ro, _, err := db.CreatePAT(ctx, "ro3", 2, "readonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetToolEnabled(ctx, "search_posts", false); err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, svc, ro, `{"jsonrpc":"2.0","id":3,"method":"tools/list"}`)
+	if bytes.Contains(rec.Body.Bytes(), []byte(`"search_posts"`)) {
+		t.Fatal("disabled tool must not be listed")
+	}
+	rec = call(t, svc, ro, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"search_posts","arguments":{"query":"x"}}}`)
+	var resp struct {
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+	if resp.Error == nil {
+		t.Fatalf("disabled tool call must be rejected: %s", rec.Body.String())
+	}
+}
+
+// initialize 返回协议版本与 tools 能力。
+func TestMCPInitialize(t *testing.T) {
+	db, svc, _, _ := newEnv(t)
+	ro, _, err := db.CreatePAT(t.Context(), "ro4", 2, "readonly")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, svc, ro, `{"jsonrpc":"2.0","id":1,"method":"initialize"}`)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("protocolVersion")) {
+		t.Fatalf("initialize: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// 一致性守卫：本包的档位过滤（allowed）与 tools.RegistryForPAT 是同一规则的
+// 两处实现，必须始终一致——否则一条通道收紧、另一条放宽，删除类工具就可能从
+// 宽松的一侧泄露出去。此测试把「不许漂移」钉死。
+func TestTierRuleMatchesRegistryForPAT(t *testing.T) {
+	patVisible := map[string]bool{}
+	for _, tl := range tools.RegistryForPAT() {
+		patVisible[tl.Name] = true
+	}
+	for _, tl := range tools.Registry() {
+		// readwrite 档的可见集合必须与 RegistryForPAT 完全一致（两者都排除 AppOnly）
+		if got, want := allowed(tl, "readwrite"), patVisible[tl.Name]; got != want {
+			t.Errorf("工具 %s: allowed(readwrite)=%v 但 RegistryForPAT=%v —— 两处规则已漂移", tl.Name, got, want)
+		}
+		// 删除类工具对任何档位都不可见
+		if tl.AppOnly && (allowed(tl, "readonly") || allowed(tl, "readwrite")) {
+			t.Errorf("删除类工具 %s 不得对任何档位开放", tl.Name)
+		}
+	}
+}

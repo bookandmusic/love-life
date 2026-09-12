@@ -169,7 +169,7 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 		snapshot, _ := json.Marshal(map[string]any{"content": textutil.TruncMark(c.Content, 50), "deleted_by": claims.Username})
 		_ = a.db.InsertNotification(r.Context(), c.AuthorID, "comment_deleted", "comment", id, string(snapshot))
 	}
-	if err := a.db.SoftDeleteComment(r.Context(), id); err != nil {
+	if err := a.db.SoftDeleteComment(r.Context(), id, "user", claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}

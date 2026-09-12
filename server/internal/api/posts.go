@@ -312,7 +312,7 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 		})
 		_ = a.db.InsertNotification(r.Context(), p.AuthorID, "post_deleted", "post", id, string(snapshot))
 	}
-	if err := a.db.SoftDeletePost(r.Context(), id); err != nil {
+	if err := a.db.SoftDeletePost(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}

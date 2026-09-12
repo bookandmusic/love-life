@@ -143,4 +143,62 @@ func TestFullSchema(t *testing.T) {
 	if err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'default_style_id'").Scan(&defStyle); err != nil || defStyle != "1" {
 		t.Fatalf("default_style_id = %q err=%v, want '1'", defStyle, err)
 	}
+
+	// 不变式 7：后台真实化新增表集（AD8 PAT / L5 AI 调用统计 / AD5 恢复日志）
+	for _, table := range []string{"personal_access_tokens", "ai_usage_logs", "restore_logs"} {
+		if _, err := db.Exec("SELECT 1 FROM " + table + " LIMIT 0"); err != nil {
+			t.Fatalf("%s must exist: %v", table, err)
+		}
+	}
+	// PAT：tier/status 受 CHECK 约束，token_hash 唯一（明文不落库）
+	if _, err := db.Exec(`INSERT INTO personal_access_tokens (name, user_id, tier, token_hash) VALUES ('Claude Desktop', 1, 'readonly', 'h1')`); err != nil {
+		t.Fatalf("valid PAT must be accepted: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO personal_access_tokens (name, user_id, tier, token_hash) VALUES ('X', 1, 'bogus', 'h2')`); err == nil {
+		t.Fatal("invalid PAT tier must be rejected")
+	}
+	if _, err := db.Exec(`INSERT INTO personal_access_tokens (name, user_id, tier, token_hash) VALUES ('Y', 1, 'readonly', 'h1')`); err == nil {
+		t.Fatal("duplicate token_hash must violate UNIQUE")
+	}
+	// ai_usage_logs：latency/status 契约
+	if _, err := db.Exec(`INSERT INTO ai_usage_logs (provider_id, model, prompt_tokens, completion_tokens, total_tokens, latency_ms, status) VALUES (1, 'gpt-4o', 10, 20, 30, 1320, 'success')`); err != nil {
+		t.Fatalf("valid usage row must be accepted: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO ai_usage_logs (model, status) VALUES ('m', 'bogus')`); err == nil {
+		t.Fatal("invalid usage status must be rejected")
+	}
+	// restore_logs：恢复日志永久保留
+	if _, err := db.Exec(`INSERT INTO restore_logs (operator, summary) VALUES ('admin', '动态「周末出游」')`); err != nil {
+		t.Fatalf("restore log must be accepted: %v", err)
+	}
+
+	// 不变式 8：审计日志补齐 AD7 字段（latency_ms 可空 + params 全文）
+	if _, err := db.Exec(`INSERT INTO audit_logs (actor_type, actor_id, action, params_digest, params, result, latency_ms) VALUES ('ai', 1, 'search_posts', 'digest', 'query: "海边"', 'success', 1320)`); err != nil {
+		t.Fatalf("audit row with latency/params must be accepted: %v", err)
+	}
+	var latency *int64
+	if err := db.QueryRow(`SELECT latency_ms FROM audit_logs WHERE action = 'search_posts'`).Scan(&latency); err != nil || latency == nil || *latency != 1320 {
+		t.Fatalf("audit latency_ms = %v err=%v, want 1320", latency, err)
+	}
+	// user 直接写库无耗时 → NULL（契约 latencyMs 仅 ai/pat 有值）
+	if _, err := db.Exec(`INSERT INTO audit_logs (actor_type, actor_id, action) VALUES ('user', 1, 'create_post')`); err != nil {
+		t.Fatalf("audit row without latency must be accepted: %v", err)
+	}
+	latency = nil
+	if err := db.QueryRow(`SELECT latency_ms FROM audit_logs WHERE action = 'create_post'`).Scan(&latency); err != nil || latency != nil {
+		t.Fatalf("user audit latency must be NULL, got %v err=%v", latency, err)
+	}
+
+	// 不变式 9：六类可回收表均具备删除者归属列（AD5 回收站「删除者」）
+	for _, table := range []string{"posts", "comments", "media", "albums", "anniversaries", "map_points"} {
+		if _, err := db.Exec("SELECT deleted_by, deleted_by_type FROM " + table + " LIMIT 0"); err != nil {
+			t.Fatalf("%s must have deleted_by/deleted_by_type: %v", table, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE posts SET deleted_at = '2026-09-12T00:00:00Z', deleted_by = 1, deleted_by_type = 'ai' WHERE id = 1`); err != nil {
+		t.Fatalf("delete attribution must be writable: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE posts SET deleted_by_type = 'bogus' WHERE id = 1`); err == nil {
+		t.Fatal("invalid deleted_by_type must be rejected")
+	}
 }

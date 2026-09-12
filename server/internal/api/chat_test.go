@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
 // fakeModel 起 OpenAI 兼容假模型服务，按脚本依次返回响应。
@@ -380,7 +381,7 @@ func TestChatAlbumToolsReject(t *testing.T) {
 	}
 
 	// ② 软删动态后 add_photos → 工具拒绝（媒体所属动态已删），无落库
-	_ = ts.db.SoftDeletePost(t.Context(), pc.ID)
+	_ = ts.db.SoftDeletePost(t.Context(), pc.ID, store.ActorTypeUser, 1)
 	res = doJSON(t, "POST", ts.URL+"/api/v1/chat/message", adminToken, map[string]string{"content": "加照片"})
 	body = sseBody(t, res)
 	actionID = cardFromSSE(t, body)
