@@ -156,9 +156,20 @@ func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) erro
 
 // ---- 审计 ----
 
+// InsertAuditLog 基础审计（无 params 全文与耗时；user 直接写库路径用，
+// 契约 latencyMs 仅 ai/pat 有值）。
 func (d *DB) InsertAuditLog(ctx context.Context, actorType string, actorID int64, action, digest, result string) error {
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO audit_logs (actor_type, actor_id, action, params_digest, result) VALUES (?, ?, ?, ?, ?)`,
 		actorType, actorID, action, digest, result)
+	return err
+}
+
+// InsertAuditLogFull 完整审计（AD7）：params 存人类可读全文供后台展示，
+// latencyMs 记调用耗时（仅 ai/pat 调用有值；传 nil 则记 NULL）。
+func (d *DB) InsertAuditLogFull(ctx context.Context, actorType string, actorID int64, action, digest, params, result string, latencyMs *int64) error {
+	_, err := d.ExecContext(ctx,
+		`INSERT INTO audit_logs (actor_type, actor_id, action, params_digest, params, result, latency_ms) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		actorType, actorID, action, digest, params, result, latencyMs)
 	return err
 }

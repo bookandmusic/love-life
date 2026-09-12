@@ -71,9 +71,19 @@ type ChatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	// Usage 上游返回的 token 用量（L5）。各协议字段名不同，由各 adapter 归一化后填入；
+	// 上游未返回 usage 时为零值（不视为错误，统计侧如实记 0）。
+	Usage Usage `json:"usage"`
 	Error *struct {
 		Message string `json:"message"`
 	} `json:"error"`
+}
+
+// Usage 归一化 token 用量（L5 统计与仪表盘 ai-usage 消费）。
+type Usage struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
 }
 
 // Chat 委托给当前协议的 adapter（规范化 ↔ native 由 adapter 负责）。

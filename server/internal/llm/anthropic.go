@@ -23,9 +23,9 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 	tools := buildAnthropicTools(req.Tools)
 
 	body := map[string]any{
-		"model":       model,
-		"max_tokens":  anthropicDefaultMaxTokens,
-		"messages":    messages,
+		"model":      model,
+		"max_tokens": anthropicDefaultMaxTokens,
+		"messages":   messages,
 	}
 	if system != "" {
 		body["system"] = system
@@ -61,7 +61,12 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
-		Error      *struct {
+		// Anthropic usage：input_tokens/output_tokens（L5 归一化）
+		Usage *struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
+		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
 	}
@@ -105,6 +110,14 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 
 	out := &ChatResponse{}
 	out.Choices = append(out.Choices, choice)
+	// L5：Anthropic 不返回 total，按 input+output 求和
+	if raw.Usage != nil {
+		out.Usage = Usage{
+			PromptTokens:     raw.Usage.InputTokens,
+			CompletionTokens: raw.Usage.OutputTokens,
+			TotalTokens:      raw.Usage.InputTokens + raw.Usage.OutputTokens,
+		}
+	}
 	return out, nil
 }
 

@@ -37,6 +37,8 @@ func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string
 		return nil, err
 	}
 	defer res.Body.Close()
+	// 原生 usage 字段名与归一化命名一致（prompt_tokens/completion_tokens/total_tokens），
+	// 故直接解到 ChatResponse.Usage（L5）。上游不返回 usage 时为零值。
 	var out ChatResponse
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode model response: %w", err)

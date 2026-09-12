@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/crypto"
@@ -88,9 +89,17 @@ func (s *Service) systemPrompt(ctx context.Context, userStyle string) string {
 	return trunk + "输出风格偏好：" + prompt
 }
 
-// clientFromConfig 取对话供应商（链头起首个已配 Key 的供应商）并解密 Key，
-// 按供应商协议构造客户端。
-func (s *Service) clientFromConfig(ctx context.Context) (*llm.Client, error) {
+var errNoModel = errors.New("未配置模型——请管理员在后台配置模型服务")
+
+// chatTarget 一次对话所用的供应商与模型（L5 统计需要 provider_id 与 model 名称）。
+type chatTarget struct {
+	Client     *llm.Client
+	ProviderID int64
+	Model      string
+}
+
+// chatTargetFromConfig 获取对话供应商并构造 chatTarget（含 provider_id 与 model 供统计落库）。
+func (s *Service) chatTargetFromConfig(ctx context.Context) (*chatTarget, error) {
 	p, err := s.db.GetChatProvider(ctx)
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, errNoModel
@@ -111,13 +120,30 @@ func (s *Service) clientFromConfig(ctx context.Context) (*llm.Client, error) {
 	}
 	client, err := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType)
 	if err != nil {
-		// DB CHECK 限定四种合法 api_type，selectAdapter 均已注册，运行时不应触发
 		return nil, fmt.Errorf("不支持的服务协议: %w", err)
 	}
-	return client, nil
+	return &chatTarget{Client: client, ProviderID: p.ID, Model: model}, nil
 }
 
-var errNoModel = errors.New("未配置模型——请管理员在后台配置模型服务")
+// recordUsage 落库一次模型调用的统计（L5）。失败不阻断对话——统计是旁路，
+// 但会尽力写入，避免仪表盘长期缺口。
+func (s *Service) recordUsage(ctx context.Context, t *chatTarget, res *llm.ChatResponse, latencyMs int64, status string) {
+	if t == nil {
+		return
+	}
+	log := &store.AIUsageLog{
+		ProviderID: t.ProviderID,
+		Model:      t.Model,
+		LatencyMs:  latencyMs,
+		Status:     status,
+	}
+	if res != nil {
+		log.PromptTokens = res.Usage.PromptTokens
+		log.CompletionTokens = res.Usage.CompletionTokens
+		log.TotalTokens = res.Usage.TotalTokens
+	}
+	_ = s.db.InsertAIUsage(ctx, log)
+}
 
 // Status GET /api/v1/chat/status 返回 AI 可用性（需求 §3.2：无模型 Key 时 APP 置灰并提示）。
 func (s *Service) Status(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +200,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mediaJSON, _ := json.Marshal(req.Media)
-	client, err := s.clientFromConfig(r.Context())
+	target, err := s.chatTargetFromConfig(r.Context())
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, errNoModel) {
@@ -183,6 +209,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
+	client := target.Client
 
 	// 历史 + 用户风格
 	user, _ := s.db.GetUserByID(r.Context(), claims.UserID)
@@ -210,12 +237,17 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 
 	// 工具循环（读工具立即执行回填；写工具止于确认卡片）
 	for round := 0; round < maxToolRounds; round++ {
-		res, err := client.Chat(r.Context(), &llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs()})
+		// L5：计时每次模型调用并落库（tokens/latency），供仪表盘 ai-usage 与审计 latencyMs
+		startedAt := time.Now()
+		res, err := client.Chat(r.Context(), &llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs(r.Context())})
+		elapsed := time.Since(startedAt).Milliseconds()
 		if err != nil {
+			s.recordUsage(r.Context(), target, nil, elapsed, "failed")
 			s.sseEvent(w, flusher, "error", map[string]string{"message": err.Error()})
 			s.sseEvent(w, flusher, "done", nil)
 			return
 		}
+		s.recordUsage(r.Context(), target, res, elapsed, "success")
 		choice := res.Choices[0]
 		if len(choice.Message.ToolCalls) == 0 {
 			text := choice.Message.Content
@@ -271,15 +303,24 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 	if !ok {
 		return "未知工具: " + call.Function.Name, nil, nil
 	}
+	// AD4：已停用的工具拒绝执行（模型可能凭历史上下文继续调用，
+	// 仅从 toolSpecs 摘除不足以拦截）。
+	if disabled, derr := s.db.DisabledTools(ctx); derr == nil && disabled[tool.Name] {
+		return "该工具已在后台停用: " + tool.Name, nil, nil
+	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
 		return "", nil, fmt.Errorf("参数解析失败: %w", err)
 	}
 	if !tool.IsWrite {
+		startAt := time.Now()
 		out, err := tool.Exec(ctx, s.deps, userID, args)
+		latencyMs := time.Since(startAt).Milliseconds()
 		if err != nil {
 			return "", nil, err
 		}
+		digest := string(call.Function.Arguments)
+		s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, out.Content, latencyMs)
 		return out.Content, nil, nil
 	}
 	// 写工具 → 确认卡片（15 分钟 TTL，单次有效）
@@ -350,12 +391,15 @@ func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
 	if len(req.MediaTokens) > 0 {
 		args["media_tokens"] = req.MediaTokens
 	}
+	startAt := time.Now()
 	out, err := tool.Exec(r.Context(), s.deps, claims.UserID, args)
+	latencyMs := time.Since(startAt).Milliseconds()
 	if err != nil {
-		_ = s.db.InsertAuditLog(r.Context(), "ai", claims.UserID, action.ToolName, action.ParamsJSON, "failed: "+err.Error())
+		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, "failed: "+err.Error(), latencyMs)
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": err.Error()})
 		return
 	}
+	s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, out.Content, latencyMs)
 	msg := out.Content
 	if msgID, err := s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "tool_result", Content: msg, CardID: sql.NullInt64{Int64: req.ActionID, Valid: req.ActionID > 0}}); err == nil {
 		_ = msgID
@@ -394,9 +438,20 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-func (s *Service) toolSpecs() []llm.Tool {
+// toolSpecs 下发给模型的工具清单。AD4：后台停用的工具不下发，
+// 使「工具启停」真正生效而非仅页面展示。
+func (s *Service) toolSpecs(ctx context.Context) []llm.Tool {
+	disabled, err := s.db.DisabledTools(ctx)
+	if err != nil {
+		// 读配置失败按「全部启用」降级，不因配置读取问题阻断对话。
+		disabled = nil
+	}
+
 	specs := make([]llm.Tool, 0, len(s.reg))
 	for _, t := range tools.Registry() {
+		if disabled[t.Name] {
+			continue
+		}
 		specs = append(specs, llm.Tool{Type: "function", Function: llm.ToolFunction{
 			Name: t.Name, Description: t.Description, Parameters: t.Params,
 		}})

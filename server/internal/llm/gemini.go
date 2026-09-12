@@ -47,7 +47,7 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text string `json:"text"`
+					Text         string `json:"text"`
 					FunctionCall struct {
 						Name string          `json:"name"`
 						Args json.RawMessage `json:"args"`
@@ -56,6 +56,12 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
+		// Gemini usageMetadata：promptTokenCount/candidatesTokenCount/totalTokenCount（L5 归一化）
+		UsageMetadata *struct {
+			PromptTokenCount     int64 `json:"promptTokenCount"`
+			CandidatesTokenCount int64 `json:"candidatesTokenCount"`
+			TotalTokenCount      int64 `json:"totalTokenCount"`
+		} `json:"usageMetadata"`
 		Error *struct {
 			Message string `json:"message"`
 		} `json:"error"`
@@ -104,6 +110,17 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 
 	out := &ChatResponse{}
 	out.Choices = append(out.Choices, choice)
+	// L5：归一化 usage（candidatesTokenCount = 输出 token）
+	if raw.UsageMetadata != nil {
+		out.Usage = Usage{
+			PromptTokens:     raw.UsageMetadata.PromptTokenCount,
+			CompletionTokens: raw.UsageMetadata.CandidatesTokenCount,
+			TotalTokens:      raw.UsageMetadata.TotalTokenCount,
+		}
+		if out.Usage.TotalTokens == 0 {
+			out.Usage.TotalTokens = out.Usage.PromptTokens + out.Usage.CompletionTokens
+		}
+	}
 	return out, nil
 }
 
