@@ -17,15 +17,17 @@ type openaiChatAdapter struct{}
 var openaiHTTP = &http.Client{Timeout: 60 * time.Second}
 
 func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
-	body, err := json.Marshal(map[string]any{
+	body := map[string]any{
 		"model":    model,
 		"messages": req.Messages,
 		"tools":    req.Tools,
-	})
+	}
+	applyModelParams(body, req)
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -38,7 +40,7 @@ func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string
 	}
 	defer res.Body.Close()
 	// 原生 usage 字段名与归一化命名一致（prompt_tokens/completion_tokens/total_tokens），
-	// 故直接解到 ChatResponse.Usage（L5）。上游不返回 usage 时为零值。
+	// 故直接解到 ChatResponse.Usage。上游不返回 usage 时为零值。
 	var out ChatResponse
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		return nil, fmt.Errorf("decode model response: %w", err)

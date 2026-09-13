@@ -18,6 +18,16 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 	tools := buildGeminiTools(req.Tools)
 
 	body := map[string]any{"contents": contents}
+	gen := map[string]any{}
+	if req.Temperature != nil {
+		gen["temperature"] = *req.Temperature
+	}
+	if req.MaxTokens != nil {
+		gen["maxOutputTokens"] = *req.MaxTokens
+	}
+	if len(gen) > 0 {
+		body["generationConfig"] = gen
+	}
 	if system != "" {
 		body["systemInstruction"] = map[string]any{"parts": []any{map[string]any{"text": system}}}
 	}
@@ -56,7 +66,7 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 			} `json:"content"`
 			FinishReason string `json:"finishReason"`
 		} `json:"candidates"`
-		// Gemini usageMetadata：promptTokenCount/candidatesTokenCount/totalTokenCount（L5 归一化）
+		// Gemini usageMetadata：promptTokenCount/candidatesTokenCount/totalTokenCount（归一化）
 		UsageMetadata *struct {
 			PromptTokenCount     int64 `json:"promptTokenCount"`
 			CandidatesTokenCount int64 `json:"candidatesTokenCount"`
@@ -110,7 +120,7 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 
 	out := &ChatResponse{}
 	out.Choices = append(out.Choices, choice)
-	// L5：归一化 usage（candidatesTokenCount = 输出 token）
+	// 归一化 usage（candidatesTokenCount = 输出 token）
 	if raw.UsageMetadata != nil {
 		out.Usage = Usage{
 			PromptTokens:     raw.UsageMetadata.PromptTokenCount,

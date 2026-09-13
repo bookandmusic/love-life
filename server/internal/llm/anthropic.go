@@ -9,7 +9,7 @@ import (
 )
 
 // anthropicDefaultMaxTokens Anthropic Messages API 强制要求 max_tokens；
-// 模型级参数透传留待 L4，未配置时用此安全默认。
+// 模型级未配置 max_tokens 时的安全默认。
 const anthropicDefaultMaxTokens = 4096
 
 // anthropicAdapter 适配 Anthropic Messages API（POST /v1/messages）。
@@ -27,6 +27,7 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 		"max_tokens": anthropicDefaultMaxTokens,
 		"messages":   messages,
 	}
+	applyModelParams(body, req)
 	if system != "" {
 		body["system"] = system
 	}
@@ -61,7 +62,7 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 			Input json.RawMessage `json:"input"`
 		} `json:"content"`
 		StopReason string `json:"stop_reason"`
-		// Anthropic usage：input_tokens/output_tokens（L5 归一化）
+		// Anthropic usage：input_tokens/output_tokens（归一化）
 		Usage *struct {
 			InputTokens  int64 `json:"input_tokens"`
 			OutputTokens int64 `json:"output_tokens"`
@@ -110,7 +111,7 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 
 	out := &ChatResponse{}
 	out.Choices = append(out.Choices, choice)
-	// L5：Anthropic 不返回 total，按 input+output 求和
+	// Anthropic 不返回 total，按 input+output 求和
 	if raw.Usage != nil {
 		out.Usage = Usage{
 			PromptTokens:     raw.Usage.InputTokens,

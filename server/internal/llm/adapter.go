@@ -1,4 +1,4 @@
-// Package llm 协议适配（L2 阶段一）：包内未导出的 adapter 接口把「规范化 ↔ 协议 native」
+// Package llm 协议适配：包内未导出的 adapter 接口把「规范化 ↔ 协议 native」
 // 的双向映射封进各协议实现，chat 层与外部调用方永不感知具体协议。新增协议只需新增一个
 // adapter 实现并在 selectAdapter 注册。
 package llm
@@ -25,7 +25,7 @@ type adapter interface {
 	Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error)
 }
 
-// selectAdapter 按 api_type 选 adapter。所有协议 adapter 均已实现（阶段二）。
+// selectAdapter 按 api_type 选 adapter。所有协议 adapter 均已实现。
 func selectAdapter(apiType string) (adapter, error) {
 	switch apiType {
 	case APITypeOpenAIChat:
@@ -38,5 +38,17 @@ func selectAdapter(apiType string) (adapter, error) {
 		return geminiAdapter{}, nil
 	default:
 		return nil, ErrUnsupportedAPIType
+	}
+}
+
+// applyModelParams 把模型级参数按「顶层平铺」形状注入 native 请求体
+// （openai-chat / openai-responses / anthropic 三协议字段名一致，共用此注入；
+// gemini 走 generationConfig，由其 adapter 自行组装）。nil = 未设置，不传。
+func applyModelParams(body map[string]any, req *ChatRequest) {
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
+	}
+	if req.MaxTokens != nil {
+		body["max_tokens"] = *req.MaxTokens
 	}
 }

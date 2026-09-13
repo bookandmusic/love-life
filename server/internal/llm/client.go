@@ -1,6 +1,5 @@
-// Package llm 模型客户端（L2 阶段一）：对外暴露规范化类型与 Client 薄壳，
+// Package llm 模型客户端：对外暴露规范化类型与 Client 薄壳，
 // 协议 native 适配由未导出的 adapter 接口承担（按 api_type 选用）。
-// 阶段一仅实现 openai-chat；其余协议后续阶段接入。
 package llm
 
 import (
@@ -61,6 +60,10 @@ func NewForProtocol(baseURL, apiKey, model, apiType string) (*Client, error) {
 type ChatRequest struct {
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
+	// Temperature / MaxTokens 模型级采样参数（DESIGN §4.1）：nil = 未设置，native 请求
+	// 组装时不传（各协议必填项由 adapter 用自己的安全默认兜底）。ChatRequest 不直接序列化。
+	Temperature *float64
+	MaxTokens   *int64
 }
 
 type ChatResponse struct {
@@ -71,7 +74,7 @@ type ChatResponse struct {
 		} `json:"message"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	// Usage 上游返回的 token 用量（L5）。各协议字段名不同，由各 adapter 归一化后填入；
+	// Usage 上游返回的 token 用量。各协议字段名不同，由各 adapter 归一化后填入；
 	// 上游未返回 usage 时为零值（不视为错误，统计侧如实记 0）。
 	Usage Usage `json:"usage"`
 	Error *struct {
@@ -79,7 +82,7 @@ type ChatResponse struct {
 	} `json:"error"`
 }
 
-// Usage 归一化 token 用量（L5 统计与仪表盘 ai-usage 消费）。
+// Usage 归一化 token 用量（调用统计与仪表盘 ai-usage 消费）。
 type Usage struct {
 	PromptTokens     int64 `json:"prompt_tokens"`
 	CompletionTokens int64 `json:"completion_tokens"`

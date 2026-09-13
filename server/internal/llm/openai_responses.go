@@ -20,8 +20,9 @@ func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model s
 	body := map[string]any{
 		"model":      model,
 		"input":      inputItems,
-		"max_tokens": 16384, // Responses API 也接受 max_tokens；给一个足够大的上限
+		"max_tokens": 16384, // 模型级未配置时的兜底上限
 	}
+	applyModelParams(body, req)
 	if systemPrompt != "" {
 		body["instructions"] = systemPrompt
 	}
@@ -57,7 +58,7 @@ func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model s
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
 		} `json:"output"`
-		// Responses API 的 usage 用 input_tokens/output_tokens 命名（L5 归一化）
+		// Responses API 的 usage 用 input_tokens/output_tokens 命名（归一化）
 		Usage *struct {
 			InputTokens  int64 `json:"input_tokens"`
 			OutputTokens int64 `json:"output_tokens"`
@@ -104,7 +105,7 @@ func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model s
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
 	}
 	out.Choices = append(out.Choices, choice)
-	// L5：归一化 usage（上游字段名为 input/output；total 缺失时按两者之和补齐）
+	// 归一化 usage（上游字段名为 input/output；total 缺失时按两者之和补齐）
 	if raw.Usage != nil {
 		out.Usage = Usage{
 			PromptTokens:     raw.Usage.InputTokens,
