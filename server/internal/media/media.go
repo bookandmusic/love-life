@@ -32,9 +32,9 @@ const thumbMaxEdge = 1080
 var ErrUnsupportedFormat = errors.New("不支持的媒体格式（照片 jpg/png/webp，视频 mp4/mov/webm，音频 mp3/m4a/wav；HEIC 首版不支持）")
 
 type Pipeline struct {
-	dataDir   string
-	secret    []byte // 与 JWT 共用密钥材料的 HMAC（仅用于签名 URL，用途域分隔）
-	maxBytes  int64
+	dataDir  string
+	secret   []byte // 与 JWT 共用密钥材料的 HMAC（仅用于签名 URL，用途域分隔）
+	maxBytes int64
 }
 
 func New(dataDir string, secret []byte, maxBytes int64) *Pipeline {

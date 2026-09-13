@@ -18,13 +18,13 @@ import (
 
 // 站内事件类型 → 外部订阅键（内容删除类仅站内，需求 §4.8）
 var externalEventKey = map[string]string{
-	"post_created":        "new_post",
-	"post_liked":          "like",
-	"post_commented":      "comment",
-	"post_favorited":      "favorite",
+	"post_created":         "new_post",
+	"post_liked":           "like",
+	"post_commented":       "comment",
+	"post_favorited":       "favorite",
 	"anniversary_reminder": "anniversary",
-	"map_point_created":   "footprint",
-	"album_created":       "album",
+	"map_point_created":    "footprint",
+	"album_created":        "album",
 }
 
 type Dispatcher struct {

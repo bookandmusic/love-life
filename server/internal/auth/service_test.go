@@ -83,7 +83,7 @@ func TestLoginLockRefreshFlow(t *testing.T) {
 	var tok struct {
 		Token        string `json:"token"`
 		RefreshToken string `json:"refresh_token"`
-		User struct {
+		User         struct {
 			Role              string `json:"role"`
 			Birthday          string `json:"birthday"`
 			AIStyle           string `json:"ai_style"`

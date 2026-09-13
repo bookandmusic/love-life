@@ -9,9 +9,9 @@ func TestLocate(t *testing.T) {
 		t.Fatalf("new index: %v", err)
 	}
 	cases := []struct {
-		name      string
-		lat, lng  float64
-		want      string
+		name     string
+		lat, lng float64
+		want     string
 	}{
 		{"杭州西湖", 30.2592, 120.1483, "杭州"},
 		{"厦门鼓浪屿", 24.4438, 118.0683, "厦门"},

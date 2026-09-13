@@ -24,44 +24,44 @@ func runFakeUpstream(t *testing.T, status int, body string) (*httptest.Server, *
 
 func TestListModelsProtocols(t *testing.T) {
 	tests := []struct {
-		name      string
-		apiType   string
-		body      string
-		wantURL   string
-		wantAuth  string // Authorization 或 x-api-key 或 x-goog-api-key
-		wantIDs   []string
+		name     string
+		apiType  string
+		body     string
+		wantURL  string
+		wantAuth string // Authorization 或 x-api-key 或 x-goog-api-key
+		wantIDs  []string
 	}{
 		{
-			name:    "openai-chat",
-			apiType: "openai-chat",
-			body:    `{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`,
-			wantURL: "/models",
+			name:     "openai-chat",
+			apiType:  "openai-chat",
+			body:     `{"data":[{"id":"gpt-4o"},{"id":"gpt-4o-mini"}]}`,
+			wantURL:  "/models",
 			wantAuth: "Bearer sk-test",
-			wantIDs: []string{"gpt-4o", "gpt-4o-mini"},
+			wantIDs:  []string{"gpt-4o", "gpt-4o-mini"},
 		},
 		{
-			name:    "openai-responses",
-			apiType: "openai-responses",
-			body:    `{"data":[{"id":"o1"}]}`,
-			wantURL: "/models",
+			name:     "openai-responses",
+			apiType:  "openai-responses",
+			body:     `{"data":[{"id":"o1"}]}`,
+			wantURL:  "/models",
 			wantAuth: "Bearer sk-test",
-			wantIDs: []string{"o1"},
+			wantIDs:  []string{"o1"},
 		},
 		{
-			name:    "anthropic",
-			apiType: "anthropic",
-			body:    `{"data":[{"id":"claude-sonnet"},{"id":"claude-haiku"}]}`,
-			wantURL: "/v1/models",
+			name:     "anthropic",
+			apiType:  "anthropic",
+			body:     `{"data":[{"id":"claude-sonnet"},{"id":"claude-haiku"}]}`,
+			wantURL:  "/v1/models",
 			wantAuth: "x-api-key=sk-test",
-			wantIDs: []string{"claude-sonnet", "claude-haiku"},
+			wantIDs:  []string{"claude-sonnet", "claude-haiku"},
 		},
 		{
-			name:    "gemini",
-			apiType: "gemini",
-			body:    `{"models":[{"name":"models/gemini-1.5-pro"},{"name":"models/gemini-1.5-flash"}]}`,
-			wantURL: "/v1beta/models",
+			name:     "gemini",
+			apiType:  "gemini",
+			body:     `{"models":[{"name":"models/gemini-1.5-pro"},{"name":"models/gemini-1.5-flash"}]}`,
+			wantURL:  "/v1beta/models",
 			wantAuth: "x-goog-api-key=sk-test",
-			wantIDs: []string{"gemini-1.5-pro", "gemini-1.5-flash"},
+			wantIDs:  []string{"gemini-1.5-pro", "gemini-1.5-flash"},
 		},
 	}
 

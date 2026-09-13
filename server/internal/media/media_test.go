@@ -44,7 +44,7 @@ func TestWAVDuration(t *testing.T) {
 // buildM4A 构造最小 m4a（ftyp + moov/mvhd，v0）。
 func buildM4A(t *testing.T, timescale, duration uint32) []byte {
 	t.Helper()
-	mvhdPayload := []byte{0} // version 0
+	mvhdPayload := []byte{0}                   // version 0
 	mvhdPayload = append(mvhdPayload, 0, 0, 0) // flags
 	mvhdPayload = binary.BigEndian.AppendUint32(mvhdPayload, 0)
 	mvhdPayload = binary.BigEndian.AppendUint32(mvhdPayload, 0)
@@ -117,7 +117,11 @@ func TestUnsupportedDurationFile(t *testing.T) {
 func buildExifJPEG(t *testing.T, dateTime string) []byte {
 	t.Helper()
 	// TIFF: II header + IFD0（只含 ExifIFDPointer 0x8769）→ ExifIFD（只含 0x9003 ASCII 20）
-	type entry struct{ tag uint16; typ, count uint32; value []byte }
+	type entry struct {
+		tag        uint16
+		typ, count uint32
+		value      []byte
+	}
 	toBytes := func(v uint32) []byte {
 		b := make([]byte, 4)
 		binary.LittleEndian.PutUint32(b, v)
