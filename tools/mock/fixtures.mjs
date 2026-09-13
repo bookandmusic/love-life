@@ -46,6 +46,13 @@ export const space = {
 // ---------- 动态 ----------
 export const now = Date.now()
 export const day = 86400000
+
+/** 去年今天的本地正午时间戳（ISO 串）：供「那年今日」fixture 使用。 */
+function lastYearToday() {
+  const d = new Date(now)
+  return new Date(d.getFullYear() - 1, d.getMonth(), d.getDate(), 12, 0, 0).toISOString()
+}
+
 export const posts = [
   { id: 1, author_id: 2, content: '厦门的海真的好蓝，一起在沙滩走了好久，风很大但很舒服。', mood: '开心', point_id: 1, location_name: '厦门 · 鼓浪屿', media: [{ id: 1, kind: 'photo', thumb_url: '/api/v1/media/file/1' }], created_at: new Date(now - 1 * day).toISOString() },
   { id: 2, author_id: 3, content: '照着教程试了一下，虽然卖相一般，但她吃得很开心。', mood: '幸福', point_id: null, location_name: '', media: [{ id: 2, kind: 'photo', thumb_url: '/api/v1/media/file/2' }], created_at: new Date(now - 2 * day).toISOString() },
@@ -53,7 +60,9 @@ export const posts = [
   { id: 4, author_id: 3, content: '今天加班到很晚，回家看到她留了热汤，心里暖暖的。', mood: '感动', point_id: null, location_name: '', media: [], created_at: new Date(now - 5 * day).toISOString() },
   { id: 5, author_id: 2, content: '上海的夜景真的太美了，灯光洒在黄浦江上，拍了好多照片。', mood: '兴奋', point_id: 3, location_name: '上海 · 外滩', media: [{ id: 5, kind: 'photo', thumb_url: '/api/v1/media/file/5' }, { id: 6, kind: 'photo', thumb_url: '/api/v1/media/file/6' }], created_at: new Date(now - 8 * day).toISOString() },
   { id: 6, author_id: 3, content: '还记得去年在苏州平江路，一起在小桥上看了很久的落日。', mood: '怀念', point_id: 4, location_name: '苏州 · 平江路', media: [], created_at: new Date(now - 12 * day).toISOString() },
-  { id: 7, author_id: 2, content: '去年的今天，我们刚认识——她穿了一件浅蓝的裙子，笑起来眼睛弯弯的。', mood: '心动', point_id: null, location_name: '大理 · 古城', media: [], created_at: new Date('2025-08-26T20:00:00+08:00').toISOString() },
+  // 「去年的今天」按运行日动态计算，保证 D8 那年今日永远有命中数据（固定日期会过期导致断言假红）；
+  // 用本地年月日构造，与服务端/APP 的「本地时区月日」口径一致。
+  { id: 7, author_id: 2, content: '去年的今天，我们刚认识——她穿了一件浅蓝的裙子，笑起来眼睛弯弯的。', mood: '心动', point_id: null, location_name: '大理 · 古城', media: [], created_at: lastYearToday() },
 ]
 
 export const comments = [

@@ -66,8 +66,15 @@ function localMMDD(s: string): string {
   if (Number.isNaN(d.getTime())) return `${(s || '').slice(5, 7)}${(s || '').slice(8, 10)}`
   return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 }
+// 「历史」年份：当年今天发的动态不算那年今日（REQUIREMENTS §4.1「同月同日历史回忆」），
+// 与服务端 ListPosts(memories) / mock 同口径。
+function localYear(s: string): number {
+  const d = new Date(s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
+  return Number.isNaN(d.getTime()) ? Number((s || '').slice(0, 4)) : d.getFullYear()
+}
+const thisYear = new Date().getFullYear()
 const memoriesToday = computed(() =>
-  memories.value.filter((x) => localMMDD(x.created_at) === todayDD.value),
+  memories.value.filter((x) => localMMDD(x.created_at) === todayDD.value && localYear(x.created_at) < thisYear),
 )
 const nextAnniv = computed(() => {
   const next = spaceStore.space?.next_anniversary

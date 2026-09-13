@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -167,5 +168,66 @@ func TestPostsMediaLoop(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusNotFound {
 		t.Fatalf("deleted post detail: want 404, got %d", res.StatusCode)
+	}
+}
+
+// S3 那年今日（REQUIREMENTS §4.1）：memories=1 只列历年在今天同月同日发布的动态，
+// 不含当年；且过滤发生在分页之前（total 为过滤后总数，契约同 mock）。
+func TestListPostsMemories(t *testing.T) {
+	ts, _, girlToken := newPostTestEnv(t)
+	ctx := t.Context()
+	now := time.Now()
+	// 直接写库：接口创建的动态 created_at 是「现在」，无法构造去年同日
+	seed := func(content, createdAt string) {
+		t.Helper()
+		if _, err := ts.db.Exec(`INSERT INTO posts (author_id, content, created_at) VALUES (1, ?, ?)`, content, createdAt); err != nil {
+			t.Fatalf("seed post: %v", err)
+		}
+	}
+	// 去年同月同日（应命中）+ 今年今天（不是「历史」，不该命中）
+	seed("去年今天的回忆", now.AddDate(-1, 0, 0).Format("2006-01-02")+" 03:00:00")
+	seed("今年今天的动态", now.Format("2006-01-02")+" 03:00:00")
+	// 异日（不该命中）
+	seed("明天的动态", now.AddDate(0, 0, 1).Format("2006-01-02")+" 03:00:00")
+
+	all, _, err := ts.db.ListPosts(ctx, 1, 50, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mem, total, err := ts.db.ListPosts(ctx, 1, 50, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mem) != 1 || mem[0].Content != "去年今天的回忆" {
+		t.Fatalf("memories 应只含去年同日 1 条，got %d 条: %+v", len(mem), mem)
+	}
+	if total != 1 {
+		t.Fatalf("total 应为过滤后总数 1，got %d", total)
+	}
+	if len(all) <= total {
+		t.Fatalf("memories 应是全集子集：all=%d mem=%d", len(all), total)
+	}
+
+	// 过滤先于分页：page_size=1 时 total 仍是过滤后总数
+	_, pageTotal, err := ts.db.ListPosts(ctx, 1, 1, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageTotal != total {
+		t.Fatalf("过滤先于分页：page_size=1 时 total=%d，期望 %d", pageTotal, total)
+	}
+
+	// 接口层：memories 参数生效且 total 为过滤后总数
+	res := doJSON(t, "GET", ts.URL+"/api/v1/posts?memories=1&page=1&page_size=50", girlToken, nil)
+	var out struct {
+		Items []struct {
+			Content string `json:"content"`
+		} `json:"items"`
+		Total int `json:"total"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || out.Total != 1 || len(out.Items) != 1 || out.Items[0].Content != "去年今天的回忆" {
+		t.Fatalf("GET ?memories=1: status=%d total=%d items=%+v", res.StatusCode, out.Total, out.Items)
 	}
 }

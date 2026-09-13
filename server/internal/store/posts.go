@@ -90,15 +90,23 @@ func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 }
 
 // ListPosts 分页倒序；deleted=show 时含已删（后台回收站用，默认过滤）。
-func (d *DB) ListPosts(ctx context.Context, page, pageSize int) ([]*Post, int, error) {
+// memories=true 时只取「那年今日」——历年在今天同月同日发布的动态（**不含当年**，
+// REQUIREMENTS §4.1「同月同日历史回忆」）；过滤发生在分页之前，total 为过滤后总数（契约同 mock）。
+// 月/年判定按部署者本地时区（库内 created_at 为 UTC，见 timeutil.go 时间口径）。
+func (d *DB) ListPosts(ctx context.Context, page, pageSize int, memories bool) ([]*Post, int, error) {
+	// 两个查询共用 WHERE，故一律用 p. 限定列名（users 也有 created_at，不限定会 ambiguous）
+	where := ` WHERE p.deleted_at IS NULL`
+	if memories {
+		where += ` AND strftime('%m-%d', p.created_at, 'localtime') = strftime('%m-%d', 'now', 'localtime')` +
+			` AND strftime('%Y', p.created_at, 'localtime') < strftime('%Y', 'now', 'localtime')`
+	}
 	var total int
-	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM posts WHERE deleted_at IS NULL`).Scan(&total); err != nil {
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM posts p`+where).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	offset := (page - 1) * pageSize
 	rows, err := d.QueryContext(ctx, `
-		SELECT `+postColumns+` FROM posts p JOIN users u ON u.id = p.author_id
-		WHERE p.deleted_at IS NULL ORDER BY p.id DESC LIMIT ? OFFSET ?`, pageSize, offset)
+		SELECT `+postColumns+` FROM posts p JOIN users u ON u.id = p.author_id`+where+` ORDER BY p.id DESC LIMIT ? OFFSET ?`, pageSize, offset)
 	if err != nil {
 		return nil, 0, err
 	}

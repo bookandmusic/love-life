@@ -230,7 +230,10 @@ func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
 	if pageSize > 50 {
 		pageSize = 50 // 夹紧上限（mock 无上限，有意收紧防 DoS）
 	}
-	posts, total, err := a.db.ListPosts(r.Context(), page, pageSize)
+	// 那年今日（REQUIREMENTS §4.1）：只取历年在今天同月同日发布的动态，不含当年；
+	// 过滤在分页之前（契约同 mock），故 total 为过滤后总数。
+	memories := r.URL.Query().Get("memories") == "1"
+	posts, total, err := a.db.ListPosts(r.Context(), page, pageSize, memories)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
