@@ -132,6 +132,41 @@ func TestNextAnniversaryTool(t *testing.T) {
 	}
 }
 
+// S2：create_anniversary 的提醒天数——未传默认 1 天，显式 0 保留为当天提醒（契约同 REST/mock）。
+func TestCreateAnniversaryRemindDefault(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+	create := findTool(t, "create_anniversary")
+
+	res, err := create.Exec(ctx, d, 1, map[string]any{"name": "缺省提醒", "date": "2026-11-11"})
+	if err != nil {
+		t.Fatalf("create without remind: %v", err)
+	}
+	id := res.Data.(map[string]any)["anniversary_id"].(int64)
+	if got := anniversaryRemindDays(t, db, id); got != 1 {
+		t.Fatalf("未传提醒天数应为 1（提前 1 天），got %d", got)
+	}
+
+	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "当天提醒", "date": "2026-12-12", "remind_days_before": float64(0)})
+	if err != nil {
+		t.Fatalf("create with remind=0: %v", err)
+	}
+	id = res.Data.(map[string]any)["anniversary_id"].(int64)
+	if got := anniversaryRemindDays(t, db, id); got != 0 {
+		t.Fatalf("显式 0 应保留为当天提醒，got %d", got)
+	}
+}
+
+func anniversaryRemindDays(t *testing.T, db *store.DB, id int64) int {
+	t.Helper()
+	var days int
+	if err := db.QueryRow(`SELECT remind_days_before FROM anniversaries WHERE id = ?`, id).Scan(&days); err != nil {
+		t.Fatal(err)
+	}
+	return days
+}
+
 // AppOnly 铁律：五个删除类工具必须全部标注 AppOnly（DESIGN §8.3 不对令牌开放）。
 func TestDeleteToolsAppOnly(t *testing.T) {
 	for _, name := range []string{"delete_post", "delete_comment", "delete_album", "delete_anniversary", "delete_map_point"} {

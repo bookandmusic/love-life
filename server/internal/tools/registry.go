@@ -1067,7 +1067,11 @@ func Registry() []*Tool {
 						return nil, fmt.Errorf("日期格式应为 YYYY-MM-DD")
 					}
 				}
-				remind := int(num(args, "remind_days_before"))
+				// 缺省与显式 0 语义不同（契约同 REST/mock）：未传 → 提前 1 天；显式 0 = 当天提醒，不得被改写。
+				remind := 1
+				if v, ok := args["remind_days_before"].(float64); ok {
+					remind = int(v)
+				}
 				if remind < 0 || remind > 90 {
 					remind = 1
 				}

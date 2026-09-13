@@ -19,10 +19,12 @@ type anniversariesAPI struct {
 
 func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name       string `json:"name"`
-		Date       string `json:"date"`
-		Type       string `json:"type"`
-		RemindDays int    `json:"remind_days_before"`
+		Name string `json:"name"`
+		Date string `json:"date"`
+		Type string `json:"type"`
+		// 指针以区分「未传」与「显式 0」：未传 → 默认提前 1 天（REQUIREMENTS §4.6）；
+		// 显式 0 = 当天提醒，不得被缺省逻辑改写（契约同 mock routes.mjs）。
+		RemindDays *int `json:"remind_days_before"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Name == "" {
 		writeError(w, http.StatusBadRequest, "名称与日期不能为空")
@@ -44,10 +46,14 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.RemindDays < 0 || req.RemindDays > 90 {
-		req.RemindDays = 1
+	remindDays := 1 // 缺省：提前 1 天
+	if req.RemindDays != nil {
+		remindDays = *req.RemindDays
 	}
-	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, req.RemindDays)
+	if remindDays < 0 || remindDays > 90 {
+		remindDays = 1
+	}
+	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, remindDays)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return

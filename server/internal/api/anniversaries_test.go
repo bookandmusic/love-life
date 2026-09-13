@@ -49,6 +49,38 @@ func TestAnniversaryLunarType(t *testing.T) {
 		t.Fatalf("create lunar anniversary: %d", res.StatusCode)
 	}
 
+	// S2：未传 remind_days_before → 默认提前 1 天（REQUIREMENTS §4.6）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
+		"name": "缺省提醒", "date": "2026-11-11",
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create without remind: %d", res.StatusCode)
+	}
+	var defaultRemind int
+	if err := ts.db.QueryRow(`SELECT remind_days_before FROM anniversaries WHERE name = '缺省提醒'`).Scan(&defaultRemind); err != nil {
+		t.Fatal(err)
+	}
+	if defaultRemind != 1 {
+		t.Fatalf("未传提醒天数应为 1（提前 1 天），got %d", defaultRemind)
+	}
+
+	// S2：显式 0 → 当天提醒，不得被缺省逻辑改写
+	res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
+		"name": "当天提醒", "date": "2026-12-12", "remind_days_before": 0,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create with remind=0: %d", res.StatusCode)
+	}
+	var zeroRemind int
+	if err := ts.db.QueryRow(`SELECT remind_days_before FROM anniversaries WHERE name = '当天提醒'`).Scan(&zeroRemind); err != nil {
+		t.Fatal(err)
+	}
+	if zeroRemind != 0 {
+		t.Fatalf("显式 0 应保留为当天提醒，got %d", zeroRemind)
+	}
+
 	// 非法 type 归一 solar（mock 宽容语义）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
 		"name": "公历项", "date": "2026-12-25", "type": "lunarr",
