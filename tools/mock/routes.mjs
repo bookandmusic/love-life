@@ -499,13 +499,18 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums\/\d+$/, handler: (url)
   return ok({ album: { ...a, item_count: media.length }, media })
 }})
 
-routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/albums\/\d+$/, handler: (url) => {
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/albums\/\d+$/, handler: (url, body, headers) => {
   const id = parseIntParam(url, /\/albums\/(\d+)/)
   if (!id) return notFound()
   const idx = albums.findIndex((x) => x.id === id)
   if (idx === -1) return notFound()
   // 月度相册不可删除（只可隐藏，DESIGN §12.2）；此前漏判 + 漏删，删除后列表仍显示该相册
   if (albums[idx].type === 'monthly') return { _s: 400, d: { error: '月度相册不可删除，只可隐藏' } }
+  // 删除对方创建的手动相册 → 通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+  const uid = userIdFromToken(headers)
+  if (uid && albums[idx].created_by && albums[idx].created_by !== uid) {
+    addNotification(albums[idx].created_by, 'album_deleted', 'album', id, { name: albums[idx].name, deleted_by: operatorName(uid) })
+  }
   // 手动相册删除 → 释放媒体归属，媒体回到「未归属」状态
   for (const m of timelineMedia) if (m.album_id === id) m.album_id = null
   albums.splice(idx, 1)
@@ -755,11 +760,16 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/anniversaries$/, handler: (u
 }
 })
 
-routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/anniversaries\/\d+$/, handler: (url) => {
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/anniversaries\/\d+$/, handler: (url, body, headers) => {
   const id = parseIntParam(url, /\/anniversaries\/(\d+)/)
   if (!id) return notFound()
   const idx = anniversaries.findIndex((x) => x.id === id)
   if (idx === -1) return notFound()
+  // 删除对方创建的纪念日 → 通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+  const uid = userIdFromToken(headers)
+  if (uid && anniversaries[idx].created_by && anniversaries[idx].created_by !== uid) {
+    addNotification(anniversaries[idx].created_by, 'anniversary_deleted', 'anniversary', id, { name: anniversaries[idx].name, deleted_by: operatorName(uid) })
+  }
   anniversaries.splice(idx, 1)
   return noContent()
 }})
@@ -1142,11 +1152,16 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/map\/points$/, handler: (url
   return created(p)
 }})
 
-routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/map\/points\/\d+$/, handler: (url) => {
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/map\/points\/\d+$/, handler: (url, body, headers) => {
   const id = parseIntParam(url, /\/map\/points\/(\d+)/)
   if (!id) return notFound()
   const p = mapPoints.find((x) => x.id === id)
   if (!p || p.deleted_at) return notFound()
+  // 删除对方创建的足迹 → 通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+  const uid = userIdFromToken(headers)
+  if (uid && p.created_by && p.created_by !== uid) {
+    addNotification(p.created_by, 'map_point_deleted', 'map_point', id, { name: p.name, deleted_by: operatorName(uid) })
+  }
   // mock 软删除：标记 deleted_at
   p.deleted_at = new Date().toISOString()
   return noContent()
