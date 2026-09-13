@@ -1,4 +1,4 @@
-// Package chat AI 对话（DESIGN 7.3 端到端链路的阶段一）：模型往返工具循环、
+// Package chat AI 对话（DESIGN 7.3 端到端链路）：模型往返工具循环、
 // 写工具产出确认卡片（15 分钟 TTL 单次有效）、SSE 推送、审计与历史。
 package chat
 
@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -89,43 +90,99 @@ func (s *Service) systemPrompt(ctx context.Context, userStyle string) string {
 	return trunk + "输出风格偏好：" + prompt
 }
 
-var errNoModel = errors.New("未配置模型——请管理员在后台配置模型服务")
-
-// chatTarget 一次对话所用的供应商与模型（L5 统计需要 provider_id 与 model 名称）。
+// chatTarget 一次对话可用的供应商与模型（统计落库需要 provider_id 与 model 名称）。
 type chatTarget struct {
-	Client     *llm.Client
-	ProviderID int64
-	Model      string
+	Client      *llm.Client
+	ProviderID  int64
+	Model       string
+	Temperature *float64 // 模型级采样参数（provider_models 条目），nil = 调用不传
+	MaxTokens   *int64
 }
 
-// chatTargetFromConfig 获取对话供应商并构造 chatTarget（含 provider_id 与 model 供统计落库）。
-func (s *Service) chatTargetFromConfig(ctx context.Context) (*chatTarget, error) {
-	p, err := s.db.GetChatProvider(ctx)
-	if errors.Is(err, store.ErrNotFound) {
-		return nil, errNoModel
-	}
+// chatTargets 构建本条消息的供应商链（DESIGN §4.1 有序故障切换链）：已配 Key 的供应商
+// 按链序排列；解 Key 失败留痕后跳过（全部因此不可用 → errKeyDecrypt）；无模型条目的跳过；
+// 链空 → errNoModel。每次调用实时读库——管理后台热切换即生效。
+func (s *Service) chatTargets(ctx context.Context) ([]*chatTarget, error) {
+	providers, err := s.db.ListChatProviders(ctx)
 	if err != nil {
 		return nil, err
 	}
-	apiKey, err := crypto.Decrypt(s.key, p.APIKeyEnc)
-	if err != nil {
-		return nil, fmt.Errorf("解密模型 Key 失败: %w", err)
+	var targets []*chatTarget
+	decryptFailed := 0
+	for _, p := range providers {
+		apiKey, derr := crypto.Decrypt(s.key, p.APIKeyEnc)
+		if derr != nil {
+			decryptFailed++
+			slog.Warn("模型 Key 解密失败，跳过该供应商", "provider_id", p.ID, "err", derr)
+			continue
+		}
+		model := p.DefaultModel
+		if model == "" && len(p.Models) > 0 {
+			model = p.Models[0].ModelID
+		}
+		if model == "" {
+			continue
+		}
+		client, cerr := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType)
+		if cerr != nil {
+			// api_type 由 DB CHECK 约束为四协议，正常到不了这里；上抛而非静默跳过
+			return nil, fmt.Errorf("不支持的服务协议: %w", cerr)
+		}
+		t := &chatTarget{Client: client, ProviderID: p.ID, Model: model}
+		for _, m := range p.Models {
+			if m.ModelID == model {
+				if m.Temperature.Valid {
+					v := m.Temperature.Float64
+					t.Temperature = &v
+				}
+				if m.MaxTokens.Valid {
+					v := m.MaxTokens.Int64
+					t.MaxTokens = &v
+				}
+				break
+			}
+		}
+		targets = append(targets, t)
 	}
-	model := p.DefaultModel
-	if model == "" && len(p.Models) > 0 {
-		model = p.Models[0].ModelID
-	}
-	if model == "" {
+	if len(targets) == 0 {
+		if decryptFailed > 0 && decryptFailed == len(providers) {
+			return nil, errKeyDecrypt
+		}
 		return nil, errNoModel
 	}
-	client, err := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType)
-	if err != nil {
-		return nil, fmt.Errorf("不支持的服务协议: %w", err)
-	}
-	return &chatTarget{Client: client, ProviderID: p.ID, Model: model}, nil
+	return targets, nil
 }
 
-// recordUsage 落库一次模型调用的统计（L5）。失败不阻断对话——统计是旁路，
+var errNoModel = errors.New("未配置模型——请管理员在后台配置模型服务")
+
+// errKeyDecrypt 链上全部供应商的 Key 都解密失败（数据问题，非「未配置」）。
+var errKeyDecrypt = errors.New("模型 Key 解密失败，请管理员检查配置")
+
+// chatCall 一次模型调用沿链执行：链头起首个成功者胜出；失败者记 failed 统计后淘汰，
+// 成功者记 success 并固定为后续轮次起点（回到链首）。模型级参数随目标供应商注入
+// （default_model 可手填兜底名、查不到参数条目按未设置处理）。链耗尽返回最后一个错误
+// 与空链；返回的链供同一条消息的后续轮次续用（不跨请求）。
+func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.ChatRequest) (*llm.ChatResponse, []*chatTarget, error) {
+	var lastErr error
+	for len(chain) > 0 {
+		t := chain[0]
+		chain = chain[1:]
+		req.Temperature = t.Temperature
+		req.MaxTokens = t.MaxTokens
+		startedAt := time.Now()
+		res, err := t.Client.Chat(ctx, req)
+		elapsed := time.Since(startedAt).Milliseconds()
+		if err == nil {
+			s.recordUsage(ctx, t, res, elapsed, "success")
+			return res, append([]*chatTarget{t}, chain...), nil
+		}
+		s.recordUsage(ctx, t, nil, elapsed, "failed")
+		lastErr = err
+	}
+	return nil, nil, lastErr
+}
+
+// recordUsage 落库一次模型调用的统计。失败不阻断对话——统计是旁路，
 // 但会尽力写入，避免仪表盘长期缺口。
 func (s *Service) recordUsage(ctx context.Context, t *chatTarget, res *llm.ChatResponse, latencyMs int64, status string) {
 	if t == nil {
@@ -169,7 +226,7 @@ func (s *Service) Status(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"available": available, "reason": reason})
 }
 
-// chatMedia 客户端随消息携带的媒体引用（D8）：仅本会话展示 + 历史回显，不落媒体资源；
+// chatMedia 客户端随消息携带的媒体引用：仅本会话展示 + 历史回显，不落媒体资源；
 // 真正落库发生在「确认执行」时客户端先用 /media/upload 换 token 随 confirm 提交。
 type chatMedia struct {
 	Name    string `json:"name"`
@@ -200,7 +257,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	mediaJSON, _ := json.Marshal(req.Media)
-	target, err := s.chatTargetFromConfig(r.Context())
+	chain, err := s.chatTargets(r.Context())
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, errNoModel) {
@@ -209,7 +266,6 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), status)
 		return
 	}
-	client := target.Client
 
 	// 历史 + 用户风格
 	user, _ := s.db.GetUserByID(r.Context(), claims.UserID)
@@ -237,17 +293,14 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 
 	// 工具循环（读工具立即执行回填；写工具止于确认卡片）
 	for round := 0; round < maxToolRounds; round++ {
-		// L5：计时每次模型调用并落库（tokens/latency），供仪表盘 ai-usage 与审计 latencyMs
-		startedAt := time.Now()
-		res, err := client.Chat(r.Context(), &llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs(r.Context())})
-		elapsed := time.Since(startedAt).Milliseconds()
+		// 每次模型调用沿链执行：失败自动切换下一供应商重试同轮，链耗尽才报错
+		res, rest, err := s.chatCall(r.Context(), chain, &llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs(r.Context())})
 		if err != nil {
-			s.recordUsage(r.Context(), target, nil, elapsed, "failed")
 			s.sseEvent(w, flusher, "error", map[string]string{"message": err.Error()})
 			s.sseEvent(w, flusher, "done", nil)
 			return
 		}
-		s.recordUsage(r.Context(), target, res, elapsed, "success")
+		chain = rest
 		choice := res.Choices[0]
 		if len(choice.Message.ToolCalls) == 0 {
 			text := choice.Message.Content
@@ -303,7 +356,7 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 	if !ok {
 		return "未知工具: " + call.Function.Name, nil, nil
 	}
-	// AD4：已停用的工具拒绝执行（模型可能凭历史上下文继续调用，
+	// 后台停用的工具拒绝执行（模型可能凭历史上下文继续调用，
 	// 仅从 toolSpecs 摘除不足以拦截）。
 	if disabled, derr := s.db.DisabledTools(ctx); derr == nil && disabled[tool.Name] {
 		return "该工具已在后台停用: " + tool.Name, nil, nil
@@ -438,7 +491,7 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-// toolSpecs 下发给模型的工具清单。AD4：后台停用的工具不下发，
+// toolSpecs 下发给模型的工具清单。后台停用的工具不下发，
 // 使「工具启停」真正生效而非仅页面展示。
 func (s *Service) toolSpecs(ctx context.Context) []llm.Tool {
 	disabled, err := s.db.DisabledTools(ctx)

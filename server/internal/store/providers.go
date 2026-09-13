@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// 模型供应商（DESIGN §12.1）：api_type 决定协议适配（L2），sort_order = 故障切换链顺序（L3），
+// 模型供应商（DESIGN §12.1）：api_type 决定协议适配，sort_order = 故障切换链顺序；
 // default_model 指向 provider_models.model_id 字符串（供应商内唯一）；temperature/max_tokens
-// 挂模型级，NULL = 调用不传（L4 消费）。
+// 挂模型级，NULL = 调用不传（chat 组装请求时消费）。
 
 type ProviderModel struct {
 	ID          int64
@@ -76,10 +76,10 @@ func (d *DB) attachModels(ctx context.Context, providers []*ModelProvider) error
 	return nil
 }
 
-// ListProviders 全部供应商，按故障切换链序（sort_order, id）。
-func (d *DB) ListProviders(ctx context.Context) ([]*ModelProvider, error) {
+// listProvidersBy 按可选 WHERE 查询供应商并附上模型条目（共享查询骨架）。
+func (d *DB) listProvidersBy(ctx context.Context, where string, args ...any) ([]*ModelProvider, error) {
 	rows, err := d.QueryContext(ctx,
-		`SELECT `+providerColumns+` FROM model_providers ORDER BY sort_order, id`)
+		`SELECT `+providerColumns+` FROM model_providers`+where+` ORDER BY sort_order, id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -101,25 +101,32 @@ func (d *DB) ListProviders(ctx context.Context) ([]*ModelProvider, error) {
 	return list, nil
 }
 
-// GetChatProvider 对话用供应商：链头起第一个已配 Key 的供应商（按 sort_order, id；
-// 协议适配已全量落地——四协议 adapter 均已实现）。无可用 → ErrNotFound。
+// ListProviders 全部供应商，按故障切换链序（sort_order, id）。
+func (d *DB) ListProviders(ctx context.Context) ([]*ModelProvider, error) {
+	return d.listProvidersBy(ctx, "")
+}
+
+// GetChatProvider 链头快照（首个已配 Key 的供应商，按 sort_order, id），供 /chat/status
+// 判断 AI 可用性。对话实际走 ListChatProviders（故障切换链）。供应商个位数量级，
+// 直接取全链首项，不再单写 LIMIT 查询。
 func (d *DB) GetChatProvider(ctx context.Context) (*ModelProvider, error) {
-	p, err := scanProvider(d.QueryRowContext(ctx,
-		`SELECT `+providerColumns+` FROM model_providers
-		 WHERE api_key_enc != ''		 ORDER BY sort_order, id LIMIT 1`))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+	list, err := d.ListChatProviders(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if err := d.attachModels(ctx, []*ModelProvider{p}); err != nil {
-		return nil, err
+	if len(list) == 0 {
+		return nil, ErrNotFound
 	}
-	return p, nil
+	return list[0], nil
 }
 
-// ---- 写路径（AD1 管理面）----
+// ListChatProviders 可用于对话的全部供应商（已配 Key，按链序 sort_order, id），含模型条目。
+// 对话层从第一个开始、失败依次向下切换（DESIGN §4.1 有序故障切换链）。
+func (d *DB) ListChatProviders(ctx context.Context) ([]*ModelProvider, error) {
+	return d.listProvidersBy(ctx, ` WHERE api_key_enc != ''`)
+}
+
+// ---- 写路径（管理面）----
 
 func insertProviderModels(tx *sql.Tx, providerID int64, models []ProviderModel) error {
 	for _, m := range models {
