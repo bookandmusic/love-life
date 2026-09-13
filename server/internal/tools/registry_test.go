@@ -294,7 +294,7 @@ func TestDeletePostAndHistoryTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
-	hits := res.Data.([]postHit)
+	hits := res.Data.([]PostHit)
 	if len(hits) != 1 || hits[0].ID != postID3 {
 		t.Fatalf("history hits: %+v (want post %d)", hits, postID3)
 	}
@@ -399,7 +399,7 @@ func TestMapSearchTools(t *testing.T) {
 	if err != nil {
 		t.Fatalf("location posts: %v", err)
 	}
-	hits := res.Data.([]postHit)
+	hits := res.Data.([]PostHit)
 	if len(hits) != 1 || hits[0].ID != postID || hits[0].LocationName != "杭州·西湖" {
 		t.Fatalf("location posts: %+v", hits)
 	}

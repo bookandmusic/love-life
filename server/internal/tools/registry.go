@@ -152,9 +152,10 @@ func tokens(args map[string]any, key string) []string {
 	return out
 }
 
-// postHit 动态查询类工具（search_posts / get_today_in_history / get_location_posts /
+// PostHit 动态查询类工具（search_posts / get_today_in_history / get_location_posts /
 // list_favorites）的统一输出行；location_name 仅当动态带地点时出现。
-type postHit struct {
+// 导出供 chat 层把 search_posts 产出转成搜索结果卡片事件（SSE result）。
+type PostHit struct {
 	ID           int64  `json:"id"`
 	Title        string `json:"title,omitempty"`
 	Content      string `json:"content"`
@@ -168,10 +169,10 @@ const postHitColumns = `p.id, COALESCE(p.title,''), p.content, p.created_at,
 		COALESCE(u.nickname, u.username), COALESCE(p.location_name,'')`
 
 // scanPostHits 扫描按 postHitColumns 查询的动态行。
-func scanPostHits(rows *sql.Rows) ([]postHit, error) {
-	var hits []postHit
+func scanPostHits(rows *sql.Rows) ([]PostHit, error) {
+	var hits []PostHit
 	for rows.Next() {
-		var h postHit
+		var h PostHit
 		if err := rows.Scan(&h.ID, &h.Title, &h.Content, &h.Date, &h.Author, &h.LocationName); err != nil {
 			return nil, err
 		}
@@ -276,7 +277,7 @@ func Registry() []*Tool {
 					return nil, err
 				}
 				if hits == nil {
-					hits = []postHit{}
+					hits = []PostHit{}
 				}
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
@@ -335,9 +336,9 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				hits := make([]postHit, 0, len(posts))
+				hits := make([]PostHit, 0, len(posts))
 				for _, p := range posts {
-					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
+					hits = append(hits, PostHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
 				b, _ := json.Marshal(hits)
@@ -731,9 +732,9 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				hits := make([]postHit, 0, len(posts))
+				hits := make([]PostHit, 0, len(posts))
 				for _, p := range posts {
-					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
+					hits = append(hits, PostHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
 				out := pagedOut(hits, total, page, size)
@@ -991,9 +992,9 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				hits := make([]postHit, 0, len(posts))
+				hits := make([]PostHit, 0, len(posts))
 				for _, p := range posts {
-					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
+					hits = append(hits, PostHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
 				b, _ := json.Marshal(hits)

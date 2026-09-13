@@ -17,6 +17,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/crypto"
 	"github.com/bookandmusic/love-life/server/internal/llm"
 	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/textutil"
 	"github.com/bookandmusic/love-life/server/internal/tools"
 )
 
@@ -312,7 +313,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: choice.Message.Content, ToolCalls: choice.Message.ToolCalls})
 		stopForConfirm := false
 		for _, call := range choice.Message.ToolCalls {
-			result, card, err := s.runToolCall(r.Context(), claims.UserID, call)
+			result, card, data, err := s.runToolCall(r.Context(), claims.UserID, call)
 			if err != nil {
 				result = "工具执行失败: " + err.Error()
 			}
@@ -330,6 +331,12 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 				s.sseEvent(w, flusher, "card", card)
 				result = "已生成确认卡片，等待用户确认后执行"
 				stopForConfirm = true
+			} else if ev := s.searchResultFrom(r.Context(), call.Function.Name, call.Function.Arguments, data); ev != nil {
+				// 搜索结果卡片（契约 tools/mock/routes.mjs:897-905）：读工具产出转 result 事件内联展示。
+				// 空结果同样下发（items=[]），由客户端渲染「没找到」。
+				// 仅推卡片 + 一句人话文案；不推「🔎 工具名 → 原始 JSON」（那是内部结构，用户看不懂）。
+				s.sseEvent(w, flusher, "text", map[string]string{"content": "🔎 " + ev.Caption})
+				s.sseEvent(w, flusher, "result", ev)
 			} else {
 				s.sseEvent(w, flusher, "text", map[string]string{"content": fmt.Sprintf("🔎 %s → %s", call.Function.Name, result)})
 			}
@@ -343,6 +350,71 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 	s.sseEvent(w, flusher, "done", nil)
 }
 
+// searchHitItem 搜索结果卡片条目（契约 routes.mjs:899-903）。
+type searchHitItem struct {
+	ID       int64  `json:"id"`
+	Content  string `json:"content"`
+	ThumbURL string `json:"thumb_url"`
+}
+
+// searchResultEvent 搜索结果卡片事件体（契约 tools/mock/routes.mjs:897-905）。
+// Items 用非 nil 空切片：空结果须序列化为 []，客户端读 items.length，null 会渲染异常。
+type searchResultEvent struct {
+	Tool  string          `json:"tool"`
+	Query string          `json:"query"`
+	Items []searchHitItem `json:"items"`
+	// Caption 不进事件体（客户端只认 tool/query/items），仅用于日志/文案一致性检查
+	Caption string `json:"-"`
+}
+
+// searchResultFrom 把 search_posts 的产出转成 result 事件（有命中才有缩略图）。
+// 契约：content 截断 60 rune、thumb_url 取该动态首图缩略图（无媒体为空串）。
+func (s *Service) searchResultFrom(ctx context.Context, toolName, argsJSON string, data any) *searchResultEvent {
+	if toolName != "search_posts" {
+		return nil
+	}
+	hits, ok := data.([]tools.PostHit)
+	if !ok {
+		return nil
+	}
+	ids := make([]int64, 0, len(hits))
+	for _, h := range hits {
+		ids = append(ids, h.ID)
+	}
+	// 一次批量取媒体；查不到只是没缩略图，不该让整张卡片不出来
+	medias, err := s.db.GetMediaByPostIDs(ctx, ids)
+	if err != nil {
+		slog.Warn("search result media lookup failed", "err", err)
+	}
+	items := make([]searchHitItem, 0, len(hits))
+	for _, h := range hits {
+		thumb := ""
+		if list := medias[h.ID]; len(list) > 0 && s.deps.MP != nil {
+			thumb = s.deps.MP.SignedURL(list[0].ID, "thumb")
+		}
+		items = append(items, searchHitItem{ID: h.ID, Content: textutil.Trunc(h.Content, 60), ThumbURL: thumb})
+	}
+	var args map[string]any
+	_ = json.Unmarshal([]byte(argsJSON), &args)
+	q, _ := args["query"].(string)
+	evt := &searchResultEvent{Tool: "search_posts", Query: q, Items: items}
+	// 文案照 mock 口径：卡片是主体，配一句人话；空结果由客户端渲染「没找到」
+	if len(items) > 0 {
+		evt.Caption = fmt.Sprintf("找到 %d 条%s回忆：", len(items), relatedTo(q))
+	} else {
+		evt.Caption = "没找到" + relatedTo(q) + "回忆。"
+	}
+	return evt
+}
+
+// relatedTo 组装「和「X」相关的」限定语；query 为空时退化为「最近的」。
+func relatedTo(q string) string {
+	if q == "" {
+		return "最近的"
+	}
+	return "和「" + q + "」相关的"
+}
+
 func userStyle(u *store.User) string {
 	if u == nil {
 		return ""
@@ -351,19 +423,20 @@ func userStyle(u *store.User) string {
 }
 
 // runToolCall 读工具立即执行；写工具创建确认卡片并返回卡片数据。
-func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCall) (result string, card map[string]any, err error) {
+// data 是读工具的结构化产出（ExecResult.Data），供搜索结果卡片等事件取用。
+func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCall) (result string, card map[string]any, data any, err error) {
 	tool, ok := s.reg[call.Function.Name]
 	if !ok {
-		return "未知工具: " + call.Function.Name, nil, nil
+		return "未知工具: " + call.Function.Name, nil, nil, nil
 	}
 	// 后台停用的工具拒绝执行（模型可能凭历史上下文继续调用，
 	// 仅从 toolSpecs 摘除不足以拦截）。
 	if disabled, derr := s.db.DisabledTools(ctx); derr == nil && disabled[tool.Name] {
-		return "该工具已在后台停用: " + tool.Name, nil, nil
+		return "该工具已在后台停用: " + tool.Name, nil, nil, nil
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-		return "", nil, fmt.Errorf("参数解析失败: %w", err)
+		return "", nil, nil, fmt.Errorf("参数解析失败: %w", err)
 	}
 	if !tool.IsWrite {
 		startAt := time.Now()
@@ -374,17 +447,17 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 			// 读工具失败同样落审计（failed: 原因），与 confirm / PAT 通道口径一致；
 			// 否则「所有工具调用均记审计」在这条路径留空档。
 			s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, tools.AuditFailure(err), latencyMs)
-			return "", nil, err
+			return "", nil, nil, err
 		}
 		// result 仅记状态（success/failed，对齐 mock 契约与后台等值判定）；工具输出不回写审计
 		s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, tools.AuditSuccess, latencyMs)
-		return out.Content, nil, nil
+		return out.Content, nil, out.Data, nil
 	}
 	// 写工具 → 确认卡片（15 分钟 TTL，单次有效）
 	params, _ := json.Marshal(args)
 	actionID, err := s.db.CreateConfirmAction(ctx, userID, tool.Name, string(params))
 	if err != nil {
-		return "", nil, err
+		return "", nil, nil, err
 	}
 	_, _ = s.db.SaveChatMessage(ctx, &store.ChatMessage{UserID: userID, Role: "assistant", Content: tool.Description, CardID: sql.NullInt64{Int64: actionID, Valid: actionID > 0}})
 	return "", map[string]any{
@@ -393,7 +466,7 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 		"params":     args,
 		"status":     "pending",
 		"expires_in": 900,
-	}, nil
+	}, nil, nil
 }
 
 // Confirm POST /api/v1/chat/confirm {action_id, confirmed}。
