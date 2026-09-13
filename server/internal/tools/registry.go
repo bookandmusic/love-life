@@ -425,7 +425,7 @@ func Registry() []*Tool {
 					}
 					return nil, err
 				}
-				snapshot, _ := json.Marshal(map[string]any{"content": content, "via": "ai"})
+				snapshot, _ := json.Marshal(map[string]any{"content": content, "operator": d.aiOperatorName(ctx, userID), "via": "ai"})
 				d.notifyPartners(ctx, userID, "post_created", "post", postID, string(snapshot), "新动态", content)
 				return &ExecResult{Content: fmt.Sprintf("动态 #%d 已发布", postID), Data: map[string]any{"post_id": postID}}, nil
 			},

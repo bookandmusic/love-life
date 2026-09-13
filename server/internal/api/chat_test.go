@@ -141,6 +141,20 @@ func TestChatToolConfirmFlow(t *testing.T) {
 	if posts != 1 || audits != 1 || notifs != 1 {
 		t.Fatalf("post=%d audit=%d notif=%d (want 1/1/1)", posts, audits, notifs)
 	}
+	// AI 代发快照必须含 operator：APP 通知列表按 `${s.operator} 发布了新动态` 渲染，
+	// 缺字段会显示 undefined（GAP3）。
+	var snap string
+	_ = ts.db.QueryRow(`SELECT snapshot_json FROM notifications WHERE event_type='post_created'`).Scan(&snap)
+	var snapMap map[string]any
+	if err := json.Unmarshal([]byte(snap), &snapMap); err != nil {
+		t.Fatalf("unmarshal snapshot %q: %v", snap, err)
+	}
+	if op, _ := snapMap["operator"].(string); op == "" {
+		t.Fatalf("AI 代发快照缺 operator（前端会渲染 undefined）: %s", snap)
+	}
+	if snapMap["via"] != "ai" {
+		t.Fatalf("AI 代发快照应带 via=ai: %s", snap)
+	}
 
 	// 历史
 	res = doJSON(t, "GET", ts.URL+"/api/v1/chat/history", adminToken, nil)
