@@ -436,21 +436,23 @@ func (a *postsAPI) serveFile(w http.ResponseWriter, r *http.Request, relPath, co
 // downloadName 生成另存文件名：{日期}_{照片|视频|录音}_{动态内序号}.{ext}
 // 例：2026-08-15_照片_1.jpg。数据层没有原始文件名（Media 只有 file_path），
 // 故按「拍摄时间优先、其次动态发布时间」+ 类型中文 + 该动态内序号拼。
+// 日期口径：EXIF taken_at 原样；动态/媒体 created_at 为 UTC，转**本地时区**取日（见 store.LocalDate）。
 func (a *postsAPI) downloadName(ctx context.Context, m *store.MediaRow) string {
 	ext := fileExt(m.FilePath)
 	kindWord, ok := map[string]string{"photo": "照片", "video": "视频", "audio": "录音"}[m.Kind]
 	if !ok {
 		kindWord = "媒体"
 	}
+	// taken_at 是 EXIF 墙钟时间（无时区），原样取日期；created_at 是 UTC，按本地时区取日期
 	date := ""
 	if m.TakenAt.Valid && len(m.TakenAt.String) >= 10 {
 		date = m.TakenAt.String[:10]
 	}
 	if date == "" {
-		if post, err := a.db.GetPost(ctx, m.PostID); err == nil && len(post.CreatedAt) >= 10 {
-			date = post.CreatedAt[:10]
-		} else if len(m.CreatedAt) >= 10 {
-			date = m.CreatedAt[:10]
+		if post, err := a.db.GetPost(ctx, m.PostID); err == nil && post.CreatedAt != "" {
+			date = store.LocalDate(post.CreatedAt)
+		} else {
+			date = store.LocalDate(m.CreatedAt)
 		}
 	}
 	seq := int(m.ID) // 兜底：拿不到同动态媒体列表时用媒体 id 保唯一

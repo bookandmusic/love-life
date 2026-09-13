@@ -15,14 +15,15 @@ func decStr(v int64) string { return strconv.FormatInt(v, 10) }
 func decStrInt(v int) string { return strconv.Itoa(v) }
 
 // humanizeTime 把库内时间转为仪表盘展示口径（今天/昨天/N 天前，更早则原样）。
-// 库内 created_at 为 datetime('now') 的 UTC 'YYYY-MM-DD HH:MM:SS'，兼容 RFC3339。
+// 库内 created_at 为 datetime('now') 的 UTC 'YYYY-MM-DD HH:MM:SS'，兼容 RFC3339；
+// 解析时按 UTC，比较时转本地时区（时间口径见 store/timeutil.go）。
 func humanizeTime(raw string) string {
 	if raw == "" {
 		return ""
 	}
 	var t time.Time
 	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
-		if parsed, err := time.Parse(layout, raw); err == nil {
+		if parsed, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
 			t = parsed
 			break
 		}
@@ -30,7 +31,7 @@ func humanizeTime(raw string) string {
 	if t.IsZero() {
 		return raw
 	}
-	days := int(time.Since(t).Hours() / 24)
+	days := int(time.Since(t.Local()).Hours() / 24)
 	switch {
 	case days <= 0:
 		return "今天"

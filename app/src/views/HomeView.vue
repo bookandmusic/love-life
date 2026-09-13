@@ -58,9 +58,16 @@ const todayDD = computed(() => {
   const d = new Date()
   return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 })
-// 那年今日：同月同日的历史回忆（有数据才出现，入口卡）；服务端已过滤，这里再校验一次月日
+// 那年今日：同月同日的历史回忆（有数据才出现，入口卡）；服务端已按本地时区过滤，这里再校验一次。
+// created_at 为 UTC（库内 datetime('now')），直接 slice 取的是 UTC 月日 → 必须解析后按本地时区取月日。
+// 兜底：解析失败回退字符串 slice（老口径），不因格式异常而清空列表。
+function localMMDD(s: string): string {
+  const d = new Date(s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
+  if (Number.isNaN(d.getTime())) return `${(s || '').slice(5, 7)}${(s || '').slice(8, 10)}`
+  return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
+}
 const memoriesToday = computed(() =>
-  memories.value.filter((x) => `${x.created_at.slice(5, 7)}${x.created_at.slice(8, 10)}` === todayDD.value),
+  memories.value.filter((x) => localMMDD(x.created_at) === todayDD.value),
 )
 const nextAnniv = computed(() => {
   const next = spaceStore.space?.next_anniversary

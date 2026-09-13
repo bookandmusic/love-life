@@ -36,7 +36,7 @@ func (d *DB) ListAlbums(ctx context.Context, includeHidden bool) ([]*Album, erro
 				-- 月度相册虚拟口径（D4）：该月未归属手动相册的媒体数
 				(SELECT COUNT(*) FROM media m2 JOIN posts p2 ON p2.id = m2.post_id
 				 WHERE m2.deleted_at IS NULL AND p2.deleted_at IS NULL
-				   AND substr(COALESCE(NULLIF(m2.taken_at,''), m2.created_at), 1, 7) = a.month_key
+				   AND COALESCE(NULLIF(strftime('%Y-%m', m2.taken_at), ''), strftime('%Y-%m', m2.created_at, 'localtime')) = a.month_key
 				   AND NOT EXISTS (SELECT 1 FROM album_items i2 JOIN albums a2 ON a2.id = i2.album_id
 				     WHERE i2.media_id = m2.id AND a2.type = 'manual' AND a2.deleted_at IS NULL))
 			ELSE
@@ -208,7 +208,7 @@ func (d *DB) ListMonthlyMedia(ctx context.Context, monthKey string) ([]*MediaRow
 			m.duration, m.taken_at, m.created_at, p.author_id
 		FROM media m JOIN posts p ON p.id = m.post_id
 		WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL
-		  AND substr(COALESCE(NULLIF(m.taken_at,''), m.created_at), 1, 7) = ? AND `+notInManualAlbum+`
+		  AND COALESCE(NULLIF(strftime('%Y-%m', m.taken_at), ''), strftime('%Y-%m', m.created_at, 'localtime')) = ? AND `+notInManualAlbum+`
 		ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC`, monthKey)
 	if err != nil {
 		return nil, err
@@ -295,11 +295,11 @@ func (d *DB) ListTimelineMedia(ctx context.Context, year, month string, limit in
 		WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`
 	var args []any
 	if year != "" {
-		query += ` AND substr(COALESCE(NULLIF(m.taken_at,''), m.created_at), 1, 4) = ?`
+		query += ` AND COALESCE(NULLIF(strftime('%Y', m.taken_at), ''), strftime('%Y', m.created_at, 'localtime')) = ?`
 		args = append(args, year)
 	}
 	if month != "" {
-		query += ` AND substr(COALESCE(NULLIF(m.taken_at,''), m.created_at), 1, 7) = ?`
+		query += ` AND COALESCE(NULLIF(strftime('%Y-%m', m.taken_at), ''), strftime('%Y-%m', m.created_at, 'localtime')) = ?`
 		args = append(args, month)
 	}
 	query += ` ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC LIMIT ?`
@@ -361,11 +361,11 @@ func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location st
 	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`
 	args := []any{}
 	if from != "" {
-		where += ` AND COALESCE(NULLIF(m.taken_at,''), m.created_at) >= ?`
+		where += ` AND COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')) >= ?`
 		args = append(args, from)
 	}
 	if to != "" {
-		where += ` AND COALESCE(NULLIF(m.taken_at,''), m.created_at) < date(?, '+1 day')`
+		where += ` AND COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')) <= ?`
 		args = append(args, to)
 	}
 	if location != "" {
@@ -373,7 +373,7 @@ func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location st
 		args = append(args, "%"+location+"%")
 	}
 	rows, err := d.QueryContext(ctx, `SELECT m.id,
-			strftime('%Y-%m-%d', COALESCE(NULLIF(m.taken_at,''), m.created_at)),
+			COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')),
 			COALESCE(p.location_name,'')
 		FROM media m JOIN posts p ON p.id = m.post_id`+where+` ORDER BY 2 DESC, m.id`, args...)
 	if err != nil {

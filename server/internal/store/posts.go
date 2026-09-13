@@ -232,14 +232,17 @@ func (d *DB) GetMedia(ctx context.Context, id int64) (*MediaRow, error) {
 
 // ListPostsOnMonthDay 那年今日（get_today_in_history）：历年在今天同月同日创建的动态，
 // yearsBack 限制回看年数上限，按时间倒序。
+// 月/年判定按**部署者本地时区**（库内 created_at 为 UTC，见 timeutil.go 时间口径）。
 func (d *DB) ListPostsOnMonthDay(ctx context.Context, yearsBack int, limit int) ([]*Post, error) {
 	if yearsBack <= 0 {
 		yearsBack = 50
 	}
 	rows, err := d.QueryContext(ctx, `SELECT `+postColumns+`
 		FROM posts p JOIN users u ON u.id = p.author_id
-		WHERE p.deleted_at IS NULL AND strftime('%m-%d', p.created_at) = strftime('%m-%d', 'now')
-		  AND strftime('%Y', p.created_at) < strftime('%Y', 'now') AND p.created_at >= datetime('now', ?)
+		WHERE p.deleted_at IS NULL
+		  AND strftime('%m-%d', p.created_at, 'localtime') = strftime('%m-%d', 'now', 'localtime')
+		  AND strftime('%Y', p.created_at, 'localtime') < strftime('%Y', 'now', 'localtime')
+		  AND p.created_at >= datetime('now', ?)
 		ORDER BY p.created_at DESC LIMIT ?`, fmt.Sprintf("-%d years", yearsBack), limit)
 	if err != nil {
 		return nil, err

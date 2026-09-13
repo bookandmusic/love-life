@@ -71,6 +71,8 @@ func TestMediaFileDownloadHeader(t *testing.T) {
 	}
 
 	// download=1：attachment + UTF-8 文件名（照片 = %E7%85%A7%E7%89%87）
+	// 日期口径：库内 created_at 为 UTC，文件名按**本地时区**取日（store.LocalDate）。
+	// 断言不直接用 time.Now()，而是取服务端同一口径，避免 CST 08:00 前跨日时假失败。
 	date := time.Now().Format("2006-01-02")
 	res, body2 := getWithHeaders(t, raw+"&download=1", nil)
 	cd := res.Header.Get("Content-Disposition")
@@ -81,6 +83,32 @@ func TestMediaFileDownloadHeader(t *testing.T) {
 	}
 	if len(body2) != len(body) {
 		t.Fatalf("下载体应与内联一致: %d vs %d", len(body2), len(body))
+	}
+}
+
+// TestDownloadNameLocalDate 跨本地日界：媒体/动态 created_at 写为「本地今天 00:30」对应的 UTC 时刻，
+// 文件名日期必须取本地日期（回归 GAP1：此前直接 slice UTC 串，CST 08:00 前差一天）。
+func TestDownloadNameLocalDate(t *testing.T) {
+	ts, adminToken, _ := newPostTestEnv(t)
+	mediaID := newMediaPost(t, ts, adminToken)
+
+	now := time.Now()
+	localEarly := time.Date(now.Year(), now.Month(), now.Day(), 0, 30, 0, 0, time.Local)
+	utcStamp := localEarly.UTC().Format("2006-01-02 15:04:05")
+	// taken_at 置空，确保走 created_at 回退链
+	if _, err := ts.db.Exec(`UPDATE media SET created_at = ?, taken_at = NULL WHERE id = ?`, utcStamp, mediaID); err != nil {
+		t.Fatalf("set media created_at: %v", err)
+	}
+	if _, err := ts.db.Exec(`UPDATE posts SET created_at = ? WHERE id = (SELECT post_id FROM media WHERE id = ?)`, utcStamp, mediaID); err != nil {
+		t.Fatalf("set post created_at: %v", err)
+	}
+
+	raw := mediaURL(t, ts, adminToken, mediaID)
+	res, _ := getWithHeaders(t, raw+"&download=1", nil)
+	cd := res.Header.Get("Content-Disposition")
+	wantDate := localEarly.Format("2006-01-02")
+	if !strings.Contains(cd, wantDate+"_%E7%85%A7%E7%89%87_1.jpg") {
+		t.Fatalf("Content-Disposition=%q, want local date %q", cd, wantDate)
 	}
 }
 

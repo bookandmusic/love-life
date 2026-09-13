@@ -272,11 +272,16 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/posts$/, handler: (url, body,
   let sorted = [...posts].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
   // D8 那年今日（REQUIREMENTS:110）：先按同月同日过滤，再分页——否则只能在最新一页里碰运气
   if (q.memories === '1') {
-    // 必须用 UTC 取「今天」：created_at 是 toISOString() 落库的 UTC 串，取本地日期会在
-    // 本地跨零点而 UTC 还在前一天的那段时间里永远 0 命中（口径同 slice(4,10) 与前端展示）
-    const t = new Date()
-    const mmdd = `-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${String(t.getUTCDate()).padStart(2, '0')}`
-    sorted = sorted.filter((p) => (p.created_at || '').slice(4, 10) === mmdd)
+    // 日期口径（与服务端 store/timeutil.go 一致）：created_at 落库为 UTC，但「今天」按**本地时区**判定，
+    // 故把每条的时间戳解析成 Date 后取本地月日，与本地今天的月日比较。
+    const pad = (n) => String(n).padStart(2, '0')
+    const localMMDD = (iso) => {
+      const d = new Date(iso)
+      return Number.isNaN(d.getTime()) ? (iso || '').slice(5, 10) : `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+    }
+    const today = new Date()
+    const todayMMDD = `${pad(today.getMonth() + 1)}-${pad(today.getDate())}`
+    sorted = sorted.filter((p) => localMMDD(p.created_at) === todayMMDD)
   }
   const total = sorted.length
   const pageItems = sorted.slice((page - 1) * pageSize, page * pageSize)
