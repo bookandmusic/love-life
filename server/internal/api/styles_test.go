@@ -24,10 +24,10 @@ func TestStylesCRUD(t *testing.T) {
 	}
 	_ = json.NewDecoder(res.Body).Decode(&appList)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(appList.Items) != 4 || appList.DefaultStyleI != 1 {
+	if res.StatusCode != http.StatusOK || len(appList.Items) != 3 || appList.DefaultStyleI != 1 {
 		t.Fatalf("app styles: %d items=%d default=%d", res.StatusCode, len(appList.Items), appList.DefaultStyleI)
 	}
-	if appList.Items[0]["name"] != "温暖" || appList.Items[0]["builtin"] != true {
+	if appList.Items[0]["name"] != "文艺" || appList.Items[0]["builtin"] != true {
 		t.Fatalf("seed builtin missing: %+v", appList.Items[0])
 	}
 

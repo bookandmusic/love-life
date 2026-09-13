@@ -301,11 +301,12 @@ CREATE TABLE output_styles (
     sort_order INTEGER,
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+-- 内置风格固化（REQUIREMENTS §4.1「文艺 / 幽默 / 简洁」，与 mock fixtures.styles 逐字一致）；
+-- 自然自增即 id 1/2/3，「文艺」= id 1 与下方 default_style_id 对应。
 INSERT INTO output_styles (name, prompt, builtin, sort_order) VALUES
-    ('温暖', '说话温暖贴心，多用鼓励和关心的语气，像伴侣日常聊天一样自然。', 1, 1),
-    ('中性', '语气平和客观，简洁清晰地表达，不刻意煽情。', 1, 2),
-    ('简洁', '回答尽量简短，直给要点，不啰嗦。', 1, 3),
-    ('俏皮', '语气活泼俏皮，可以适当开玩笑，营造轻松氛围。', 1, 4);
+    ('文艺', '语气文艺有文采，善用比喻和意象，像写给彼此的信一样温柔。', 1, 1),
+    ('幽默', '语气幽默活泼，可以适当开玩笑和自嘲，营造轻松氛围。', 1, 2),
+    ('简洁', '回答尽量简短，直给要点，不啰嗦。', 1, 3);
 
 -- 全局单值配置（如 default_style_id）
 CREATE TABLE app_settings (

@@ -171,7 +171,7 @@ func (a *stylesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "风格不存在")
 		return
 	}
-	// 检查顺序对齐 mock：builtin 先于默认（内置「温暖」同时是默认时文案为「内置风格不可删除」）
+	// 检查顺序对齐 mock：builtin 先于默认（内置「文艺」同时是默认时文案为「内置风格不可删除」）
 	s, err := a.db.GetStyle(r.Context(), id)
 	if err != nil {
 		a.writeStyleErr(w, err)

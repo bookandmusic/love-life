@@ -136,8 +136,9 @@ func TestFullSchema(t *testing.T) {
 		t.Fatalf("orphan models = %d err=%v, want 0", orphan, err)
 	}
 	var builtinCount int
-	if err := db.QueryRow("SELECT COUNT(*) FROM output_styles WHERE builtin = 1").Scan(&builtinCount); err != nil || builtinCount != 4 {
-		t.Fatalf("builtin styles = %d err=%v, want 4", builtinCount, err)
+	// 内置 3 条（文艺/幽默/简洁，REQUIREMENTS §4.1 口径）
+	if err := db.QueryRow("SELECT COUNT(*) FROM output_styles WHERE builtin = 1").Scan(&builtinCount); err != nil || builtinCount != 3 {
+		t.Fatalf("builtin styles = %d err=%v, want 3", builtinCount, err)
 	}
 	var defStyle string
 	if err := db.QueryRow("SELECT value FROM app_settings WHERE key = 'default_style_id'").Scan(&defStyle); err != nil || defStyle != "1" {
