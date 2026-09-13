@@ -11,7 +11,8 @@ import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MiniMapPicker from '../components/MiniMapPicker.vue'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
-import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg } from '../utils/deleteCopy'
+import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
+import { useAuth } from '../stores/auth'
 import { latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
 
 // ============ 瓦片引擎（统一实现见 utils/mapTiles.ts：APP 统一请求后端 /api/v1/map/tile，密钥不下发） ============
@@ -32,6 +33,7 @@ interface PointItem {
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuth()
 
 // 视图：地图 / 列表
 const view = ref<'map' | 'list'>('map')
@@ -630,7 +632,7 @@ async function confirmDeletePoint() {
       v-if="deletingPoint"
       v-model:show="showDeletePoint"
       :title="RECYCLE_TITLE"
-      :message="recycleMsg(deletingPoint.name, '动态里的地点名仍保留为快照。')"
+      :message="recycleMsg(deletingPoint.name, '动态里的地点名仍保留为快照。' + peerNotice(auth.user?.id, deletingPoint.created_by))"
       :confirm-text="RECYCLE_CONFIRM"
       :confirm-danger="true"
       @confirm="confirmDeletePoint"

@@ -11,7 +11,8 @@ import AppToast from '../components/AppToast.vue'
 import Sheet from '../components/Sheet.vue'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
-import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg } from '../utils/deleteCopy'
+import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
+import { useAuth } from '../stores/auth'
 import { nextLunarOccurrence, lunarDayText, lunarMonthText, LUNAR_DAYS } from '../utils/lunar'
 import { daysUntilDate, nextSolarDate, ymdOf } from '../utils/dates'
 
@@ -24,10 +25,13 @@ interface Anniv {
   is_leap?: boolean
   remind_days_before: number
   days_until: number
+  // 创建者：用于删除确认里的「对方会收到站内通知」提示
+  created_by?: number
 }
 
 const route = useRoute()
 const router = useRouter()
+const auth = useAuth()
 const items = ref<Anniv[]>([])
 const error = ref('')
 const loading = ref(false)
@@ -387,7 +391,7 @@ onMounted(async () => {
         v-if="deleting"
         v-model:show="showDelete"
         :title="RECYCLE_TITLE"
-        :message="recycleMsg(deleting.name)"
+        :message="recycleMsg(deleting.name, peerNotice(auth.user?.id, deleting.created_by))"
         :confirm-text="RECYCLE_CONFIRM"
         :confirm-danger="true"
         @confirm="confirmRemove"

@@ -32,6 +32,9 @@ const eventIcon: Record<string, { icon: typeof Heart; color: string }> = {
   post_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   comment_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   album_created: { icon: Images, color: 'var(--sem-blue)' },
+  album_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
+  anniversary_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
+  map_point_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   anniversary_reminder: { icon: Cake, color: 'var(--sem-gold)' },
   media_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   map_point_created: { icon: MapPin, color: 'var(--sem-green)' },
@@ -51,6 +54,9 @@ const eventText: Record<string, (s: Record<string, unknown>) => string> = {
   album_created: (s) => (s.monthly ? `月度相册「${s.name}」已生成` : `${s.operator} 创建了相册「${s.name}」`),
   anniversary_reminder: (s) => `纪念日「${s.name}」快到了`,
   media_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了媒体`,
+  album_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了你的相册「${s.name ?? ''}」`,
+  anniversary_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了你的纪念日「${s.name ?? ''}」`,
+  map_point_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了你的足迹「${s.name ?? ''}」`,
   map_point_created: (s) => `${s.operator ?? '对方'} 添加了足迹「${s.name ?? ''}」`,
 }
 
@@ -90,6 +96,8 @@ async function readAll() {
 }
 
 function targetRoute(n: NotifItem): string | null {
+  // 内容删除通知无跳转：内容已不可见（REQUIREMENTS §4.8「内容删除通知无跳转」）
+  if (n.event_type.endsWith('_deleted')) return null
   if (!n.target_type || !n.target_id) return null
   switch (n.target_type) {
     case 'post':
@@ -107,7 +115,9 @@ function targetRoute(n: NotifItem): string | null {
 
 async function open(n: NotifItem) {
   const to = targetRoute(n)
-  if (!to) return
+  const deleted = n.event_type.endsWith('_deleted')
+  // 删除类通知虽无跳转，仍要可点：消红点并提示「内容已删除」（DESIGN §12.3）
+  if (!to && !deleted) return
   if (!n.is_read) {
     try {
       await api(`/api/v1/notifications/${n.id}/read`, { method: 'POST' })
@@ -117,7 +127,11 @@ async function open(n: NotifItem) {
       /* 已读失败静默 */
     }
   }
-  router.push(to)
+  if (to) {
+    router.push(to)
+    return
+  }
+  toast.value = '内容已删除'
 }
 
 onMounted(load)

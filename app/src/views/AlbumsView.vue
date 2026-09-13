@@ -9,7 +9,8 @@ import { groupByMonth } from '../utils/dates'
 import { useViewer } from '../composables/useViewer'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
-import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg } from '../utils/deleteCopy'
+import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
+import { useAuth } from '../stores/auth'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
 import NavActions from '../components/NavActions.vue'
@@ -24,6 +25,8 @@ interface AlbumItem {
   is_hidden: boolean
   item_count: number
   cover_url?: string
+  // 创建者：用于判断删除时是否提示「对方会收到站内通知」（权限不区分，双方都能删）
+  created_by?: number
 }
 
 interface TimelineItem {
@@ -37,6 +40,7 @@ interface TimelineItem {
 
 const router = useRouter()
 const route = useRoute()
+const auth = useAuth()
 const view = ref<'timeline' | 'collection'>('timeline')
 // 全屏媒体查看器（iOS）
 const { viewer, openViewer, closeViewer } = useViewer()
@@ -135,7 +139,7 @@ function onAlbumClick(a: AlbumItem, e: MouseEvent) {
 function albumDeleteMsg(a: AlbumItem) {
   // 空相册没有内容可看，删除后果只有相册本身
   const extra = a.item_count > 0 ? '照片本身不受影响（回到未归属状态）。' : ''
-  return recycleMsg(a.name, extra)
+  return recycleMsg(a.name, extra + peerNotice(auth.user?.id, a.created_by))
 }
 async function confirmDeleteAlbum() {
   if (!deletingAlbum.value) return
