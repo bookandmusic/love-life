@@ -55,9 +55,10 @@ func TestFullSchema(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM media WHERE file_path = 'a/3.mp3'`).Scan(&mediaID); err != nil {
 		t.Fatal(err)
 	}
+	// 手动相册记创建者；月度相册由系统生成，created_by 留 NULL（可空约束）
 	albumSeed := []string{
-		`INSERT INTO albums (type, name) VALUES ('manual', '甲')`,
-		`INSERT INTO albums (type, name) VALUES ('manual', '乙')`,
+		`INSERT INTO albums (type, name, created_by) VALUES ('manual', '甲', 1)`,
+		`INSERT INTO albums (type, name, created_by) VALUES ('manual', '乙', 1)`,
 		`INSERT INTO albums (type, name, month_key) VALUES ('monthly', '2026-08', '2026-08')`,
 	}
 	for _, s := range albumSeed {
@@ -72,12 +73,21 @@ func TestFullSchema(t *testing.T) {
 		t.Fatal("duplicate media ownership must violate UNIQUE(media_id)")
 	}
 
-	// 不变式 3：anniversaries.type（012 收敛）
-	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type) VALUES ('生日', '1996-05-15', 'lunar')`); err != nil {
+	// 不变式 3：anniversaries.type（012 收敛）+ created_by 非空
+	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type, created_by) VALUES ('生日', '1996-05-15', 'lunar', 1)`); err != nil {
 		t.Fatalf("lunar type must be accepted: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type) VALUES ('周年', '2020-01-01', 'foo')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type, created_by) VALUES ('周年', '2020-01-01', 'foo', 1)`); err == nil {
 		t.Fatal("invalid anniversary type must be rejected")
+	}
+	// 纪念日 created_by 非空：缺列必须被拒（月相册不同，见上）
+	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type) VALUES ('无主', '2020-02-02', 'solar')`); err == nil {
+		t.Fatal("anniversaries.created_by must be NOT NULL")
+	}
+	// albums.created_by 可空：月度相册已在上方以 NULL 写入成功，此处再显式确认一次
+	var mNull int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM albums WHERE type = 'monthly' AND created_by IS NULL`).Scan(&mNull); err != nil || mNull != 1 {
+		t.Fatalf("monthly album created_by must be nullable: n=%d err=%v", mNull, err)
 	}
 
 	// 不变式 4：chat_messages.media（013 收敛）

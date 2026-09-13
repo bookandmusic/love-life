@@ -101,6 +101,9 @@ CREATE TABLE albums (
     is_hidden      INTEGER NOT NULL DEFAULT 0,
     cover_media_id INTEGER,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- 创建者：手动相册为真实用户；月度相册由系统生成、无创建者，故可空
+    -- （不可加 NOT NULL，否则每月 1 号的 checkMonthlyAlbum 会失败）
+    created_by     INTEGER REFERENCES users(id),
     deleted_at     TEXT,
     deleted_by      INTEGER REFERENCES users(id),
     deleted_by_type TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
@@ -141,6 +144,8 @@ CREATE TABLE anniversaries (
     type               TEXT    NOT NULL DEFAULT 'solar' CHECK (type IN ('solar', 'lunar')),
     remind_days_before INTEGER NOT NULL DEFAULT 1,
     created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    -- 创建者：纪念日无系统生成路径，恒为用户创建
+    created_by         INTEGER NOT NULL REFERENCES users(id),
     deleted_at         TEXT,
     deleted_by         INTEGER REFERENCES users(id),
     deleted_by_type    TEXT    CHECK (deleted_by_type IN ('user', 'ai'))

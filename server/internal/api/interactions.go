@@ -164,15 +164,16 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
-	// 双方可删任意内容；删对方的评论 → 通知评论作者（自删静默）
-	if c.AuthorID != claims.UserID {
-		snapshot, _ := json.Marshal(map[string]any{"content": textutil.TruncMark(c.Content, 50), "deleted_by": claims.Username})
-		_ = a.db.InsertNotification(r.Context(), c.AuthorID, "comment_deleted", "comment", id, string(snapshot))
-	}
 	if err := a.db.SoftDeleteComment(r.Context(), id, "user", claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
+	// 双方可删任意内容；删对方的评论 → 通知评论作者，自删静默
+	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
+		CreatorID: c.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
+		EventType: "comment_deleted", TargetType: "comment", TargetID: id,
+		Extra: map[string]any{"content": textutil.TruncMark(c.Content, 50)},
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -308,17 +308,16 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
-	// 双方可删任意内容（需求 §7.1）；删对方发布的内容 → 站内通知（自删静默）
-	if p.AuthorID != claims.UserID {
-		snapshot, _ := json.Marshal(map[string]any{
-			"title": p.Title.String, "content": textutil.TruncMark(p.Content, 50), "deleted_by": claims.Username,
-		})
-		_ = a.db.InsertNotification(r.Context(), p.AuthorID, "post_deleted", "post", id, string(snapshot))
-	}
 	if err := a.db.SoftDeletePost(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
+	// 双方可删任意内容（需求 §7.1）；删对方发布的内容 → 站内通知，自删静默
+	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
+		CreatorID: p.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
+		EventType: "post_deleted", TargetType: "post", TargetID: id,
+		Extra: map[string]any{"title": p.Title.String, "content": textutil.TruncMark(p.Content, 50)},
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

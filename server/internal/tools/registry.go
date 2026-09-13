@@ -295,20 +295,15 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				// 通知口径对齐 REST DELETE /posts/{id}：删对方内容 → 站内通知作者（自删静默，无外推）
-				if p.AuthorID != userID {
-					operator, err := d.DB.GetUserByID(ctx, userID)
-					if err != nil {
-						return nil, err
-					}
-					snapshot, _ := json.Marshal(map[string]any{
-						"title": p.Title.String, "content": textutil.Trunc(p.Content, 50), "deleted_by": operator.Username,
-					})
-					_ = d.DB.InsertNotification(ctx, p.AuthorID, "post_deleted", "post", postID, string(snapshot))
-				}
 				if err := d.DB.SoftDeletePost(ctx, postID, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
+				// 通知口径对齐 REST DELETE /posts/{id}：删对方内容 → 站内通知作者（自删静默，无外推）
+				_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+					CreatorID: p.AuthorID, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+					EventType: "post_deleted", TargetType: "post", TargetID: postID,
+					Extra: map[string]any{"title": p.Title.String, "content": textutil.Trunc(p.Content, 50)},
+				})
 				d.audit(ctx, userID, "delete_post", textutil.Trunc(p.Content, 50), "deleted")
 				return &ExecResult{Content: "动态已删除（进回收站）", Data: map[string]any{"post_id": postID}}, nil
 			},
@@ -668,6 +663,14 @@ func Registry() []*Tool {
 				if err := d.DB.SoftDeleteAlbum(ctx, albumID, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
+				// AI 代删对方创建的内容 → 站内通知创建者（自删静默；内容删除仅站内，不带 via，与 delete_post 同口径）
+				if al.CreatedBy.Valid {
+					_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+						CreatorID: al.CreatedBy.Int64, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+						EventType: "album_deleted", TargetType: "album", TargetID: albumID,
+						Extra: map[string]any{"name": al.Name},
+					})
+				}
 				return &ExecResult{Content: fmt.Sprintf("相册「%s」已删除（进回收站）", al.Name), Data: map[string]any{"album_id": albumID}}, nil
 			},
 		},
@@ -801,18 +804,15 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
-				// 通知口径对齐 REST DELETE /comments/{id}：删对方评论 → 通知评论作者（自删静默）
-				if c.AuthorID != userID {
-					operator, err := d.DB.GetUserByID(ctx, userID)
-					if err != nil {
-						return nil, err
-					}
-					snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(c.Content, 50), "deleted_by": operator.Username})
-					_ = d.DB.InsertNotification(ctx, c.AuthorID, "comment_deleted", "comment", id, string(snapshot))
-				}
 				if err := d.DB.SoftDeleteComment(ctx, id, "ai", userID); err != nil {
 					return nil, err
 				}
+				// 通知口径对齐 REST DELETE /comments/{id}：删对方评论 → 通知评论作者（自删静默）
+				_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+					CreatorID: c.AuthorID, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+					EventType: "comment_deleted", TargetType: "comment", TargetID: id,
+					Extra: map[string]any{"content": textutil.Trunc(c.Content, 50)},
+				})
 				d.audit(ctx, userID, "delete_comment", textutil.Trunc(c.Content, 50), "deleted")
 				return &ExecResult{Content: "评论已删除（进回收站）", Data: map[string]any{"comment_id": id}}, nil
 			},
@@ -934,6 +934,12 @@ func Registry() []*Tool {
 				if err := d.DB.SoftDeletePoint(ctx, pointID, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
+				// AI 代删对方创建的内容 → 站内通知创建者（自删静默；内容删除仅站内，不带 via，与 delete_post 同口径）
+				_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+					CreatorID: p.CreatedBy, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+					EventType: "map_point_deleted", TargetType: "map_point", TargetID: pointID,
+					Extra: map[string]any{"name": p.Name},
+				})
 				return &ExecResult{Content: fmt.Sprintf("已删除地图点位「%s」", p.Name), Data: map[string]any{"point_id": pointID}}, nil
 			},
 		},
@@ -1075,7 +1081,7 @@ func Registry() []*Tool {
 				if remind < 0 || remind > 90 {
 					remind = 1
 				}
-				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, remind)
+				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, remind, userID)
 				if err != nil {
 					return nil, err
 				}
@@ -1107,6 +1113,12 @@ func Registry() []*Tool {
 				if err := d.DB.SoftDeleteAnniversary(ctx, id, store.ActorTypeAI, userID); err != nil {
 					return nil, err
 				}
+				// AI 代删对方创建的内容 → 站内通知创建者（自删静默；内容删除仅站内，不带 via，与 delete_post 同口径）
+				_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+					CreatorID: a.CreatedBy, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+					EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
+					Extra: map[string]any{"name": a.Name},
+				})
 				d.audit(ctx, userID, "delete_anniversary", a.Name, "deleted")
 				return &ExecResult{Content: fmt.Sprintf("纪念日「%s」已删除（进回收站）", a.Name), Data: map[string]any{"anniversary_id": id}}, nil
 			},

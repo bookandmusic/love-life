@@ -9,21 +9,24 @@ import (
 )
 
 type Album struct {
-	ID           int64
-	Type         string
-	Name         string
-	Description  sql.NullString
-	MonthKey     sql.NullString
-	IsHidden     bool
-	CreatedAt    string
+	ID          int64
+	Type        string
+	Name        string
+	Description sql.NullString
+	MonthKey    sql.NullString
+	IsHidden    bool
+	CreatedAt   string
+	// CreatedBy：创建者 ID。月度相册由系统生成、无创建者，故用 NullInt64
+	// （若用 int64，月度相册读出来会是 0，与真实用户 ID 无法区分）。
+	CreatedBy    sql.NullInt64
 	ItemCount    int
 	CoverMediaID sql.NullInt64
 }
 
 func (d *DB) CreateAlbum(ctx context.Context, typ, name, description, monthKey string, createdBy int64) (int64, error) {
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO albums (type, name, description, month_key) VALUES (?, ?, ?, ?)`,
-		typ, name, description, monthKey)
+		`INSERT INTO albums (type, name, description, month_key, created_by) VALUES (?, ?, ?, ?, ?)`,
+		typ, name, description, monthKey, createdBy)
 	if err != nil {
 		return 0, err
 	}
@@ -31,7 +34,7 @@ func (d *DB) CreateAlbum(ctx context.Context, typ, name, description, monthKey s
 }
 
 func (d *DB) ListAlbums(ctx context.Context, includeHidden bool) ([]*Album, error) {
-	query := `SELECT a.id, a.type, a.name, a.description, a.month_key, a.is_hidden, a.created_at,
+	query := `SELECT a.id, a.type, a.name, a.description, a.month_key, a.is_hidden, a.created_at, a.created_by,
 			CASE WHEN a.type = 'monthly' THEN
 				-- 月度相册虚拟口径（D4）：该月未归属手动相册的媒体数
 				(SELECT COUNT(*) FROM media m2 JOIN posts p2 ON p2.id = m2.post_id
@@ -57,7 +60,7 @@ func (d *DB) ListAlbums(ctx context.Context, includeHidden bool) ([]*Album, erro
 	for rows.Next() {
 		var a Album
 		var hidden int
-		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.ItemCount, &a.CoverMediaID); err != nil {
+		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.CreatedBy, &a.ItemCount, &a.CoverMediaID); err != nil {
 			return nil, err
 		}
 		a.IsHidden = hidden == 1
@@ -67,11 +70,11 @@ func (d *DB) ListAlbums(ctx context.Context, includeHidden bool) ([]*Album, erro
 }
 
 func (d *DB) GetAlbum(ctx context.Context, id int64) (*Album, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, type, name, description, month_key, is_hidden, created_at, 0, cover_media_id
+	row := d.QueryRowContext(ctx, `SELECT id, type, name, description, month_key, is_hidden, created_at, created_by, 0, cover_media_id
 		FROM albums WHERE id = ? AND deleted_at IS NULL`, id)
 	var a Album
 	var hidden int
-	err := row.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.ItemCount, &a.CoverMediaID)
+	err := row.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.CreatedBy, &a.ItemCount, &a.CoverMediaID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}

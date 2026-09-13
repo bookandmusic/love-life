@@ -28,12 +28,16 @@ type albumResponse struct {
 	IsHidden    bool   `json:"is_hidden"`
 	ItemCount   int    `json:"item_count"`
 	CoverURL    string `json:"cover_url,omitempty"`
+	// CreatedBy 供 APP 判断「删的是不是对方创建的」（决定是否提示会通知对方）；
+	// 用户 ID 从 1 起，0 表示月度相册（无创建者）→ omitempty 省略该字段。
+	CreatedBy int64 `json:"created_by,omitempty"`
 }
 
 func (a *albumsAPI) toResponse(ctx context.Context, al *store.Album) albumResponse {
 	resp := albumResponse{
 		ID: al.ID, Type: al.Type, Name: al.Name, Description: al.Description.String,
 		MonthKey: al.MonthKey.String, IsHidden: al.IsHidden, ItemCount: al.ItemCount,
+		CreatedBy: al.CreatedBy.Int64, // Valid=false（月度相册）时为 0 → omitempty 省略
 	}
 	if al.CoverMediaID.Valid {
 		resp.CoverURL = a.mp.SignedURL(al.CoverMediaID.Int64, "thumb")
@@ -58,6 +62,7 @@ func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
 	var req struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
@@ -66,14 +71,13 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "相册名称不能为空")
 		return
 	}
-	id, err := a.db.CreateAlbum(r.Context(), "manual", req.Name, req.Description, "", 0)
+	id, err := a.db.CreateAlbum(r.Context(), "manual", req.Name, req.Description, "", claims.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
 
 	// 相册上新：站内通知另一方（自建静默，admin 不在情侣里）+ 按订阅外推（需求 §4.8）
-	claims, _ := auth.UserFromContext(r.Context())
 	snapshot, _ := json.Marshal(map[string]any{"name": req.Name, "operator": claims.Username})
 	ids, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
 	a.dp.Dispatch(r.Context(), ids, "album_created", "album", id, string(snapshot),
@@ -190,6 +194,15 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.SoftDeleteAlbum(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
+	}
+	// 删除对方创建的手动相册 → 站内通知创建者（自删静默）。内容删除仅站内，
+	// 不走 dp.Dispatch（那会触发外部 Webhook 推送，REQUIREMENTS §4.8）。
+	if al.CreatedBy.Valid {
+		_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
+			CreatorID: al.CreatedBy.Int64, DeleterID: claims.UserID, DeleterName: claims.Username,
+			EventType: "album_deleted", TargetType: "album", TargetID: id,
+			Extra: map[string]any{"name": al.Name},
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

@@ -16,12 +16,13 @@ type Anniversary struct {
 	Type             string // solar | lunar
 	RemindDaysBefore int
 	CreatedAt        string
+	CreatedBy        int64
 }
 
-func (d *DB) CreateAnniversary(ctx context.Context, name, date, annivType string, remindDaysBefore int) (int64, error) {
+func (d *DB) CreateAnniversary(ctx context.Context, name, date, annivType string, remindDaysBefore int, createdBy int64) (int64, error) {
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO anniversaries (name, date, type, remind_days_before) VALUES (?, ?, ?, ?)`,
-		name, date, annivType, remindDaysBefore)
+		`INSERT INTO anniversaries (name, date, type, remind_days_before, created_by) VALUES (?, ?, ?, ?, ?)`,
+		name, date, annivType, remindDaysBefore, createdBy)
 	if err != nil {
 		return 0, err
 	}
@@ -30,10 +31,10 @@ func (d *DB) CreateAnniversary(ctx context.Context, name, date, annivType string
 
 // GetAnniversary 单个纪念日（删除/提醒配置前校验用）；不存在或已删返回 ErrNotFound。
 func (d *DB) GetAnniversary(ctx context.Context, id int64) (*Anniversary, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, name, date, type, remind_days_before, created_at
+	row := d.QueryRowContext(ctx, `SELECT id, name, date, type, remind_days_before, created_at, created_by
 		FROM anniversaries WHERE id = ? AND deleted_at IS NULL`, id)
 	var a Anniversary
-	if err := row.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &a.RemindDaysBefore, &a.CreatedAt); err != nil {
+	if err := row.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &a.RemindDaysBefore, &a.CreatedAt, &a.CreatedBy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -43,7 +44,7 @@ func (d *DB) GetAnniversary(ctx context.Context, id int64) (*Anniversary, error)
 }
 
 func (d *DB) ListAnniversaries(ctx context.Context) ([]*Anniversary, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, name, date, type, remind_days_before, created_at
+	rows, err := d.QueryContext(ctx, `SELECT id, name, date, type, remind_days_before, created_at, created_by
 		FROM anniversaries WHERE deleted_at IS NULL ORDER BY date`)
 	if err != nil {
 		return nil, err
@@ -52,7 +53,7 @@ func (d *DB) ListAnniversaries(ctx context.Context) ([]*Anniversary, error) {
 	var list []*Anniversary
 	for rows.Next() {
 		var a Anniversary
-		if err := rows.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &a.RemindDaysBefore, &a.CreatedAt); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &a.RemindDaysBefore, &a.CreatedAt, &a.CreatedBy); err != nil {
 			return nil, err
 		}
 		list = append(list, &a)

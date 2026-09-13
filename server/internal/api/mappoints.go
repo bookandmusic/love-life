@@ -104,6 +104,16 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效 ID")
 		return
 	}
+	// 先取行：删除后拿不到名称与创建者（也用于把 404 判定提前）
+	p, err := a.db.GetPoint(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "点位不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "服务器错误")
+		return
+	}
 	err = a.db.SoftDeletePoint(r.Context(), id, store.ActorTypeUser, claims.UserID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "点位不存在")
@@ -113,6 +123,12 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
+	// 删除对方创建的足迹 → 站内通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
+		CreatorID: p.CreatedBy, DeleterID: claims.UserID, DeleterName: claims.Username,
+		EventType: "map_point_deleted", TargetType: "map_point", TargetID: id,
+		Extra: map[string]any{"name": p.Name},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -18,6 +18,7 @@ type anniversariesAPI struct {
 }
 
 func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
 	var req struct {
 		Name string `json:"name"`
 		Date string `json:"date"`
@@ -53,7 +54,7 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	if remindDays < 0 || remindDays > 90 {
 		remindDays = 1
 	}
-	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, remindDays)
+	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, remindDays, claims.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
@@ -75,6 +76,7 @@ func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
 		Type       string `json:"type"`
 		RemindDays int    `json:"remind_days_before"`
 		DaysUntil  int    `json:"days_until"`
+		CreatedBy  int64  `json:"created_by"`
 	}
 	items := make([]item, 0, len(list))
 	for _, ann := range list {
@@ -82,7 +84,7 @@ func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
 		if t != "lunar" {
 			t = "solar" // 与 mock 一致：非 lunar 一律输出 solar
 		}
-		items = append(items, item{ID: ann.ID, Name: ann.Name, Date: ann.Date, Type: t, RemindDays: ann.RemindDaysBefore, DaysUntil: ann.DaysUntil(now)})
+		items = append(items, item{ID: ann.ID, Name: ann.Name, Date: ann.Date, Type: t, RemindDays: ann.RemindDaysBefore, DaysUntil: ann.DaysUntil(now), CreatedBy: ann.CreatedBy})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -118,6 +120,16 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效 ID")
 		return
 	}
+	// 先取行：删除后拿不到名称与创建者（也用于把 404 判定提前）
+	ann, err := a.db.GetAnniversary(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "纪念日不存在")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "服务器错误")
+		return
+	}
 	if err := a.db.SoftDeleteAnniversary(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "纪念日不存在")
@@ -126,6 +138,12 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "服务器错误")
 		return
 	}
+	// 删除对方创建的纪念日 → 站内通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
+		CreatorID: ann.CreatedBy, DeleterID: claims.UserID, DeleterName: claims.Username,
+		EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
+		Extra: map[string]any{"name": ann.Name},
+	})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

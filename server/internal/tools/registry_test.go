@@ -113,10 +113,10 @@ func TestNextAnniversaryTool(t *testing.T) {
 	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
 	now := time.Now()
-	if _, err := db.CreateAnniversary(ctx, "生日", now.AddDate(0, 0, 10).Format("2006-01-02"), "solar", 1); err != nil {
+	if _, err := db.CreateAnniversary(ctx, "生日", now.AddDate(0, 0, 10).Format("2006-01-02"), "solar", 1, 1); err != nil {
 		t.Fatalf("create a1: %v", err)
 	}
-	if _, err := db.CreateAnniversary(ctx, "领证", now.AddDate(0, 0, 3).Format("2006-01-02"), "solar", 1); err != nil {
+	if _, err := db.CreateAnniversary(ctx, "领证", now.AddDate(0, 0, 3).Format("2006-01-02"), "solar", 1, 1); err != nil {
 		t.Fatalf("create a2: %v", err)
 	}
 	res, err := findTool(t, "get_next_anniversary").Exec(ctx, d, 1, map[string]any{})
@@ -165,6 +165,78 @@ func anniversaryRemindDays(t *testing.T, db *store.DB, id int64) int {
 		t.Fatal(err)
 	}
 	return days
+}
+
+// GAP2（AI 通道）：AI 代删对方创建的内容 → 站内通知创建者；自删静默。覆盖相册/纪念日/足迹三类。
+func TestAIDeleteNotifiesCreator(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
+		t.Fatalf("create boy: %v", err)
+	}
+	notif := func(eventType string, targetID int64) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE recipient_id = 1 AND event_type = ? AND target_id = ?`, eventType, targetID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	// 相册：user1 建 → user2 代删 → user1 收到
+	albumID, err := db.CreateAlbum(ctx, "manual", "AI删相册", "", "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findTool(t, "delete_album").Exec(ctx, d, 2, map[string]any{"album_id": float64(albumID)}); err != nil {
+		t.Fatalf("ai delete album: %v", err)
+	}
+	if n := notif("album_deleted", albumID); n != 1 {
+		t.Fatalf("AI 代删对方相册应通知创建者 1 条，got %d", n)
+	}
+
+	// 纪念日：user1 建 → user2 代删 → user1 收到
+	annID, err := db.CreateAnniversary(ctx, "AI删纪念日", "2020-06-06", "solar", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findTool(t, "delete_anniversary").Exec(ctx, d, 2, map[string]any{"anniversary_id": float64(annID)}); err != nil {
+		t.Fatalf("ai delete anniversary: %v", err)
+	}
+	if n := notif("anniversary_deleted", annID); n != 1 {
+		t.Fatalf("AI 代删对方纪念日应通知创建者 1 条，got %d", n)
+	}
+
+	// 足迹：user1 建 → user2 代删 → user1 收到
+	res, err := findTool(t, "create_map_point").Exec(ctx, d, 1, map[string]any{"name": "AI删足迹", "latitude": 30.1, "longitude": 120.1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointID := res.Data.(map[string]any)["point_id"].(int64)
+	if _, err := findTool(t, "delete_map_point").Exec(ctx, d, 2, map[string]any{"point_id": float64(pointID)}); err != nil {
+		t.Fatalf("ai delete point: %v", err)
+	}
+	if n := notif("map_point_deleted", pointID); n != 1 {
+		t.Fatalf("AI 代删对方足迹应通知创建者 1 条，got %d", n)
+	}
+
+	// 自删静默：user2 建相册 → user2 自己删
+	selfAlbum, err := db.CreateAlbum(ctx, "manual", "AI自删相册", "", "", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findTool(t, "delete_album").Exec(ctx, d, 2, map[string]any{"album_id": float64(selfAlbum)}); err != nil {
+		t.Fatalf("ai self delete album: %v", err)
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type = 'album_deleted' AND target_id = ?`, selfAlbum).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("AI 自删应静默，got %d", n)
+	}
 }
 
 // AppOnly 铁律：五个删除类工具必须全部标注 AppOnly（DESIGN §8.3 不对令牌开放）。
