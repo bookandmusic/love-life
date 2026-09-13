@@ -48,8 +48,17 @@ type Deps struct {
 	DP *notify.Dispatcher
 }
 
-func (d *Deps) audit(ctx context.Context, userID int64, tool, digest, result string) {
-	_ = d.DB.InsertAuditLog(ctx, store.ActorTypeAI, userID, tool, digest, result)
+// 审计 result 口径（对齐 mock 契约 fixtures.mjs audit：仅 success / failed 两态）。
+// 业务摘要（total=N 等）与工具输出不入 result——后台按 result == success 等值判定成败。
+// 仅由调用方（chat AI 通道 / mcp PAT 通道）记账，工具 Exec 内部不写审计，避免一次调用落两条。
+const (
+	AuditSuccess = "success"
+	AuditFailed  = "failed"
+)
+
+// AuditFailure 组装失败态 result（failed: 原因），供各通道统一使用。
+func AuditFailure(err error) string {
+	return AuditFailed + ": " + err.Error()
 }
 
 // AuditWithLatency 工具审计带 latency 版本（L5 AI 调用统计需求）。
@@ -269,7 +278,6 @@ func Registry() []*Tool {
 				if hits == nil {
 					hits = []postHit{}
 				}
-				d.audit(ctx, userID, "search_posts", str(args, "query"), "ok")
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -304,7 +312,6 @@ func Registry() []*Tool {
 					EventType: "post_deleted", TargetType: "post", TargetID: postID,
 					Extra: map[string]any{"title": p.Title.String, "content": textutil.Trunc(p.Content, 50)},
 				})
-				d.audit(ctx, userID, "delete_post", textutil.Trunc(p.Content, 50), "deleted")
 				return &ExecResult{Content: "动态已删除（进回收站）", Data: map[string]any{"post_id": postID}}, nil
 			},
 		},
@@ -333,7 +340,6 @@ func Registry() []*Tool {
 					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
-				d.audit(ctx, userID, "get_today_in_history", fmt.Sprintf("years_back=%d", yearsBack), "ok")
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -350,7 +356,6 @@ func Registry() []*Tool {
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM albums WHERE deleted_at IS NULL AND is_hidden=0`).Scan(&albums)
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM anniversaries WHERE deleted_at IS NULL`).Scan(&anniversaries)
 				summary := map[string]int64{"posts": posts, "albums": albums, "anniversaries": anniversaries}
-				d.audit(ctx, userID, "get_space_summary", "", "ok")
 				b, _ := json.Marshal(summary)
 				return &ExecResult{Content: string(b), Data: summary}, nil
 			},
@@ -382,8 +387,6 @@ func Registry() []*Tool {
 				if counts == nil {
 					counts = []store.PeriodCount{}
 				}
-				d.audit(ctx, userID, "get_timeline_summary",
-					fmt.Sprintf("year=%s month=%s", year, month), "ok")
 				b, _ := json.Marshal(counts)
 				return &ExecResult{Content: string(b), Data: counts}, nil
 			},
@@ -571,8 +574,6 @@ func Registry() []*Tool {
 					groups[i].MediaIDs = append(groups[i].MediaIDs, c.MediaID)
 					groups[i].Count++
 				}
-				d.audit(ctx, userID, "suggest_photo_grouping",
-					fmt.Sprintf("from=%s to=%s location=%s", from, to, location), fmt.Sprintf("groups=%d", len(groups)))
 				b, _ := json.Marshal(groups)
 				return &ExecResult{Content: string(b), Data: groups}, nil
 			},
@@ -631,7 +632,6 @@ func Registry() []*Tool {
 					hi = total
 				}
 				out := pagedOut(items[lo:hi], total, page, size)
-				d.audit(ctx, userID, "list_albums", fmt.Sprintf("view=%s page=%d", viewType, page), fmt.Sprintf("total=%d", total))
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -737,7 +737,6 @@ func Registry() []*Tool {
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
 				out := pagedOut(hits, total, page, size)
-				d.audit(ctx, userID, "list_favorites", fmt.Sprintf("page=%d", page), fmt.Sprintf("total=%d", total))
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -779,7 +778,6 @@ func Registry() []*Tool {
 				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username})
 				d.notifyPartners(ctx, userID, "post_commented", "post", postID, string(snapshot),
 					"收到评论", operator.Username+"："+textutil.Trunc(content, 50))
-				d.audit(ctx, userID, "create_comment", textutil.Trunc(content, 50), fmt.Sprintf("comment=%d", commentID))
 				return &ExecResult{Content: "评论已发表", Data: map[string]any{"comment_id": commentID}}, nil
 			},
 		},
@@ -813,7 +811,6 @@ func Registry() []*Tool {
 					EventType: "comment_deleted", TargetType: "comment", TargetID: id,
 					Extra: map[string]any{"content": textutil.Trunc(c.Content, 50)},
 				})
-				d.audit(ctx, userID, "delete_comment", textutil.Trunc(c.Content, 50), "deleted")
 				return &ExecResult{Content: "评论已删除（进回收站）", Data: map[string]any{"comment_id": id}}, nil
 			},
 		},
@@ -848,7 +845,6 @@ func Registry() []*Tool {
 					})
 				}
 				out := pagedOut(items, total, page, size)
-				d.audit(ctx, userID, "list_comments", fmt.Sprintf("post=%d page=%d", postID, page), fmt.Sprintf("total=%d", total))
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -969,7 +965,6 @@ func Registry() []*Tool {
 						"city": p.City, "visit_date": p.VisitDate.String, "description": p.Description,
 					})
 				}
-				d.audit(ctx, userID, "search_locations", query, fmt.Sprintf("hits=%d", len(out)))
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -986,11 +981,10 @@ func Registry() []*Tool {
 			}, "required": []string{"location_id"}},
 			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
 				pointID := num(args, "location_id")
-				point, err := d.DB.GetPoint(ctx, pointID)
-				if errors.Is(err, store.ErrNotFound) {
-					return nil, fmt.Errorf("点位不存在")
-				}
-				if err != nil {
+				if _, err := d.DB.GetPoint(ctx, pointID); err != nil {
+					if errors.Is(err, store.ErrNotFound) {
+						return nil, fmt.Errorf("点位不存在")
+					}
 					return nil, err
 				}
 				posts, err := d.DB.ListPostsByPoint(ctx, pointID, 20)
@@ -1002,7 +996,6 @@ func Registry() []*Tool {
 					hits = append(hits, postHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
-				d.audit(ctx, userID, "get_location_posts", fmt.Sprintf("point=%d name=%s", pointID, point.Name), fmt.Sprintf("hits=%d", len(hits)))
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -1026,7 +1019,6 @@ func Registry() []*Tool {
 						best = a
 					}
 				}
-				d.audit(ctx, userID, "get_next_anniversary", "", fmt.Sprintf("count=%d", len(list)))
 				if best == nil {
 					return &ExecResult{Content: "当前还没有纪念日", Data: nil}, nil
 				}
@@ -1119,7 +1111,6 @@ func Registry() []*Tool {
 					EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
 					Extra: map[string]any{"name": a.Name},
 				})
-				d.audit(ctx, userID, "delete_anniversary", a.Name, "deleted")
 				return &ExecResult{Content: fmt.Sprintf("纪念日「%s」已删除（进回收站）", a.Name), Data: map[string]any{"anniversary_id": id}}, nil
 			},
 		},

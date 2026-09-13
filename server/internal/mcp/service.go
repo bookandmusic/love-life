@@ -188,7 +188,7 @@ func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequ
 	elapsed := nowMillis() - started
 
 	if err != nil {
-		_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), string(digest), "failed: "+err.Error(), &elapsed)
+		_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), string(digest), tools.AuditFailure(err), &elapsed)
 		s.writeResult(w, req.ID, map[string]any{
 			"content": []map[string]any{{"type": "text", "text": "调用失败: " + err.Error()}},
 			"isError": true,
@@ -196,7 +196,7 @@ func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequ
 		return
 	}
 
-	_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), string(digest), "success", &elapsed)
+	_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), string(digest), tools.AuditSuccess, &elapsed)
 	s.writeResult(w, req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": out.Content}},
 	})

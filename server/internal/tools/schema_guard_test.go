@@ -83,10 +83,11 @@ func TestToolCategoriesValid(t *testing.T) {
 	}
 }
 
-// TestWriteToolsHaveConfirmFlow 验证写工具不包含内部审计（应由 chat confirm 统一处理）
+// TestWriteToolsHaveConfirmFlow 验证写工具不包含内部审计（应由调用方统一处理）
 func TestWriteToolsHaveNoInternalAudit(t *testing.T) {
-	// 这是一个文档测试：写工具的审计应该在 chat/service.go Confirm() 中统一处理
-	// 不应该在工具 Exec 内部调用 d.audit()
+	// 这是一个文档测试：审计一律由调用方记账——写工具走 chat/service.go Confirm()，
+	// 读工具走 runToolCall / mcp service。工具 Exec 内部不得调用审计：
+	// 内部自记会导致一次调用落两条，且硬编码 actor_type=ai 会把 PAT 调用错误归因。
 
 	writeTools := []string{}
 	for _, tool := range Registry() {
@@ -103,9 +104,10 @@ func TestWriteToolsHaveNoInternalAudit(t *testing.T) {
 	t.Logf("写工具列表（应在 chat confirm 流程中审计）: %v", writeTools)
 }
 
-// TestReadToolsHaveAudit 验证读工具包含内部审计
+// TestReadToolsHaveAudit 验证读工具的审计归属（由调用方记账，非 Exec 内部）
 func TestReadToolsHaveAudit(t *testing.T) {
-	// 读工具应该在 Exec 内部调用 d.audit()，因为它们立即执行
+	// 读工具同样不在 Exec 内部审计：调用方 runToolCall / mcp service 统一记账，
+	// 一次调用只落一条。
 
 	readTools := []string{}
 	for _, tool := range Registry() {
@@ -119,7 +121,7 @@ func TestReadToolsHaveAudit(t *testing.T) {
 	}
 
 	// 这个测试只是文档性质的，实际的审计检查需要代码审查
-	t.Logf("读工具列表（应在 Exec 内部审计）: %v", readTools)
+	t.Logf("读工具列表（审计由调用方统一记账）: %v", readTools)
 }
 
 // Example_toolContract 演示如何添加新工具时避免契约漂移

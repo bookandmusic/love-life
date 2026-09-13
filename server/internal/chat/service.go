@@ -369,11 +369,15 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 		startAt := time.Now()
 		out, err := tool.Exec(ctx, s.deps, userID, args)
 		latencyMs := time.Since(startAt).Milliseconds()
+		digest := string(call.Function.Arguments)
 		if err != nil {
+			// 读工具失败同样落审计（failed: 原因），与 confirm / PAT 通道口径一致；
+			// 否则「所有工具调用均记审计」在这条路径留空档。
+			s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, tools.AuditFailure(err), latencyMs)
 			return "", nil, err
 		}
-		digest := string(call.Function.Arguments)
-		s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, out.Content, latencyMs)
+		// result 仅记状态（success/failed，对齐 mock 契约与后台等值判定）；工具输出不回写审计
+		s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, tools.AuditSuccess, latencyMs)
 		return out.Content, nil, nil
 	}
 	// 写工具 → 确认卡片（15 分钟 TTL，单次有效）
@@ -448,11 +452,12 @@ func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
 	out, err := tool.Exec(r.Context(), s.deps, claims.UserID, args)
 	latencyMs := time.Since(startAt).Milliseconds()
 	if err != nil {
-		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, "failed: "+err.Error(), latencyMs)
+		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON,
+			tools.AuditFailure(err), latencyMs)
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": err.Error()})
 		return
 	}
-	s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, out.Content, latencyMs)
+	s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, tools.AuditSuccess, latencyMs)
 	msg := out.Content
 	if msgID, err := s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "tool_result", Content: msg, CardID: sql.NullInt64{Int64: req.ActionID, Valid: req.ActionID > 0}}); err == nil {
 		_ = msgID

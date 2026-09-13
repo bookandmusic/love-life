@@ -195,6 +195,28 @@ func TestChatReadToolInline(t *testing.T) {
 	if fake.calls.Load() != 2 {
 		t.Fatalf("model calls: %d (want 2)", fake.calls.Load())
 	}
+
+	// 回归：AI 读工具路径的审计 result 仅记状态 success，不含工具输出全文。
+	// 后台按 result == 'success' 等值判定，写 'ok'/输出正文都会误显示为「失败」。
+	var audits int
+	var result, params string
+	var latency any
+	if err := ts.db.QueryRow(`SELECT COUNT(*), result, params, latency_ms FROM audit_logs WHERE action='search_posts'`).
+		Scan(&audits, &result, &params, &latency); err != nil {
+		t.Fatal(err)
+	}
+	if audits != 1 {
+		t.Fatalf("search_posts 应落 1 条审计，实际 %d 条", audits)
+	}
+	if result != "success" {
+		t.Fatalf("result=%q want success", result)
+	}
+	if strings.Contains(result, "日落") {
+		t.Fatalf("result 不应回写工具输出正文：%q", result)
+	}
+	if latency == nil {
+		t.Fatal("ai 行 latency_ms 不应为 null（AD7 口径：ai/pat 有值）")
+	}
 }
 func TestChatMediaFlow(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
@@ -410,5 +432,16 @@ func TestChatAlbumToolsReject(t *testing.T) {
 	}
 	if n := countItems(); n != 0 {
 		t.Fatalf("deleted-media confirm must not add items, got %d", n)
+	}
+
+	// 回归：失败路径的审计 result 必须形如 failed: <原因>。
+	// 后台按 result == 'success' 判成败，故前缀必须是 failed；同时保留原因便于排查。
+	var failResult string
+	if err := ts.db.QueryRow(`SELECT result FROM audit_logs WHERE action='add_photos_to_album' AND result <> 'success' ORDER BY id DESC LIMIT 1`).
+		Scan(&failResult); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(failResult, "failed: ") {
+		t.Fatalf("失败审计 result=%q want 前缀 'failed: '", failResult)
 	}
 }

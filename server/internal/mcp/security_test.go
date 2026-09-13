@@ -117,4 +117,31 @@ func TestMCPAuditAttributesToTokenID(t *testing.T) {
 	if len(list) == 0 || list[0].Actor != "MyAgent" {
 		t.Fatalf("pat actor 解析失败: %+v", list)
 	}
+
+	// 回归：一次外部调用只落一条审计。工具 Exec 内部不得再自记，
+	// 否则同一次 tools/call 会出现 pat 行 + ai 行两条（后者归因错误且缺 params/latency）。
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM audit_logs`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("一次 PAT 调用应落 1 条审计，实际 %d 条（工具内部重复记账）", n)
+	}
+
+	// 回归：result 仅记状态 success/failed（对齐 mock 契约与后台等值判定）。
+	var result string
+	var params, latency any
+	if err := db.QueryRow(`SELECT result, params, latency_ms FROM audit_logs ORDER BY id DESC LIMIT 1`).
+		Scan(&result, &params, &latency); err != nil {
+		t.Fatal(err)
+	}
+	if result != "success" {
+		t.Fatalf("result=%q want success（后台按 result==success 判定，其它取值误显示「失败」）", result)
+	}
+	if latency == nil {
+		t.Fatal("pat 行 latency_ms 不应为 null（AD7 口径：ai/pat 有值）")
+	}
+	if s, _ := params.(string); s == "" {
+		t.Fatal("pat 行 params 不应为空（AD7 口径：人类可读参数）")
+	}
 }

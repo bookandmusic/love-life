@@ -158,6 +158,9 @@ func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) erro
 
 // InsertAuditLog 基础审计（无 params 全文与耗时；user 直接写库路径用，
 // 契约 latencyMs 仅 ai/pat 有值）。
+//
+// result 仅记状态（success / failed[: 原因]），与 mock 契约 fixtures.mjs audit 一致；
+// 后台按 result == 'success' 判定成败，故不得写入业务摘要或工具输出正文。
 func (d *DB) InsertAuditLog(ctx context.Context, actorType string, actorID int64, action, digest, result string) error {
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO audit_logs (actor_type, actor_id, action, params_digest, result) VALUES (?, ?, ?, ?, ?)`,
