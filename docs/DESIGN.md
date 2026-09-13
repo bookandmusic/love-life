@@ -610,7 +610,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 
 | 实体 | 关键字段 | 说明 |
 |:---|:---|:---|
-| Notification | id, recipient_id, event_type, target_type?, target_id?, snapshot_json?, is_read, read_at, created_at | 事件类型 8+1 类（见需求 §4.8，含 media_deleted）；内容删除事件带文案快照、无跳转；目标已被删时点击提示「内容已删除」 |
+| Notification | id, recipient_id, event_type, target_type?, target_id?, snapshot_json?, is_read, read_at, created_at | 事件类型 12+1 类（见需求 §4.8：内容删除按内容类型细分为 `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`，`+1` 为兼容期保留的 `media_deleted`）；内容删除事件带文案快照（`name` + `deleted_by`）、无跳转、**仅站内**（不走外部推送 Dispatcher）；目标已被删时点击提示「内容已删除」 |
 | ChatMessage | id, user_id, role(user/assistant), content, card_id?, media, created_at | media=消息携带的客户端媒体引用 JSON（[{name,type,size,data_url}]，仅本会话展示+历史回显，不落媒体资源，零垃圾）；实际媒体仅在确认执行时经 media_token 落库为 Post 媒体。按用户保留时长定时清理（预设 7/30/90 天/永久，默认 30 天） |
 | ConfirmAction | id, user_id, tool_name, params_json, status(pending/confirmed/cancelled/expired), expires_at, resolved_at, created_at | 确认卡片：单次有效（确认/取消即失效）；expires_at = 生成时间 + 15 分钟，超时置 expired，对话流内显示「已过期」不可再确认 |
 | AuditLog | id, actor_type(user/ai/pat), actor_id, action, params_digest, result, created_at | 永久保留；覆盖全部 MCP 工具调用与回收站恢复操作 |
