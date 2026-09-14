@@ -57,6 +57,10 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}/key", providersAPI.updateKey)
 	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}", providersAPI.update)
 	adminMux.HandleFunc("DELETE /api/v1/admin/model-providers/{id}", providersAPI.remove)
+	// 嵌入模型配置（语义检索）：复用供应商地址与 Key，未配置 = 关闭
+	embeddingAPI := &embeddingAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/embedding-config", embeddingAPI.get)
+	adminMux.HandleFunc("PUT /api/v1/admin/embedding-config", embeddingAPI.put)
 	stylesAPI := &stylesAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/styles", stylesAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/styles", stylesAPI.create)
