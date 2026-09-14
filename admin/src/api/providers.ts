@@ -47,6 +47,26 @@ export interface ProviderPayload {
   default_model?: string
 }
 
+/**
+ * 语义检索（嵌入模型）配置（DESIGN §10.3）：复用某个 OpenAI Chat 协议供应商的地址与 Key
+ * 调用 /embeddings。provider_id = 0 表示关闭语义检索（检索回落关键词）。
+ */
+export interface EmbeddingConfig {
+  provider_id: number
+  model: string
+}
+
+export function getEmbeddingConfig(): Promise<EmbeddingConfig> {
+  return http<EmbeddingConfig>('/api/v1/admin/embedding-config')
+}
+
+export function saveEmbeddingConfig(payload: EmbeddingConfig): Promise<EmbeddingConfig> {
+  return http<EmbeddingConfig>('/api/v1/admin/embedding-config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+}
+
 export function listProviders(): Promise<AiProvider[]> {
   return http<AiProvider[]>('/api/v1/admin/model-providers')
 }

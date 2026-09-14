@@ -49,6 +49,15 @@ type Deps struct {
 	DB *store.DB
 	MP *media.Pipeline
 	DP *notify.Dispatcher
+	// Search 语义检索端口；未配置嵌入模型时为 nil，search_posts 回落关键词匹配。
+	Search SearchIndex
+}
+
+// SearchIndex 语义检索端口。接口定义在此以避免 tools 依赖具体实现，
+// 由 search.Index 满足（Go 结构化接口，无需显式声明实现）。
+type SearchIndex interface {
+	Enabled(ctx context.Context) bool
+	Query(ctx context.Context, text string, k int) ([]int64, error)
 }
 
 // 审计 result 口径（对齐 mock 契约 fixtures.mjs audit：仅 success / failed 两态）。
@@ -222,6 +231,54 @@ func scanPostHits(rows *sql.Rows) ([]PostHit, error) {
 	return hits, rows.Err()
 }
 
+// searchPostLimit 语义与关键词两条路径共用的返回条数上限。
+const searchPostLimit = 10
+
+// semanticPosts 语义检索动态：未配置 / 上游失败 / 无命中一律返回 ok=false，
+// 由调用方回落关键词匹配——语义检索是增强能力，不得让搜索整体失败。
+func (d *Deps) semanticPosts(ctx context.Context, query string) ([]PostHit, bool) {
+	if d.Search == nil || !d.Search.Enabled(ctx) {
+		return nil, false
+	}
+	ids, err := d.Search.Query(ctx, query, searchPostLimit)
+	if err != nil {
+		slog.Warn("semantic search failed, falling back to keyword match", "err", err)
+		return nil, false
+	}
+	if len(ids) == 0 {
+		return nil, false
+	}
+	hits, err := d.postsByIDs(ctx, ids)
+	if err != nil {
+		slog.Warn("semantic search lookup failed, falling back to keyword match", "err", err)
+		return nil, false
+	}
+	if len(hits) == 0 {
+		return nil, false
+	}
+	return hits, true
+}
+
+// postsByIDs 按向量命中顺序取回未删动态（顺序与已删过滤由 store.PostsByIDs 还原）。
+func (d *Deps) postsByIDs(ctx context.Context, ids []int64) ([]PostHit, error) {
+	posts, err := d.DB.PostsByIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	hits := make([]PostHit, 0, len(posts))
+	for _, p := range posts {
+		hits = append(hits, PostHit{
+			ID:           p.ID,
+			Title:        p.Title.String,
+			Content:      p.Content,
+			Date:         p.CreatedAt,
+			Author:       p.AuthorNickname.String,
+			LocationName: p.LocationName.String,
+		})
+	}
+	return hits, nil
+}
+
 // pageArgs 分页参数归一（list_albums / list_favorites / list_comments 共用）：
 // page 缺省 1，size 缺省 20、上限 50（对齐 D5 分页夹紧口径）。
 func pageArgs(args map[string]any) (page, size int) {
@@ -295,7 +352,7 @@ func Registry() []*Tool {
 		{
 			Name:        "search_posts",
 			Category:    "动态",
-			Description: "按关键词搜索历史动态",
+			Description: "语义搜索历史动态",
 			Schema: map[string]string{
 				"query": "string — 语义检索词",
 			},
@@ -303,19 +360,23 @@ func Registry() []*Tool {
 				"query": map[string]any{"type": "string"},
 			}, "required": []string{"query"}},
 			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
-				q := "%" + str(args, "query") + "%"
-				rows, err := d.DB.QueryContext(ctx, `
-					SELECT `+postHitColumns+`
-					FROM posts p JOIN users u ON u.id = p.author_id
-					WHERE p.deleted_at IS NULL AND (p.content LIKE ? OR p.title LIKE ?)
-					ORDER BY p.id DESC LIMIT 10`, q, q)
-				if err != nil {
-					return nil, err
-				}
-				defer rows.Close()
-				hits, err := scanPostHits(rows)
-				if err != nil {
-					return nil, err
+				q := str(args, "query")
+				hits, ok := d.semanticPosts(ctx, q)
+				if !ok {
+					// 回落：未配置嵌入模型或语义检索不可用时按关键词匹配
+					like := "%" + q + "%"
+					rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(`
+						SELECT %s
+						FROM posts p JOIN users u ON u.id = p.author_id
+						WHERE p.deleted_at IS NULL AND (p.content LIKE ? OR p.title LIKE ?)
+						ORDER BY p.id DESC LIMIT %d`, postHitColumns, searchPostLimit), like, like)
+					if err != nil {
+						return nil, err
+					}
+					defer rows.Close()
+					if hits, err = scanPostHits(rows); err != nil {
+						return nil, err
+					}
 				}
 				if hits == nil {
 					hits = []PostHit{}

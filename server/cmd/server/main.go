@@ -7,22 +7,29 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/api"
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/config"
+	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/llm"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
+	"github.com/bookandmusic/love-life/server/internal/search"
 	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/tools"
 	"github.com/bookandmusic/love-life/server/internal/webui"
 )
 
 // startJanitor 每小时例行：临时区孤儿媒体（24h 未发布）、过期 refresh token、
 // 纪念日提醒检查（需求 §4.6 站内+外部同发；按「当日已发」幂等，每小时跑一次不会重复）。
-func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher) {
+func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher, ix *search.Index) {
 	go func() {
+		// 启动即回填一轮：首次配置嵌入模型或换模型后不必等满一小时。
+		backfillSearch(context.Background(), db, ix)
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
@@ -34,6 +41,7 @@ func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher) {
 			}
 			dp.CheckAnniversaries(context.Background(), time.Now())
 			dp.CheckMonthlyAlbum(context.Background(), time.Now())
+			backfillSearch(context.Background(), db, ix)
 			if err := db.CleanExpiredChatMessages(context.Background()); err != nil {
 				slog.Warn("clean expired chat messages failed", "err", err)
 			}
@@ -68,7 +76,19 @@ func main() {
 
 	mp := media.New(cfg.DataDir, tm.Secret(), cfg.MediaMaxBytes)
 	dp := notify.New(db)
-	startJanitor(db, mp, dp)
+
+	// 语义检索：向量库是数据目录内的派生数据（可从动态正文重建，不入备份语义）。
+	// 向量库打不开只告警——检索回落关键词匹配，不影响记录功能。
+	ix, ixErr := search.Open(filepath.Join(cfg.DataDir, "vectors"), searchResolver(db, tm.Secret()))
+	if ixErr != nil {
+		slog.Warn("语义检索不可用，检索回落关键词匹配", "err", ixErr)
+	}
+	var searchPort tools.SearchIndex
+	if ix != nil {
+		searchPort = ix
+		db.SetPostIndex(ix)
+	}
+	startJanitor(db, mp, dp, ix)
 
 	webuiFS, err := webui.FS()
 	if err != nil {
@@ -78,7 +98,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.NewRouter(cfg, db, tm, mp, dp, webuiFS),
+		Handler:           api.NewRouter(cfg, db, tm, mp, dp, webuiFS, searchPort),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -100,6 +120,96 @@ func main() {
 		slog.Error("graceful shutdown failed", "err", err)
 	}
 	slog.Info("server stopped")
+}
+
+// searchResolver 组装一次嵌入调用所需的配置：后台选定的供应商 + 嵌入模型，
+// 密钥解密后传入（明文只在内存）。任一步不成立都视为「未配置」→ 检索回落关键词。
+func searchResolver(db *store.DB, seed []byte) search.Resolver {
+	// 供应商 Key 用 KeyFrom(数据目录密钥) 加密（与 chat 服务、供应商接口同口径）
+	key := crypto.KeyFrom(seed)
+	return func(ctx context.Context) (search.Config, bool) {
+		ec, err := db.GetEmbeddingConfig(ctx)
+		if err != nil {
+			slog.Warn("read embedding config failed", "err", err)
+			return search.Config{}, false
+		}
+		if ec.ProviderID == 0 || ec.Model == "" {
+			return search.Config{}, false
+		}
+		p, err := db.GetProvider(ctx, ec.ProviderID)
+		if err != nil {
+			slog.Warn("embedding provider unavailable, semantic search off", "provider_id", ec.ProviderID, "err", err)
+			return search.Config{}, false
+		}
+		if p.APIType != llm.APITypeOpenAIChat {
+			slog.Warn("embedding provider api_type unsupported, semantic search off", "provider_id", p.ID, "api_type", p.APIType)
+			return search.Config{}, false
+		}
+		apiKey, err := crypto.Decrypt(key, p.APIKeyEnc)
+		if err != nil {
+			slog.Warn("embedding provider key decrypt failed", "provider_id", p.ID, "err", err)
+			return search.Config{}, false
+		}
+		return search.Config{BaseURL: p.BaseURL, APIKey: apiKey, Model: ec.Model}, true
+	}
+}
+
+const (
+	backfillBatch = 200 // 单轮上限：换模型后集合被重建时，避免一轮打出上千个嵌入请求
+	backfillPage  = 50
+)
+
+// backfillSearch 增量回填：逐页扫描未删动态，缺索引的补建、已有的跳过（避免重复计费）。
+func backfillSearch(ctx context.Context, db *store.DB, ix *search.Index) {
+	if ix == nil || !ix.Enabled(ctx) {
+		return
+	}
+	filled, failed := backfillOnce(ctx, db, ix, backfillBatch)
+	if failed > 0 {
+		slog.Warn("backfill partially failed, will retry next round", "failed", failed)
+	}
+	if filled > 0 {
+		slog.Info("backfill indexed posts", "count", filled)
+	}
+}
+
+// backfillOnce 回填至多 limit 条：单条失败只跳过并计数，不让一条坏数据挡住后面全部历史；
+// 无文本可嵌入的动态不计入配额（否则它们会永久占位，排在后面的动态永远补不到）。
+func backfillOnce(ctx context.Context, db *store.DB, ix *search.Index, limit int) (filled, failed int) {
+	for page := 1; filled+failed < limit; page++ {
+		posts, total, err := db.ListPosts(ctx, page, backfillPage, false)
+		if err != nil {
+			slog.Warn("backfill list posts failed", "err", err)
+			return filled, failed
+		}
+		for _, p := range posts {
+			if !search.Embeddable(p.Title.String, p.Content, p.LocationName.String) {
+				continue
+			}
+			ok, err := ix.Has(ctx, p.ID)
+			if err != nil {
+				slog.Warn("backfill has check failed", "post_id", p.ID, "err", err)
+				failed++
+				continue
+			}
+			if ok {
+				continue
+			}
+			if err := ix.IndexPost(ctx, p.ID, p.Title.String, p.Content, p.LocationName.String); err != nil {
+				slog.Warn("backfill index post failed", "post_id", p.ID, "err", err)
+				failed++
+				continue
+			}
+			filled++
+			if filled+failed >= limit {
+				return filled, failed
+			}
+		}
+		if page*backfillPage >= total {
+			return filled, failed
+		}
+	}
+	return filled, failed
 }
 
 // bootstrapAdmin 部署口径：admin 由环境变量内置（DESIGN §3）。仅当库中无 admin 时创建；

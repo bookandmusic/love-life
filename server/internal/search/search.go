@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +72,18 @@ func (ix *Index) Enabled(ctx context.Context) bool {
 	return ok
 }
 
+// embedText 拼装一条动态参与嵌入的文本：标题、正文、地点按序拼接，跳过空段
+// （部分供应商按 token 计费，空段只稀释语义）。
+func embedText(title, content, location string) string {
+	parts := make([]string, 0, 3)
+	for _, s := range []string{title, content, location} {
+		if s != "" {
+			parts = append(parts, s)
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
 // Upsert 写入或覆盖一条动态的向量。
 func (ix *Index) Upsert(ctx context.Context, postID int64, content string) error {
 	ix.mu.Lock()
@@ -107,6 +120,31 @@ func (ix *Index) Remove(ctx context.Context, postID int64) error {
 		return err
 	}
 	return col.Delete(ctx, nil, nil, postIDKey(postID))
+}
+
+// IndexPost / UnindexPost 是 store.PostIndexer 的实现：store 只转发动态原始字段，
+// 嵌入文本口径留在这里。未配置嵌入模型是**默认态而非失败**，故吞掉 ErrDisabled，
+// 避免默认部署下每次发/删动态都刷一条告警；其余错误照常上抛，由 store 记录。
+func (ix *Index) IndexPost(ctx context.Context, id int64, title, content, location string) error {
+	if !Embeddable(title, content, location) {
+		return nil // 纯媒体/纯心情动态没有可嵌入文本：跳过，别让上游对空输入报错
+	}
+	if err := ix.Upsert(ctx, id, embedText(title, content, location)); err != nil && !errors.Is(err, ErrDisabled) {
+		return err
+	}
+	return nil
+}
+
+// Embeddable 该动态是否有可嵌入文本；回填据此跳过（否则这类动态会永久占住回填配额）。
+func Embeddable(title, content, location string) bool {
+	return embedText(title, content, location) != ""
+}
+
+func (ix *Index) UnindexPost(ctx context.Context, id int64) error {
+	if err := ix.Remove(ctx, id); err != nil && !errors.Is(err, ErrDisabled) {
+		return err
+	}
+	return nil
 }
 
 // Has 该动态是否已建向量；janitor 回填据此跳过，避免重复计费。
@@ -177,6 +215,11 @@ func (ix *Index) collectionLocked(ctx context.Context, cfg Config, dim int) (*ch
 	if ix.col != nil && ix.key == key && ix.dim == dim {
 		return ix.col, nil
 	}
+	// 换模型：旧集合不再使用，直接删除，避免数据目录累积陈旧集合
+	if ix.col != nil && ix.key != key {
+		_ = ix.db.DeleteCollection(ix.col.Name)
+		ix.col = nil
+	}
 	if ix.dim != 0 && ix.dim != dim {
 		_ = ix.db.DeleteCollection(name)
 		ix.col = nil
@@ -201,7 +244,8 @@ func (ix *Index) writeDim(dim int) {
 // embeddingFunc chromem 自带的 OpenAI 兼容嵌入函数（无需自写适配器）。
 // 每次调用重建：Normalized 的自检状态随之重置，代价可忽略。
 func embeddingFunc(cfg Config) chromem.EmbeddingFunc {
-	return chromem.NewEmbeddingFuncOpenAICompat(cfg.BaseURL, cfg.APIKey, cfg.Model, nil)
+	// base_url 尾斜杠会拼出 //embeddings，与供应商请求同口径做归一
+	return chromem.NewEmbeddingFuncOpenAICompat(strings.TrimSuffix(cfg.BaseURL, "/"), cfg.APIKey, cfg.Model, nil)
 }
 
 // embedTimeout 单次嵌入的上限。chromem 自带的嵌入函数默认不设超时（依赖调用方 ctx），

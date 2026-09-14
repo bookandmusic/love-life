@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 )
@@ -208,6 +209,7 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 
 	// 按表分组：合成 ID 反解回 (表, 真实 id)，避免跨表误恢复。
 	grouped := map[int][]int64{}
+	var restoredPostIDs []int64
 	for _, id := range ids {
 		idx, real, err := decodeRecycleID(id)
 		if err != nil {
@@ -230,16 +232,18 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 			args = append(args, r)
 		}
 
-		// 先取摘要：恢复后 deleted_at 清空，条件不再命中。
+		// 先取摘要与真实 id：恢复后 deleted_at 清空，条件不再命中。
 		sumRows, err := tx.QueryContext(ctx, fmt.Sprintf(
-			`SELECT %s FROM %s WHERE id IN (%s) AND deleted_at IS NOT NULL`, s.summary, s.table, ph), args...)
+			`SELECT id, %s FROM %s WHERE id IN (%s) AND deleted_at IS NOT NULL`, s.summary, s.table, ph), args...)
 		if err != nil {
 			return nil, err
 		}
 		var summaries []string
+		var restoredIDs []int64
 		for sumRows.Next() {
+			var id int64
 			var sum string
-			if err := sumRows.Scan(&sum); err != nil {
+			if err := sumRows.Scan(&id, &sum); err != nil {
 				sumRows.Close()
 				return nil, err
 			}
@@ -247,6 +251,7 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 				sum = baseName(sum)
 			}
 			summaries = append(summaries, sum)
+			restoredIDs = append(restoredIDs, id)
 		}
 		sumRows.Close()
 		if err := sumRows.Err(); err != nil {
@@ -269,6 +274,8 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 			// 恢复动态须连带恢复其级联删除的媒体：SoftDeletePost 把媒体一并软删，
 			// 若此处只恢复动态本身，动态会「复活」但照片仍不可见（媒体标记未清）。
 			if s.table == "posts" {
+				// 只回填本次真正恢复的行（含已未删的 id 会多打一次嵌入）
+				restoredPostIDs = append(restoredPostIDs, restoredIDs...)
 				if _, err := tx.ExecContext(ctx, fmt.Sprintf(
 					`UPDATE media SET deleted_at = NULL, deleted_by = NULL, deleted_by_type = NULL
 					 WHERE post_id IN (%s) AND deleted_at IS NOT NULL`, ph), args...); err != nil {
@@ -284,6 +291,16 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+
+	// 恢复已生效，随后重建向量索引；索引失败只告警，不回滚恢复。
+	for _, id := range restoredPostIDs {
+		p, err := d.GetPost(ctx, id)
+		if err != nil {
+			slog.Warn("reindex restored post failed", "post_id", id, "err", err)
+			continue
+		}
+		d.indexPost(ctx, p.ID, p.Title.String, p.Content, p.LocationName.String)
 	}
 	return res, nil
 }

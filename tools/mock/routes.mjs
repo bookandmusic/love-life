@@ -16,7 +16,7 @@ import {
   albums, timelineMedia, anniversaries, notifications, mapSources, mapPoints,
   GEOCODE_PLACES,
   chatHistory, actions, seq, now,
-  dashboardStats, recentActivity, aiUsage, alerts, modelProviders, systemPrompt, styles, styleDefaults,
+  dashboardStats, recentActivity, aiUsage, alerts, modelProviders, embeddingConfig, systemPrompt, styles, styleDefaults,
   tools, recycle, restoreLog, security, audit, tokens, webhooks, adminUsers,
   newToken, userIdFromToken, userById,
 } from './fixtures.mjs'
@@ -1381,6 +1381,29 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/admin\/model-providers\/\d
   if (i < 0) return notFound('供应商不存在')
   modelProviders.splice(i, 1)
   return noContent()
+} })
+// 语义检索（嵌入模型）：provider_id = 0 清空（关闭语义检索），否则必须给模型名且供应商为 OpenAI Chat 协议
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/embedding-config$/, handler: () => ok(embeddingConfig) })
+routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/embedding-config$/, handler: (url, body) => {
+  let b
+  try {
+    b = JSON.parse(body || '{}')
+  } catch {
+    return badRequest('请求格式错误')
+  }
+  const providerId = Number(b.provider_id || 0)
+  let model = String(b.model ?? '').trim()
+  if (providerId === 0) {
+    model = ''
+  } else {
+    if (!model) return badRequest('model 必填')
+    const p = modelProviders.find((x) => x.id === providerId)
+    if (!p) return badRequest('供应商不存在')
+    if (p.api_type !== 'openai-chat') return badRequest('嵌入模型仅支持 OpenAI Chat 协议的供应商')
+  }
+  embeddingConfig.provider_id = providerId
+  embeddingConfig.model = model
+  return ok({ ...embeddingConfig })
 } })
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/system-prompt$/, handler: () => ok(systemPrompt) })
 routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/system-prompt$/, handler: (url, body) => {

@@ -122,6 +122,7 @@ flowchart TB
 
 - AI 供应商列表（协议类型 + 地址 + API Key，秘钥加密存储、只写不读）
 - 供应商排序（有序故障切换链：从第一个开始，失败依次向下）
+- 语义检索嵌入模型（供应商 + 模型名；复用某个 OpenAI Chat 协议供应商的地址与 Key 调 `/embeddings`；未配置即关闭语义检索，检索回落关键词匹配）。嵌入调用会把动态文本发往所选供应商、向量只存本机；如需零出站，把该供应商 `base_url` 指向本机 OpenAI 兼容服务（如 Ollama）即可，代码路径相同
 - 模型级参数：每个模型可设 Temperature / Max Tokens（不设置即调用时不传，用供应商默认值；Anthropic / OpenAI-Responses 的 `max_tokens` 为必填/兜底字段，未设时用协议默认 4096 / 16384）
 - 全局 System Prompt 模板（人设/行为边界主干）
 - 输出风格库：内置风格（完全固化，不可删改）+ 自定义风格（后台增删改，名称 + 提示词片段）；设全局默认风格
@@ -458,7 +459,8 @@ sequenceDiagram
     - AI 供应商管理：添加/编辑/删除/排序；供应商 = 协议类型（OpenAI Chat Completions / OpenAI Responses / Anthropic / Gemini）+ 服务地址 + API Key（加密存储，只写不读）
     - 获取模型列表：服务端持地址+秘钥调供应商 models 接口；模型参数挂**模型级**（每条 = {id, temperature|null, max_tokens|null}，不设置即调用时不传），从列表勾选默认模型（可手动添加兜底）
     - 供应商排序即故障切换链：调用从列表第一个开始，失败依次向下
-    - 接口：GET/POST /api/v1/admin/model-providers、PUT/DELETE /{id}、PUT /{id}/key、PUT /order、POST /fetch-models（仅 admin）
+    - 语义检索嵌入模型：复用某个 OpenAI Chat 协议供应商的地址与 Key 调 `/embeddings`；未配置即关闭语义检索（检索回落关键词匹配）
+    - 接口：GET/POST /api/v1/admin/model-providers、PUT/DELETE /{id}、PUT /{id}/key、PUT /order、POST /fetch-models、GET/PUT /api/v1/admin/embedding-config（仅 admin）
   - **提示词与风格（/ai/prompts）**
     - System Prompt 模板管理：全局模板编辑（人设/行为边界主干）；空间级模板覆盖（可选）
     - 输出风格库：内置风格（完全固化，不可删改）+ 自定义风格（后台增删改，名称 + 提示词语气片段）；设全局默认风格
@@ -529,6 +531,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | MCP Server | 统一实例，同时服务内部 Agent（APP）和外部 Agent（PAT） |
 | 对外 MCP | 同一实例的外部通道：PAT 认证，只读/读写两档，删除类不开放 |
 | 数据存储 | SQLite(WAL) + chromem-go 向量库 + 本地媒体文件（全部位于自包含数据目录，见 11.1） |
+| 语义检索 | 动态向量索引（chromem-go）：嵌入模型复用模型网关的供应商配置；动态写入时同步建索引（失败只告警、不阻断落库），janitor 启动与每小时增量回填；未配置 / 调用失败 / 无命中均回落关键词匹配 |
 | 认证方式 | JWT + Refresh Token（人，两端统一）+ 个人访问令牌 PAT（外部 Agent） |
 | 安全机制 | 发起人确认 + 操作审计 + 隐私策略 |
 | 回收站 | 软删除 + 后台可配保留期限 + 仅系统自动永久删除 |
@@ -548,6 +551,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 - 官方发布产物：**服务端单静态二进制**（内嵌 Web 后台静态资源）、**Android APK**、**Docker 镜像**；APK 直接分发手动安装，服务端不内置托管入口（原「Web 前台 APP 下载直链」随 Web 前台取消）
 - 运行方式由部署者自选：裸机直跑（systemd 等）或 Docker / 容器编排均可，本文档不指定特定方案
 - 最低运行要求：一个监听端口 + 一个可写数据目录；全部运行状态（SQLite、向量库、媒体文件、配置）自包含于该数据目录，便于用任意工具做快照与迁移
+- 向量库（`<数据目录>/vectors/` 与同级的 `.dim` 维度标记）是**派生数据**：可从动态正文重建，不纳入备份必要项——缺失只影响语义检索，由 janitor 回填
 - 环境变量：至少包含 admin 初始账号（用户名/密码）、数据目录路径、监听地址
 
 ### 11.2 网络访问（双通道）
@@ -568,6 +572,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 - 平台定位**不内置备份/导出/导入功能**；备份与迁移 = 部署者直接拷贝自包含数据目录（rsync、网盘同步、磁盘快照等，方式自选）
 - 数据目录自包含：部署者可用任意工具（rsync、网盘同步、磁盘快照等）自行备份，方式自选
 - 建议部署者定期备份数据目录——回忆类数据不可再生
+- 向量库可随目录一起拷贝（省一次重建）；缺失也不影响恢复：服务启动后 janitor 自动回填重建
 
 ---
 
@@ -590,7 +595,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | ModelProvider | id, api_type(openai-chat/openai-responses/anthropic/gemini), name, base_url, api_key_encrypted, sort_order | admin 域；Key 加密存储，客户端永不接触；sort_order = 故障切换链顺序 |
 | ProviderModel | provider_id, model_id, temperature?, max_tokens? | 供应商下模型条目，参数挂模型级（可空 = 调用不传）；default_model 为 Provider 上的指针字段，存模型 ID 字符串（供应商内 UNIQUE，删除供应商时模型条目级联） |
 | OutputStyle | id, name, prompt, builtin, sort_order? | 输出风格库：内置固化 + 后台自定义；全局默认风格为单行配置（default_style_id，存 AppSetting） |
-| AppSetting | key, value | admin 域全局单值配置（如 default_style_id、system_prompt），键值存储，客户端永不接触 |
+| AppSetting | key, value | admin 域全局单值配置（如 default_style_id、system_prompt、embedding_provider_id、embedding_model），键值存储，客户端永不接触 |
 
 ### 12.2 内容
 

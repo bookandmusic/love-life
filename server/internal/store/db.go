@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -17,7 +18,20 @@ const (
 
 type DB struct {
 	*sql.DB
+
+	postIndex PostIndexer
 }
+
+// PostIndexer 动态向量索引的写侧钩子（由 search.Index 实现）。
+// 接口定义在 store 侧以隔离依赖：store 不 import search。
+type PostIndexer interface {
+	IndexPost(ctx context.Context, id int64, title, content, location string) error
+	UnindexPost(ctx context.Context, id int64) error
+}
+
+// SetPostIndex 注入动态向量索引钩子；未注入（未配置嵌入模型）时索引为空操作。
+// 非并发安全：须在启动 HTTP 服务与 janitor 之前调用一次。
+func (d *DB) SetPostIndex(idx PostIndexer) { d.postIndex = idx }
 
 func Open(dataDir string) (*DB, error) {
 	path := filepath.Join(dataDir, "love-life.db")
@@ -29,7 +43,7 @@ func Open(dataDir string) (*DB, error) {
 	if err := db.Ping(); err != nil {
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
-	d := &DB{db}
+	d := &DB{DB: db}
 	if err := d.migrate(); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}

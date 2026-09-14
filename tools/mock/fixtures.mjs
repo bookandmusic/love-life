@@ -219,6 +219,9 @@ export const modelProviders = [
     { id: 'claude-opus-4-1-20250805', temperature: null, max_tokens: null },
   ], default_model: 'claude-sonnet-4-20250514' },
 ]
+// 语义检索（嵌入模型）配置：复用某个 OpenAI Chat 协议供应商的地址与 Key 调 /embeddings；
+// provider_id = 0 表示关闭语义检索（检索回落关键词）。语义与 server/internal/api/embedding.go 一致。
+export const embeddingConfig = { provider_id: 0, model: '' }
 export const systemPrompt = {
   content: '你们是这对情侣的生活助手。说话温暖简短，主动回顾共同记忆；写操作先出确认卡片，经发起人确认后才执行。',
   updatedAt: '2026-08-20 21:00',

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 )
 
@@ -50,6 +51,26 @@ func NullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
+// indexPost / unindexPost 转发索引钩子。索引是派生数据：
+// 失败只告警，绝不反向阻断动态落库（未配置嵌入模型时钩子为空）。
+func (d *DB) indexPost(ctx context.Context, id int64, title, content, location string) {
+	if d.postIndex == nil {
+		return
+	}
+	if err := d.postIndex.IndexPost(ctx, id, title, content, location); err != nil {
+		slog.Warn("index post failed", "post_id", id, "err", err)
+	}
+}
+
+func (d *DB) unindexPost(ctx context.Context, id int64) {
+	if d.postIndex == nil {
+		return
+	}
+	if err := d.postIndex.UnindexPost(ctx, id); err != nil {
+		slog.Warn("unindex post failed", "post_id", id, "err", err)
+	}
+}
+
 // CreatePostWithMedia 单事务创建动态与媒体行（媒体文件已由管线转正，失败由调用方回收）。
 func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow) (int64, error) {
 	tx, err := d.BeginTx(ctx, nil)
@@ -78,6 +99,7 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
+	d.indexPost(ctx, postID, p.Title.String, p.Content, p.LocationName.String)
 	return postID, nil
 }
 
@@ -122,6 +144,39 @@ func (d *DB) ListPosts(ctx context.Context, page, pageSize int, memories bool) (
 	return posts, total, rows.Err()
 }
 
+// PostsByIDs 取未删动态，返回顺序与入参一致（供语义检索还原相似度序）；
+// 已删或缺失的 id 直接跳过。
+func (d *DB) PostsByIDs(ctx context.Context, ids []int64) ([]*Post, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	rows, err := d.QueryContext(ctx, `
+		SELECT `+postColumns+` FROM posts p JOIN users u ON u.id = p.author_id
+		WHERE p.deleted_at IS NULL AND p.id IN (`+placeholders(len(ids))+`)`, int64Args(ids)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	byID := make(map[int64]*Post, len(ids))
+	for rows.Next() {
+		p, err := scanPost(rows)
+		if err != nil {
+			return nil, err
+		}
+		byID[p.ID] = p
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	posts := make([]*Post, 0, len(byID))
+	for _, id := range ids {
+		if p, ok := byID[id]; ok {
+			posts = append(posts, p)
+		}
+	}
+	return posts, nil
+}
+
 func (d *DB) GetPost(ctx context.Context, id int64) (*Post, error) {
 	row := d.QueryRowContext(ctx, `
 		SELECT `+postColumns+` FROM posts p JOIN users u ON u.id = p.author_id
@@ -159,7 +214,11 @@ func (d *DB) SoftDeletePost(ctx context.Context, id int64, actorType string, act
 		return err
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	d.unindexPost(ctx, id)
+	return nil
 }
 
 func (d *DB) GetMediaByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]*MediaRow, error) {

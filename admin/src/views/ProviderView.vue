@@ -22,7 +22,10 @@ async function load() {
     toast.error(errMsg(e, '供应商列表加载失败'))
   }
 }
-onMounted(load)
+onMounted(() => {
+  load()
+  loadEmbedding()
+})
 
 // ---------- 供应商 添加/编辑弹窗 ----------
 const editingId = ref<number | null>(null)
@@ -169,6 +172,52 @@ async function runRemoveProvider(p: AiProvider) {
   await load()
 }
 
+// ---------- 语义检索（嵌入模型） ----------
+const embeddingProviderId = ref(0)
+const embeddingModel = ref('')
+const embeddingSaving = ref(false)
+
+// 嵌入走 OpenAI 兼容 /embeddings，仅 OpenAI Chat 协议供应商可用
+const embeddingProviders = computed(() => providers.value.filter((p) => p.api_type === 'openai-chat'))
+// 已保存的供应商可能已被删除：保留一个选项，避免下拉静默变成「不启用」
+const embeddingOptions = computed(() => {
+  const opts = embeddingProviders.value.map((p) => ({ id: p.id, name: p.name }))
+  if (embeddingProviderId.value !== 0 && !opts.some((o) => o.id === embeddingProviderId.value)) {
+    opts.push({ id: embeddingProviderId.value, name: `供应商 #${embeddingProviderId.value}（已删除）` })
+  }
+  return opts
+})
+
+async function loadEmbedding() {
+  try {
+    const cfg = await providersApi.getEmbeddingConfig()
+    embeddingProviderId.value = cfg.provider_id
+    embeddingModel.value = cfg.model
+  } catch (e) {
+    toast.error(errMsg(e, '嵌入模型配置加载失败'))
+  }
+}
+
+async function saveEmbedding() {
+  const providerId = embeddingProviderId.value
+  const model = providerId === 0 ? '' : embeddingModel.value.trim()
+  if (providerId !== 0 && !model) {
+    toast.error('请填写嵌入模型名')
+    return
+  }
+  embeddingSaving.value = true
+  try {
+    const cfg = await providersApi.saveEmbeddingConfig({ provider_id: providerId, model })
+    embeddingProviderId.value = cfg.provider_id
+    embeddingModel.value = cfg.model
+    toast.success(providerId === 0 ? '已关闭语义检索' : '语义检索已保存')
+  } catch (e) {
+    toast.error(errMsg(e, '保存失败'))
+  } finally {
+    embeddingSaving.value = false
+  }
+}
+
 // 排序即故障切换链：乐观更新 + 服务端持久化，失败回滚重载
 async function move(idx: number, dir: -1 | 1) {
   const target = idx + dir
@@ -229,6 +278,41 @@ async function move(idx: number, dir: -1 | 1) {
           </tbody>
         </table>
       </div>
+    </AppCard>
+
+    <div class="page-section-header">
+      <h2 class="page-section-title">语义检索（嵌入模型）</h2>
+      <AppBadge :variant="embeddingProviderId ? 'success' : 'neutral'">
+        {{ embeddingProviderId ? '已启用' : '未启用' }}
+      </AppBadge>
+    </div>
+    <AppCard>
+      <div class="flex gap-3" style="align-items: flex-end; flex-wrap: wrap">
+        <div class="form-group" style="flex: 1; min-width: 220px; margin: 0">
+          <label class="form-label">供应商</label>
+          <select v-model.number="embeddingProviderId" class="form-select">
+            <option :value="0">不启用（按关键词检索）</option>
+            <option v-for="p in embeddingOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex: 1; min-width: 220px; margin: 0">
+          <label class="form-label">嵌入模型</label>
+          <input
+            v-model="embeddingModel"
+            class="form-input"
+            :disabled="embeddingProviderId === 0"
+            placeholder="如 text-embedding-3-small / bge-m3"
+          />
+        </div>
+        <AppButton variant="primary" icon="save" :disabled="embeddingSaving" @click="saveEmbedding">保存</AppButton>
+      </div>
+      <AppAlert variant="warning" icon="alert-triangle" style="margin-top: 14px">
+        嵌入由所选供应商完成：动态正文会发送到该地址，向量结果只存在本机。如需零出站，可指向本机 OpenAI 兼容服务，例如
+        <code>http://127.0.0.1:11434/v1</code> + <code>bge-m3</code>。
+      </AppAlert>
+      <p class="text-secondary" style="margin: 10px 0 0">
+        仅 OpenAI Chat 协议供应商可用于嵌入。未启用或调用失败时，AI 搜索自动回落关键词匹配；更换模型后，历史动态由后台逐步重建索引。
+      </p>
     </AppCard>
 
     <AppModal

@@ -41,7 +41,7 @@ func newTestServer(t *testing.T) *testEnv {
 	mp := media.New(t.TempDir(), tm.Secret(), 500<<20)
 	dp := notify.New(db)
 	webuiFS := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>placeholder</html>")}}
-	ts := httptest.NewServer(NewRouter(config.Config{}, db, tm, mp, dp, webuiFS))
+	ts := httptest.NewServer(NewRouter(config.Config{}, db, tm, mp, dp, webuiFS, nil))
 	t.Cleanup(ts.Close)
 	return &testEnv{Server: ts, db: db, tm: tm}
 }

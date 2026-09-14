@@ -250,3 +250,29 @@ func TestIndexDimensionChangeResets(t *testing.T) {
 		t.Fatalf("ids = %v, want [2]", ids)
 	}
 }
+
+// 换模型即换集合，旧集合须从库中删除，避免数据目录累积陈旧集合。
+func TestIndexModelSwitchDropsOldCollection(t *testing.T) {
+	up := newFakeUpstream(t, map[string][]float32{"海边": {1, 0, 0}})
+	old := Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "m1"}
+	cfg := old
+	ix, err := Open(t.TempDir(), func(context.Context) (Config, bool) { return cfg, true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := ix.Upsert(ctx, 1, "海边"); err != nil {
+		t.Fatal(err)
+	}
+	oldName := collectionName(fingerprint(old))
+	if _, ok := ix.db.ListCollections()[oldName]; !ok {
+		t.Fatalf("旧集合应存在: %v", ix.db.ListCollections())
+	}
+	cfg.Model = "m2"
+	if _, err := ix.Query(ctx, "海边", 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := ix.db.ListCollections()[oldName]; ok {
+		t.Fatalf("换模型后旧集合应被删除: %v", ix.db.ListCollections())
+	}
+}

@@ -17,7 +17,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/tools"
 )
 
-func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media.Pipeline, dp *notify.Dispatcher, webuiDist fs.FS) http.Handler {
+func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media.Pipeline, dp *notify.Dispatcher, webuiDist fs.FS, searchIdx tools.SearchIndex) http.Handler {
 	authSvc := auth.NewService(db, tm)
 
 	mux := http.NewServeMux()
@@ -124,7 +124,9 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.Handle("GET /api/v1/geocode", authSvc.RequireAuth(http.HandlerFunc(geocode)))
 
 	// AI 对话（登录用户；未配置模型时登录仍可用）
-	chatSvc := chat.NewService(db, tm.Secret(), &tools.Deps{DB: db, MP: mp, DP: dp})
+	// AI 与 MCP 共用同一依赖集：工具实现只有一份，两通道行为一致（含语义检索端口）。
+	deps := &tools.Deps{DB: db, MP: mp, DP: dp, Search: searchIdx}
+	chatSvc := chat.NewService(db, tm.Secret(), deps)
 	chatMux := http.NewServeMux()
 	chatMux.HandleFunc("GET /api/v1/chat/status", chatSvc.Status)
 	chatMux.HandleFunc("POST /api/v1/chat/message", chatSvc.Message)
@@ -134,7 +136,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 
 	// 外部 MCP 通道（DESIGN §7/§8）：PAT 认证（非 JWT），Streamable HTTP 唯一传输。
 	// 与内部通道共用工具注册表；AppOnly 删除类工具经 allowed() 过滤，不对任何令牌开放。
-	mcpSvc := mcp.NewService(db, &tools.Deps{DB: db, MP: mp, DP: dp})
+	mcpSvc := mcp.NewService(db, deps)
 	mux.HandleFunc("POST /api/v1/mcp", mcpSvc.Handle)
 
 	// 空间信息与个人资料（登录用户；配置信息可修改，需求 §7.1）
