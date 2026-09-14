@@ -1473,7 +1473,7 @@ routes.push({ method: 'PATCH', pattern: /^\/api\/v1\/admin\/mcp-tools\/[\w]+$/, 
   return ok(tool)
 } })
 
-// 回收站：单条恢复 / 批量恢复统一走 restoreItems，均写恢复审计（永久保留）
+// 回收站：单条恢复 / 批量恢复统一走 restoreItems，均写回收站操作日志（恢复 + 系统超期永久删除，永久保留）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/recycle$/, handler: () => ok(recycle) })
 function restoreItems(ids) {
   const restored = []

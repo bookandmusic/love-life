@@ -49,6 +49,61 @@ func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher, ix *s
 	}()
 }
 
+// purgeCutoff 保留期截止时刻：库内时间列为 UTC（见 store 时间口径），故统一按 UTC 计算。
+func purgeCutoff(now time.Time, retentionDays int64) time.Time {
+	return now.UTC().AddDate(0, 0, -int(retentionDays))
+}
+
+// nextPurgeAt now 之后（不含）第一个本地 0 点。
+// 注：夏令时跳变日若本地 0 点不存在，time.Date 会归一到 01:00，可能提前补跑一轮；
+// 清理幂等（不会多删、不会多写日志），属已知可接受行为。
+func nextPurgeAt(now time.Time) time.Time {
+	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, 1)
+}
+
+// startDailyPurge 每日本地 0 点执行回收站超期永久删除。
+// 启动先跑一轮：0 点整服务未运行时，同日启动即补齐漏跑（判定幂等，不会重复删除）。
+func startDailyPurge(db *store.DB, mp *media.Pipeline) {
+	go func() {
+		runPurge(db, mp)
+		for {
+			time.Sleep(time.Until(nextPurgeAt(time.Now())))
+			runPurge(db, mp)
+		}
+	}()
+}
+
+// runPurge 执行一轮永久删除：读保留期 → 删库 → 删媒体文件 → 写回收站操作日志。
+// 失败只告警、不阻断服务；不做向量清理（软删时已移除，见 store.PurgeExpiredRecycle 注释）。
+func runPurge(db *store.DB, mp *media.Pipeline) {
+	ctx := context.Background()
+	settings, err := db.GetSecuritySettings(ctx)
+	if err != nil {
+		slog.Warn("read security settings failed", "err", err)
+		return
+	}
+	days := settings.RecycleRetentionDays
+	if days < store.RecycleRetentionMin || days > store.RecycleRetentionMax {
+		// 读侧兜底：越界值只可能来自直接改库（写入侧已校验）。不可逆操作宁可跳过一轮。
+		slog.Error("recycle retention out of range, skip purge", "days", days, "min", store.RecycleRetentionMin, "max", store.RecycleRetentionMax)
+		return
+	}
+	res, err := db.PurgeExpiredRecycle(ctx, purgeCutoff(time.Now(), days))
+	if err != nil {
+		slog.Warn("purge expired recycle failed", "err", err)
+		return
+	}
+	if res.Total() == 0 {
+		return
+	}
+	// 库行已删；文件删除失败只会留下孤儿文件，不影响正确性。
+	mp.Delete(res.MediaPaths...)
+	if err := db.AppendRestoreLog(ctx, "系统定时任务", res.Summary()); err != nil {
+		slog.Error("write purge log failed", "err", err)
+	}
+	slog.Info("purge expired recycle", "deleted", res.Total(), "media", len(res.MediaPaths))
+}
+
 func main() {
 	cfg := config.Load()
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
@@ -89,6 +144,7 @@ func main() {
 		db.SetPostIndex(ix)
 	}
 	startJanitor(db, mp, dp, ix)
+	startDailyPurge(db, mp)
 
 	webuiFS, err := webui.FS()
 	if err != nil {

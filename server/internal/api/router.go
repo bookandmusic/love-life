@@ -73,7 +73,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	securityAPI := &securityAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/security", securityAPI.get)
 	adminMux.HandleFunc("PUT /api/v1/admin/security", securityAPI.put)
-	// 回收站管理（AD5）：列表 / 单条恢复 / 批量恢复 / 恢复日志
+	// 回收站管理（AD5）：列表 / 单条恢复 / 批量恢复 / 回收站操作日志
 	recycleAPI := &recycleAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/recycle", recycleAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/recycle/restore", recycleAPI.restoreMany)

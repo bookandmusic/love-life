@@ -220,8 +220,10 @@ flowchart TD
 ### 5.2 自动清理规则
 
 - 后台管理页面可配置回收站保留期限：默认 30 天，可配置范围 7 ~ 365 天
-- 定时任务：每日凌晨执行
-- 逻辑：`deleted_at + 保留期限 < 当前时间` → 永久删除
+- 定时任务：每日凌晨执行（服务启动时先补跑一轮，覆盖 0 点整停机的漏跑；判定幂等）
+- 逻辑：`deleted_at + 保留期限 < 当前时间` → 永久删除（恰好到期保留）
+- 清理范围：动态连同其评论/点赞/收藏/媒体（含缩略图）物理删除；相册连同 album_items；纪念日与地图点位直接删除；待删媒体若被活跃相册引用，其 AlbumItem 组织项与封面指针一并清理（相册本身保留，回退到其它照片）
+- 留痕：每轮有删除时写一条回收站操作日志（operator = 系统定时任务，内容为类型与条数汇总）
 
 ### 5.3 安全约束
 
@@ -231,7 +233,7 @@ flowchart TD
 | AI 不可调用永久删除工具 | MCP 工具清单中不存在 purge_recycle_bin |
 | 仅管理员可恢复 | 通过后台管理页面操作 |
 | 仅系统可永久删除 | 定时任务自动执行，无人工入口 |
-| 恢复操作需审计 | 记录谁在什么时间恢复了什么内容 |
+| 回收站操作需审计 | 恢复记录谁在什么时间恢复了什么；系统永久删除记录类型与条数（operator = 系统定时任务） |
 
 ### 5.4 对 MCP 工具清单的影响
 
@@ -481,7 +483,7 @@ sequenceDiagram
 - **回收站管理**
   - 查看已删除内容列表：按删除时间排序；按类型筛选（动态/评论/照片/相册/纪念日/地图点位）；显示删除时间、删除者（用户/AI）；保留期限提示只读展示，读自空间管理·数据保留
   - 恢复操作：单条恢复（二次确认）；批量恢复（二次确认）
-  - 恢复操作审计日志：操作人 / 时间 / 恢复内容摘要；不可删除，永久保留
+  - 回收站操作日志：操作人 / 时间 / 内容摘要（恢复 + 系统超期永久删除）；不可删除，永久保留
 - **审计日志**（纯日志页；模型响应延迟与用量报表归仪表盘）
   - AI 操作日志 / 外部 MCP 调用日志（PAT 来源）：操作者筛选（user/ai/pat）+ CSV 导出 + 单条耗时列
 
@@ -616,9 +618,10 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | 实体 | 关键字段 | 说明 |
 |:---|:---|:---|
 | Notification | id, recipient_id, event_type, target_type?, target_id?, snapshot_json?, is_read, read_at, created_at | 事件类型 12+1 类（见需求 §4.8：内容删除按内容类型细分为 `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`，`+1` 为兼容期保留的 `media_deleted`）；内容删除事件带文案快照（`name` + `deleted_by`）、无跳转、**仅站内**（不走外部推送 Dispatcher）；目标已被删时点击提示「内容已删除」 |
+| RestoreLog | id, operator, summary, created_at | 回收站操作日志（不可删除、永久保留）：恢复记录谁在何时恢复了什么；系统超期永久删除记 operator=系统定时任务 + 类型与条数汇总。后台回收站页展示 |
 | ChatMessage | id, user_id, role(user/assistant), content, card_id?, media, created_at | media=消息携带的客户端媒体引用 JSON（[{name,type,size,data_url}]，仅本会话展示+历史回显，不落媒体资源，零垃圾）；实际媒体仅在确认执行时经 media_token 落库为 Post 媒体。按用户保留时长定时清理（预设 7/30/90 天/永久，默认 30 天） |
 | ConfirmAction | id, user_id, tool_name, params_json, status(pending/confirmed/cancelled/expired), expires_at, resolved_at, created_at | 确认卡片：单次有效（确认/取消即失效）；expires_at = 生成时间 + 15 分钟，超时置 expired，对话流内显示「已过期」不可再确认 |
-| AuditLog | id, actor_type(user/ai/pat), actor_id, action, params_digest, params, result, latency_ms, created_at | 永久保留；覆盖全部 MCP 工具调用与回收站恢复操作。`result` 仅记状态 `success` / `failed[: 原因]`（与 mock 契约 fixtures.mjs 一致，后台按 `result == 'success'` 展示成败）；入参人类可读摘要放 `params`（`key: value` 逗号分隔、单值超 60 字截断；`params_digest` 保留原始 JSON 供检索），`latency_ms` 仅 ai/pat 有值、user 为 null。一次工具调用只记一条审计（由调用方记账，工具内部不重复写） |
+| AuditLog | id, actor_type(user/ai/pat), actor_id, action, params_digest, params, result, latency_ms, created_at | 永久保留；覆盖全部 MCP 工具调用（回收站恢复与系统超期永久删除写 RestoreLog）。`result` 仅记状态 `success` / `failed[: 原因]`（与 mock 契约 fixtures.mjs 一致，后台按 `result == 'success'` 展示成败）；入参人类可读摘要放 `params`（`key: value` 逗号分隔、单值超 60 字截断；`params_digest` 保留原始 JSON 供检索），`latency_ms` 仅 ai/pat 有值、user 为 null。一次工具调用只记一条审计（由调用方记账，工具内部不重复写） |
 
 ### 12.4 令牌
 

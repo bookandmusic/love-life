@@ -269,7 +269,7 @@ export const recycle = [
   { id: 3, type: '照片', summary: 'IMG_20260815.jpg', deletedAt: '2026-08-18 20:45', deletedBy: 'Girl' },
 ]
 export const security = { recycleRetentionDays: 30, chatRetention: '30' }
-// 恢复操作审计：操作人/时间/恢复内容摘要；不可删除，永久保留（DESIGN §5/第9章）
+// 回收站操作日志：操作人/时间/内容摘要（恢复 + 系统超期永久删除）；不可删除，永久保留（DESIGN §5/第9章）
 export const restoreLog = [
   { time: '2026-08-21 09:12:44', operator: 'admin', summary: '动态"上次去海边的那组照片"' },
   { time: '2026-08-15 22:03:10', operator: 'admin', summary: '评论"下次还要一起去！"' },

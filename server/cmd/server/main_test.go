@@ -4,10 +4,14 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/search"
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
@@ -102,5 +106,111 @@ func TestBackfillOnceRespectsLimitAndSkipsIndexed(t *testing.T) {
 	filled, failed = backfillOnce(ctx, db, ix, 10)
 	if filled != 0 || failed != 0 || atomic.LoadInt64(calls) != 3 {
 		t.Fatalf("third round = %d,%d calls=%d, want 0,0,3（已索引不得重复计费）", filled, failed, atomic.LoadInt64(calls))
+	}
+}
+
+// 保留期换算截止时刻：库内时间列为 UTC，故统一按 UTC 计算。
+func TestPurgeCutoff(t *testing.T) {
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	if got, want := purgeCutoff(now, 30), time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("purgeCutoff = %v, want %v", got, want)
+	}
+	// 保留期边界值：7 与 365 天（DESIGN §5.2 值域）
+	if got, want := purgeCutoff(now, 7), time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC); !got.Equal(want) {
+		t.Fatalf("purgeCutoff(7) = %v, want %v", got, want)
+	}
+}
+
+// 下一次本地 0 点：0 点整也指向次日（严格不含当前时刻）。
+func TestNextPurgeAt(t *testing.T) {
+	loc := time.FixedZone("CST", 8*3600)
+	want := time.Date(2026, 9, 15, 0, 0, 0, 0, loc)
+	for _, now := range []time.Time{
+		time.Date(2026, 9, 14, 0, 0, 0, 0, loc),
+		time.Date(2026, 9, 14, 0, 0, 30, 0, loc),
+		time.Date(2026, 9, 14, 23, 59, 59, 0, loc),
+	} {
+		if got := nextPurgeAt(now); !got.Equal(want) {
+			t.Fatalf("nextPurgeAt(%v) = %v, want %v", now, got, want)
+		}
+	}
+}
+
+// runPurge 编排链路：过期行删除 + 媒体物理删除 + 回收站操作日志。
+func TestRunPurgeDeletesExpiredMediaAndLogs(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("INSERT INTO users (username, password_hash, role) VALUES ('a', 'x', 'girl')"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	res, err := db.Exec("INSERT INTO posts (author_id, content, deleted_at, deleted_by_type) VALUES (1, '过期动态', datetime('now','-40 days'), 'user')")
+	if err != nil {
+		t.Fatalf("seed post: %v", err)
+	}
+	postID, _ := res.LastInsertId()
+	if _, err := db.Exec("INSERT INTO media (post_id, kind, file_path, thumb_path, deleted_at, deleted_by_type) VALUES (?, 'photo', 'media/e2e.jpg', 'media/e2e-thumb.jpg', datetime('now','-40 days'), 'user')", postID); err != nil {
+		t.Fatalf("seed media: %v", err)
+	}
+	for _, rel := range []string{"media/e2e.jpg", "media/e2e-thumb.jpg"} {
+		p := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mp := media.New(dir, []byte("0123456789abcdef0123456789abcdef"), 1<<20)
+	runPurge(db, mp)
+
+	for _, rel := range []string{"media/e2e.jpg", "media/e2e-thumb.jpg"} {
+		if _, err := os.Stat(filepath.Join(dir, rel)); !os.IsNotExist(err) {
+			t.Errorf("%s 应已物理删除", rel)
+		}
+	}
+	var posts, mediaRows, logs int
+	_ = db.QueryRow("SELECT COUNT(*) FROM posts").Scan(&posts)
+	_ = db.QueryRow("SELECT COUNT(*) FROM media").Scan(&mediaRows)
+	_ = db.QueryRow("SELECT COUNT(*) FROM restore_logs WHERE operator = '系统定时任务'").Scan(&logs)
+	if posts != 0 || mediaRows != 0 {
+		t.Errorf("posts=%d media=%d, want 0/0", posts, mediaRows)
+	}
+	if logs != 1 {
+		t.Errorf("restore_logs=%d, want 1", logs)
+	}
+}
+
+// 保留期越界（历史脏值/直接改库）：跳过本轮，绝不误删。
+func TestRunPurgeSkipsOutOfRangeRetention(t *testing.T) {
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("INSERT INTO users (username, password_hash, role) VALUES ('a', 'x', 'girl')"); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := db.Exec("INSERT INTO posts (author_id, content, deleted_at, deleted_by_type) VALUES (1, '过期动态', datetime('now','-40 days'), 'user')"); err != nil {
+		t.Fatalf("seed post: %v", err)
+	}
+	zero := int64(0)
+	if err := db.SaveSecuritySettings(context.Background(), &zero, nil); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+
+	mp := media.New(dir, []byte("0123456789abcdef0123456789abcdef"), 1<<20)
+	runPurge(db, mp)
+
+	var posts, logs int
+	_ = db.QueryRow("SELECT COUNT(*) FROM posts").Scan(&posts)
+	_ = db.QueryRow("SELECT COUNT(*) FROM restore_logs").Scan(&logs)
+	if posts != 1 || logs != 0 {
+		t.Fatalf("保留期越界必须跳过：posts=%d（want 1）logs=%d（want 0）", posts, logs)
 	}
 }

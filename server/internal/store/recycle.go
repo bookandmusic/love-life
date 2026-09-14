@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // ---- AD6 数据安全设置（DESIGN §9 / 需求 §8.3）----
@@ -140,7 +141,7 @@ type RecycleItem struct {
 	DeletedBy string
 }
 
-// RestoreLogEntry 恢复日志条目（契约：{time,operator,summary}）。
+// RestoreLogEntry 回收站操作日志条目（恢复 + 系统永久删除；契约：{time,operator,summary}）。
 type RestoreLogEntry struct {
 	Time     string
 	Operator string
@@ -196,7 +197,7 @@ func (d *DB) ListRecycle(ctx context.Context) ([]*RecycleItem, error) {
 // RestoreResult 批量恢复结果。
 type RestoreResult struct {
 	Restored int64
-	// Summaries 已恢复内容摘要（写恢复日志用）。
+	// Summaries 已恢复内容摘要（写回收站操作日志用）。
 	Summaries []string
 }
 
@@ -305,14 +306,14 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 	return res, nil
 }
 
-// AppendRestoreLog 写恢复日志（永久保留，不可删除）。
+// AppendRestoreLog 写回收站操作日志（恢复 + 系统超期永久删除；永久保留，不可删除）。
 func (d *DB) AppendRestoreLog(ctx context.Context, operator, summary string) error {
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO restore_logs (operator, summary) VALUES (?, ?)`, operator, summary)
 	return err
 }
 
-// ListRestoreLogs 恢复日志，最新在前。
+// ListRestoreLogs 回收站操作日志，最新在前。
 func (d *DB) ListRestoreLogs(ctx context.Context) ([]*RestoreLogEntry, error) {
 	rows, err := d.QueryContext(ctx,
 		`SELECT created_at, operator, summary FROM restore_logs ORDER BY id DESC`)
@@ -330,4 +331,171 @@ func (d *DB) ListRestoreLogs(ctx context.Context) ([]*RestoreLogEntry, error) {
 		out = append(out, &e)
 	}
 	return out, rows.Err()
+}
+
+// PurgeResult 永久删除结果：各类型删除条数（键为 recycleSources 的 label）与待物理删除的媒体相对路径。
+type PurgeResult struct {
+	ByType     map[string]int64
+	MediaPaths []string
+}
+
+// Total 删除总条数（六类实体之和）。
+func (r *PurgeResult) Total() int64 {
+	var n int64
+	for _, c := range r.ByType {
+		n += c
+	}
+	return n
+}
+
+// Summary 供回收站操作日志的确定性摘要（按 recycleSources 顺序）；无删除时返回空串。
+func (r *PurgeResult) Summary() string {
+	if r == nil || r.Total() == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(recycleSources))
+	for _, s := range recycleSources {
+		if n := r.ByType[s.label]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", s.label, n))
+		}
+	}
+	return "系统永久删除：" + strings.Join(parts, "、")
+}
+
+// recycleLabelOf 表名 → recycleSources 的中文类型名（保持单一来源，避免第二份表清单漂移）。
+func recycleLabelOf(table string) string {
+	for _, s := range recycleSources {
+		if s.table == table {
+			return s.label
+		}
+	}
+	return table
+}
+
+// PurgeExpiredRecycle 永久删除回收站中超期内容（deleted_at < cutoff）。
+// 这是唯一允许物理删除的路径（DESIGN §5.2/§5.3）：只由系统定时任务调用，无人工入口。
+// cutoff 由调用方按「当前时间 - 保留期」以 UTC 计算（可注入，使「恰好到期」边界可确定性测试）。
+// 子行按 id 集合无条件清理（不按 deleted_at 过滤）——live 评论、已单独恢复的媒体若漏删，
+// 会在 foreign_keys(1) 下触发外键失败并回滚整轮。
+// 返回各类型条数与待物理删除的媒体路径（主文件 + 缩略图）；文件删除由调用方负责。
+func (d *DB) PurgeExpiredRecycle(ctx context.Context, cutoff time.Time) (*PurgeResult, error) {
+	ts := cutoff.UTC().Format("2006-01-02 15:04:05")
+	res := &PurgeResult{ByType: map[string]int64{}}
+
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	const (
+		// 归一化比较：历史库可能残留 RFC3339 格式（见 server/migrations/fix-time-format.sql），
+		// 裸字符串比较会把同日更早的时间误判成更晚而漏删。牺牲索引换正确性（每日一轮、万行量级）。
+		expiredAt            = `deleted_at IS NOT NULL AND datetime(deleted_at) < datetime(?)`
+		belongsToExpiredPost = `post_id IN (SELECT id FROM posts WHERE ` + expiredAt + `)`
+		mediaToDelete        = `(SELECT id FROM media WHERE ` + expiredAt + ` OR ` + belongsToExpiredPost + `)`
+	)
+
+	// 先取待删媒体路径（必须在删行之前）。
+	rows, err := tx.QueryContext(ctx,
+		`SELECT file_path, COALESCE(thumb_path, '') FROM media WHERE `+expiredAt+` OR `+belongsToExpiredPost, ts, ts)
+	if err != nil {
+		return nil, err
+	}
+	for rows.Next() {
+		var file, thumb string
+		if err := rows.Scan(&file, &thumb); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if file != "" {
+			res.MediaPaths = append(res.MediaPaths, file)
+		}
+		if thumb != "" {
+			res.MediaPaths = append(res.MediaPaths, thumb)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	del := func(table, where string, args ...any) (int64, error) {
+		r, err := tx.ExecContext(ctx, "DELETE FROM "+table+" WHERE "+where, args...)
+		if err != nil {
+			return 0, err
+		}
+		n, _ := r.RowsAffected()
+		return n, nil
+	}
+
+	// 0) 相册封面指向待删媒体时置空，让相册回退到其它照片（避免留下指向已删媒体的破图）。
+	if _, err := tx.ExecContext(ctx, `UPDATE albums SET cover_media_id = NULL WHERE cover_media_id IN `+mediaToDelete, ts, ts); err != nil {
+		return nil, err
+	}
+
+	// 1) album_items：待删媒体 或 过期相册（须先于 media/albums）。
+	if _, err := del("album_items",
+		`media_id IN `+mediaToDelete+` OR album_id IN (SELECT id FROM albums WHERE `+expiredAt+`)`, ts, ts, ts); err != nil {
+		return nil, err
+	}
+
+	// 2) comments：过期动态下的全部（含未软删）+ 自身超期。
+	n, err := del("comments", belongsToExpiredPost+` OR (`+expiredAt+`)`, ts, ts)
+	if err != nil {
+		return nil, err
+	}
+	res.ByType[recycleLabelOf("comments")] = n
+
+	// 3) 纯关联表：点赞 / 收藏（无回收站语义，随动态物理删除）。
+	if _, err := del("likes", belongsToExpiredPost, ts); err != nil {
+		return nil, err
+	}
+	if _, err := del("favorites", belongsToExpiredPost, ts); err != nil {
+		return nil, err
+	}
+
+	// 4) media：自身超期 或 属于过期动态。
+	n, err = del("media", `(`+expiredAt+`) OR `+belongsToExpiredPost, ts, ts)
+	if err != nil {
+		return nil, err
+	}
+	res.ByType[recycleLabelOf("media")] = n
+
+	// 5) posts：自身超期。
+	n, err = del("posts", expiredAt, ts)
+	if err != nil {
+		return nil, err
+	}
+	res.ByType[recycleLabelOf("posts")] = n
+
+	// 6) albums：自身超期。
+	n, err = del("albums", expiredAt, ts)
+	if err != nil {
+		return nil, err
+	}
+	res.ByType[recycleLabelOf("albums")] = n
+
+	// 7) 无入向引用的两张表：纪念日 / 地图点位。
+	n, err = del("anniversaries", expiredAt, ts)
+	if err != nil {
+		return nil, err
+	}
+	res.ByType[recycleLabelOf("anniversaries")] = n
+	n, err = del("map_points", expiredAt, ts)
+	if err != nil {
+		return nil, err
+	}
+	res.ByType[recycleLabelOf("map_points")] = n
+
+	for label, c := range res.ByType {
+		if c == 0 {
+			delete(res.ByType, label)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return res, nil
 }

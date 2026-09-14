@@ -248,12 +248,19 @@ func (p *Pipeline) moveToFinal(src, root string) (string, error) {
 }
 
 // Delete 物理删除主文件与缩略图（回收站永久清除时调用）。
+// Delete 删除数据目录内的相对路径；越界路径（脏数据或构造路径）直接跳过，避免误删数据目录外的文件。
+// 主文件与缩略图由调用方一并传入。
 func (p *Pipeline) Delete(relPaths ...string) {
 	for _, rel := range relPaths {
 		if rel == "" {
 			continue
 		}
-		_ = os.Remove(filepath.Join(p.dataDir, rel))
+		full := filepath.Join(p.dataDir, rel)
+		relToRoot, err := filepath.Rel(p.dataDir, full)
+		if err != nil || relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
+			continue
+		}
+		_ = os.Remove(full)
 	}
 }
 

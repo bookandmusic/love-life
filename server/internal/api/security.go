@@ -161,7 +161,7 @@ func (a *recycleAPI) restoreMany(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"restored": res.Restored})
 }
 
-// writeLog 恢复操作审计：记录谁在什么时间恢复了什么（DESIGN §5.3），永久保留。
+// writeLog 回收站操作日志：记录谁在什么时间恢复了什么（系统超期永久删除由清理任务另行写入），永久保留。
 func (a *recycleAPI) writeLog(r *http.Request, claims *auth.Claims, res *store.RestoreResult) {
 	operator := "admin"
 	if claims != nil && claims.Username != "" {

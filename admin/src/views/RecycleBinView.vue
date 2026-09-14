@@ -164,17 +164,17 @@ async function runRestore(target: RestoreTarget) {
     </AppCard>
 
     <div class="page-section-header">
-      <h2 class="page-section-title">恢复操作审计</h2>
+      <h2 class="page-section-title">回收站操作日志</h2>
     </div>
 
     <AppCard class="card-fixed">
       <div v-if="restoreLog.length === 0" class="empty-state">
         <AppIcon name="file-text" :size="40" />
-        <div class="empty-state-title">暂无恢复记录</div>
+        <div class="empty-state-title">暂无操作记录</div>
       </div>
       <table v-else class="table-wrapper">
         <thead>
-          <tr><th>时间</th><th>操作人</th><th>恢复内容</th></tr>
+          <tr><th>时间</th><th>操作人</th><th>内容摘要</th></tr>
         </thead>
         <tbody>
           <tr v-for="(l, i) in restoreLog" :key="i">
