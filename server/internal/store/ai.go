@@ -168,7 +168,7 @@ func (d *DB) InsertAuditLog(ctx context.Context, actorType string, actorID int64
 	return err
 }
 
-// InsertAuditLogFull 完整审计（AD7）：params 存人类可读全文供后台展示，
+// InsertAuditLogFull 完整审计（AD7）：params 存人类可读摘要（单值超 60 字截断）供后台展示，
 // latencyMs 记调用耗时（仅 ai/pat 调用有值；传 nil 则记 NULL）。
 func (d *DB) InsertAuditLogFull(ctx context.Context, actorType string, actorID int64, action, digest, params, result string, latencyMs *int64) error {
 	_, err := d.ExecContext(ctx,

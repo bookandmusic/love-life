@@ -10,6 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/lunar"
@@ -61,9 +64,47 @@ func AuditFailure(err error) string {
 	return AuditFailed + ": " + err.Error()
 }
 
+// auditParamValueMax 审计 params 单个值的展示上限（rune）；超出截断并追加省略号，
+// 避免大段正文撑破后台「参数摘要」列。
+const auditParamValueMax = 60
+
+// FormatParams 把工具入参渲染成后台展示用的人类可读摘要。形态对齐 mock 契约
+// （fixtures.mjs:291-295：`key: value` 逗号分隔、字符串带引号）；键序取字母序——
+// mock 样例是手写静态串、无排序语义，而 Go map 遍历无序，需要一个确定序。
+// 只渲染本次实际传入的参数，Schema 之外的额外参数一并保留，不隐藏。
+// 原始 JSON 另存 params_digest 供检索，故本函数只服务展示。
+func FormatParams(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(args))
+	for _, k := range slices.Sorted(maps.Keys(args)) {
+		parts = append(parts, k+": "+formatParamValue(args[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// formatParamValue 单值渲染：字符串按 rune 截断后补引号与省略号（引号配平），
+// 其余类型走 JSON 文本并按同一上限截断。
+func formatParamValue(v any) string {
+	if str, ok := v.(string); ok {
+		// 先截断再序列化：长串与短串走同一条转义路径，引号/尖括号处理一致。
+		b, _ := json.Marshal(textutil.TruncMark(str, auditParamValueMax))
+		return string(b)
+	}
+	// 入参来自 JSON 解码（map[string]any），必然可序列化，故与仓库既有用法一致忽略错误。
+	b, _ := json.Marshal(v)
+	return textutil.TruncMark(string(b), auditParamValueMax)
+}
+
 // AuditWithLatency 工具审计带 latency 版本（L5 AI 调用统计需求）。
-func (d *Deps) AuditWithLatency(ctx context.Context, userID int64, tool, digest, result string, latencyMs int64) {
-	_ = d.DB.InsertAuditLogFull(ctx, store.ActorTypeAI, userID, tool, digest, "", result, &latencyMs)
+// argsJSON 原样存 params_digest（AI 读工具＝模型原始 arguments；确认流＝确认卡 params_json），
+// 由它渲染的人类可读摘要存 params。digest 语义与本项改动前一致，不做 JSON 规范化。
+// 注：确认流会在 argsJSON 之外注入 media_tokens，该运行时差异不进审计。
+func (d *Deps) AuditWithLatency(ctx context.Context, userID int64, tool, argsJSON, result string, latencyMs int64) {
+	var args map[string]any
+	_ = json.Unmarshal([]byte(argsJSON), &args)
+	_ = d.DB.InsertAuditLogFull(ctx, store.ActorTypeAI, userID, tool, argsJSON, FormatParams(args), result, &latencyMs)
 }
 
 // aiOperatorLabel AI 操作者名称查不到时的回退标签（正常路径用真实用户名，REQ §8.1 外部推送需含操作者）。

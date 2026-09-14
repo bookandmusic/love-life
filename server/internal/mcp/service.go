@@ -181,14 +181,15 @@ func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequ
 		args = map[string]any{}
 	}
 
-	// 审计：params 存人类可读全文，latency_ms 记本次调用耗时（AD7 契约）
+	// 审计：params 存人类可读摘要、digest 存原始 JSON，latency_ms 记本次调用耗时（DESIGN §12）
 	digest, _ := json.Marshal(args)
+	paramsText := tools.FormatParams(args)
 	started := nowMillis()
 	out, err := target.Exec(r.Context(), s.deps, pat.UserID, args)
 	elapsed := nowMillis() - started
 
 	if err != nil {
-		_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), string(digest), tools.AuditFailure(err), &elapsed)
+		_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), paramsText, tools.AuditFailure(err), &elapsed)
 		s.writeResult(w, req.ID, map[string]any{
 			"content": []map[string]any{{"type": "text", "text": "调用失败: " + err.Error()}},
 			"isError": true,
@@ -196,7 +197,7 @@ func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequ
 		return
 	}
 
-	_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), string(digest), tools.AuditSuccess, &elapsed)
+	_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), paramsText, tools.AuditSuccess, &elapsed)
 	s.writeResult(w, req.ID, map[string]any{
 		"content": []map[string]any{{"type": "text", "text": out.Content}},
 	})

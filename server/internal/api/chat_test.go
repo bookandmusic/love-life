@@ -179,7 +179,7 @@ func TestChatReadToolInline(t *testing.T) {
 
 	// 假模型：先工具调用 search_posts，再纯文本回复
 	fake := newFakeModel(t,
-		`{"message":{"content":"","tool_calls":[{"id":"s1","type":"function","function":{"name":"search_posts","arguments":"{\"query\":\"海边\"}"}}]}}`,
+		`{"message":{"content":"","tool_calls":[{"id":"s1","type":"function","function":{"name":"search_posts","arguments":"{\"query\": \"海边\"}"}}]}}`,
 		`{"message":{"content":"找到了：海边的日落真美"}}`,
 	)
 	seedFakeProvider(t, ts, fake.server.URL)
@@ -216,6 +216,18 @@ func TestChatReadToolInline(t *testing.T) {
 	}
 	if latency == nil {
 		t.Fatal("ai 行 latency_ms 不应为 null（AD7 口径：ai/pat 有值）")
+	}
+	// 回归：params 存人类可读摘要、params_digest 存原始 JSON（DESIGN §12 AuditLog 口径）。
+	// 旧实现 params 为空 → 后台回退展示原始 JSON。
+	if params != `query: "海边"` {
+		t.Fatalf("ai 行 params=%q want 人类可读摘要 %q", params, `query: "海边"`)
+	}
+	var digest string
+	if err := ts.db.QueryRow(`SELECT params_digest FROM audit_logs WHERE action='search_posts'`).Scan(&digest); err != nil {
+		t.Fatal(err)
+	}
+	if digest != `{"query": "海边"}` {
+		t.Fatalf("params_digest=%q want 模型原始 JSON 串（不得规范化键序/空白）", digest)
 	}
 }
 func TestChatMediaFlow(t *testing.T) {

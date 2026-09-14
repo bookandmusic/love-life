@@ -442,15 +442,14 @@ func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCa
 		startAt := time.Now()
 		out, err := tool.Exec(ctx, s.deps, userID, args)
 		latencyMs := time.Since(startAt).Milliseconds()
-		digest := string(call.Function.Arguments)
 		if err != nil {
 			// 读工具失败同样落审计（failed: 原因），与 confirm / PAT 通道口径一致；
 			// 否则「所有工具调用均记审计」在这条路径留空档。
-			s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, tools.AuditFailure(err), latencyMs)
+			s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditFailure(err), latencyMs)
 			return "", nil, nil, err
 		}
 		// result 仅记状态（success/failed，对齐 mock 契约与后台等值判定）；工具输出不回写审计
-		s.deps.AuditWithLatency(ctx, userID, tool.Name, digest, tools.AuditSuccess, latencyMs)
+		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditSuccess, latencyMs)
 		return out.Content, nil, out.Data, nil
 	}
 	// 写工具 → 确认卡片（15 分钟 TTL，单次有效）
