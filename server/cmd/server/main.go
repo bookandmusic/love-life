@@ -140,6 +140,9 @@ func main() {
 	}
 	var searchPort tools.SearchIndex
 	if ix != nil {
+		// 嵌入调用计入 AI 用量（次数/耗时，不含 token——见 search.embed 注释），
+		// 否则仪表盘会给人「语义检索零成本」的错觉。
+		ix.SetUsageRecorder(embeddingUsage{db: db})
 		searchPort = ix
 		db.SetPostIndex(ix)
 	}
@@ -214,6 +217,31 @@ const (
 	backfillBatch = 200 // 单轮上限：换模型后集合被重建时，避免一轮打出上千个嵌入请求
 	backfillPage  = 50
 )
+
+// embeddingUsage 把嵌入调用落进 ai_usage_logs（search.UsageRecorder 的实现）。
+// 失败只告警：用量统计是派生数据，不能反过来影响检索与写入。
+type embeddingUsage struct {
+	db *store.DB
+}
+
+func (u embeddingUsage) EmbeddingCalled(latency time.Duration, ok bool) {
+	status := tools.AuditSuccess
+	if !ok {
+		status = "failed"
+	}
+	// 模型名每次实时解析：后台可随时改嵌入模型，启动时固化会让用量归类失真。
+	model := "embedding"
+	if ec, err := u.db.GetEmbeddingConfig(context.Background()); err == nil && ec.Model != "" {
+		model = ec.Model
+	}
+	if err := u.db.InsertAIUsage(context.Background(), &store.AIUsageLog{
+		Model:     model,
+		LatencyMs: latency.Milliseconds(),
+		Status:    status,
+	}); err != nil {
+		slog.Warn("record embedding usage failed", "err", err)
+	}
+}
 
 // backfillSearch 增量回填：逐页扫描未删动态，缺索引的补建、已有的跳过（避免重复计费）。
 func backfillSearch(ctx context.Context, db *store.DB, ix *search.Index) {

@@ -234,6 +234,213 @@ func scanPostHits(rows *sql.Rows) ([]PostHit, error) {
 // searchPostLimit 语义与关键词两条路径共用的返回条数上限。
 const searchPostLimit = 10
 
+// searchRecallFactor 带过滤条件时语义路径的召回倍数：过滤在回库后做，
+// 只取 searchPostLimit 条可能被过滤空，故按倍数扩大取数再截断。
+const searchRecallFactor = 3
+
+// searchMediaTypes 动态可用的媒体类型（与 media.kind 值域一致）。
+var searchMediaTypes = map[string]bool{"photo": true, "video": true, "audio": true}
+
+// searchFilter 检索过滤条件（零值表示不限）。
+type searchFilter struct {
+	from, to  string // YYYY-MM-DD（库内 UTC 日期），闭区间
+	mediaType string // photo / video / audio
+}
+
+// empty 无任何过滤条件时语义路径无需扩召回。
+func (f searchFilter) empty() bool { return f.from == "" && f.to == "" && f.mediaType == "" }
+
+// where 关键词路径的附加谓词与参数（列名限定 p. 前缀，供 JOIN 查询使用）。
+func (f searchFilter) where() (string, []any) {
+	var conds []string
+	var args []any
+	if f.from != "" {
+		conds = append(conds, "date(p.created_at) >= date(?)")
+		args = append(args, f.from)
+	}
+	if f.to != "" {
+		conds = append(conds, "date(p.created_at) <= date(?)")
+		args = append(args, f.to)
+	}
+	if f.mediaType != "" {
+		conds = append(conds, "EXISTS(SELECT 1 FROM media m WHERE m.post_id = p.id AND m.kind = ? AND m.deleted_at IS NULL)")
+		args = append(args, f.mediaType)
+	}
+	if len(conds) == 0 {
+		return "", nil
+	}
+	return " AND " + strings.Join(conds, " AND "), args
+}
+
+// matchDate 语义路径的日期过滤（闭区间、本地日期口径）。
+func (f searchFilter) matchDate(h PostHit) bool {
+	d := datePrefix(h.Date)
+	if f.from != "" && d < f.from {
+		return false
+	}
+	if f.to != "" && d > f.to {
+		return false
+	}
+	return true
+}
+
+// parseSearchFilter 解析可选入参；格式非法时报错（不静默忽略）。
+func parseSearchFilter(args map[string]any) (searchFilter, error) {
+	var f searchFilter
+	from, to, err := parseDateRange(str(args, "date_range"))
+	if err != nil {
+		return f, err
+	}
+	f.from, f.to = from, to
+	if mt := str(args, "media_type"); mt != "" {
+		if !searchMediaTypes[mt] {
+			return f, fmt.Errorf("media_type 仅支持 photo / video / audio")
+		}
+		f.mediaType = mt
+	}
+	return f, nil
+}
+
+// parseDateRange 解析 "YYYY-MM-DD~YYYY-MM-DD"（闭区间、本地日期口径）；空串与空侧表示不限。
+func parseDateRange(s string) (from, to string, err error) {
+	if s == "" {
+		return "", "", nil
+	}
+	parts := strings.Split(s, "~")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("date_range 需形如 YYYY-MM-DD~YYYY-MM-DD")
+	}
+	if parts[0] != "" {
+		if _, perr := time.Parse("2006-01-02", parts[0]); perr != nil {
+			return "", "", fmt.Errorf("date_range 起始日期无效: %s", parts[0])
+		}
+		from = parts[0]
+	}
+	if parts[1] != "" {
+		if _, perr := time.Parse("2006-01-02", parts[1]); perr != nil {
+			return "", "", fmt.Errorf("date_range 结束日期无效: %s", parts[1])
+		}
+		to = parts[1]
+	}
+	if from != "" && to != "" && from > to {
+		return "", "", fmt.Errorf("date_range 起始日期晚于结束日期")
+	}
+	return from, to, nil
+}
+
+// dateOnly 取日期部分（测试断言用；零值 → 空串）。
+func dateOnly(s string) string { return datePrefix(s) }
+
+// datePrefix 从库内 `YYYY-MM-DD HH:MM:SS` 取日期部分；不含空格时原样返回。
+func datePrefix(s string) string {
+	if i := strings.IndexByte(s, ' '); i > 0 {
+		return s[:i]
+	}
+	return s
+}
+
+// keywordPosts 关键词路径：SQL 侧直接套用过滤条件。
+func (d *Deps) keywordPosts(ctx context.Context, query string, f searchFilter) ([]PostHit, error) {
+	like := "%" + query + "%"
+	where, args := f.where()
+	args = append([]any{like, like}, args...)
+	rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(`
+			SELECT %s
+			FROM posts p JOIN users u ON u.id = p.author_id
+			WHERE p.deleted_at IS NULL AND (p.content LIKE ? OR p.title LIKE ?)%s
+			ORDER BY p.id DESC LIMIT %d`, postHitColumns, where, searchPostLimit), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanPostHits(rows)
+}
+
+// semanticPostsFiltered 语义检索 + 过滤：带过滤条件时扩大召回，回库后在 Go 侧过滤再截断。
+// 返回 ok=false 时调用方回落关键词路径（与 semanticPosts 同口径）。
+func (d *Deps) semanticPostsFiltered(ctx context.Context, query string, f searchFilter) ([]PostHit, bool) {
+	if d.Search == nil || !d.Search.Enabled(ctx) {
+		return nil, false
+	}
+	k := searchPostLimit
+	if !f.empty() {
+		k = searchPostLimit * searchRecallFactor
+	}
+	ids, err := d.Search.Query(ctx, query, k)
+	if err != nil {
+		slog.Warn("semantic search failed, falling back to keyword match", "err", err)
+		return nil, false
+	}
+	if len(ids) == 0 {
+		return nil, false
+	}
+	hits, err := d.postsByIDs(ctx, ids)
+	if err != nil {
+		slog.Warn("semantic search lookup failed, falling back to keyword match", "err", err)
+		return nil, false
+	}
+	if f.empty() {
+		if len(hits) == 0 {
+			return nil, false
+		}
+		return hits, true
+	}
+	// 过滤：先日期（本地数据），后媒体类型（一次批量查询，避免 N+1）。
+	kept := make([]PostHit, 0, len(hits))
+	for _, h := range hits {
+		if f.matchDate(h) {
+			kept = append(kept, h)
+		}
+	}
+	if f.mediaType != "" && len(kept) > 0 {
+		kinds, err := d.mediaKinds(ctx, kept, f.mediaType)
+		if err != nil {
+			slog.Warn("semantic search media filter failed, falling back to keyword match", "err", err)
+			return nil, false
+		}
+		filtered := kept[:0]
+		for _, h := range kept {
+			if kinds[h.ID] {
+				filtered = append(filtered, h)
+			}
+		}
+		kept = filtered
+	}
+	if len(kept) == 0 {
+		// 有过滤条件时「过滤后为空」是合法结果，不能回落关键词（否则过滤形同失效）
+		return []PostHit{}, true
+	}
+	if len(kept) > searchPostLimit {
+		kept = kept[:searchPostLimit]
+	}
+	return kept, true
+}
+
+// mediaKinds 返回命中动态中「含指定类型未删媒体」的 id 集合。
+func (d *Deps) mediaKinds(ctx context.Context, hits []PostHit, kind string) (map[int64]bool, error) {
+	ph := strings.TrimSuffix(strings.Repeat("?,", len(hits)), ",")
+	args := make([]any, 0, len(hits)+1)
+	args = append(args, kind)
+	for _, h := range hits {
+		args = append(args, h.ID)
+	}
+	rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(
+		`SELECT DISTINCT post_id FROM media WHERE kind = ? AND deleted_at IS NULL AND post_id IN (%s)`, ph), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	set := map[int64]bool{}
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		set[id] = true
+	}
+	return set, rows.Err()
+}
+
 // semanticPosts 语义检索动态：未配置 / 上游失败 / 无命中一律返回 ok=false，
 // 由调用方回落关键词匹配——语义检索是增强能力，不得让搜索整体失败。
 func (d *Deps) semanticPosts(ctx context.Context, query string) ([]PostHit, bool) {
@@ -354,27 +561,25 @@ func Registry() []*Tool {
 			Category:    "动态",
 			Description: "语义搜索历史动态",
 			Schema: map[string]string{
-				"query": "string — 语义检索词",
+				"query":      "string — 语义检索词",
+				"date_range": "string — 可选，日期闭区间 YYYY-MM-DD~YYYY-MM-DD（单边可省略）",
+				"media_type": "string — 可选，媒体类型 photo / video / audio",
 			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
-				"query": map[string]any{"type": "string"},
+				"query":      map[string]any{"type": "string"},
+				"date_range": map[string]any{"type": "string"},
+				"media_type": map[string]any{"type": "string", "enum": []string{"photo", "video", "audio"}},
 			}, "required": []string{"query"}},
 			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
 				q := str(args, "query")
-				hits, ok := d.semanticPosts(ctx, q)
+				filter, err := parseSearchFilter(args)
+				if err != nil {
+					return nil, err
+				}
+				hits, ok := d.semanticPostsFiltered(ctx, q, filter)
 				if !ok {
 					// 回落：未配置嵌入模型或语义检索不可用时按关键词匹配
-					like := "%" + q + "%"
-					rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(`
-						SELECT %s
-						FROM posts p JOIN users u ON u.id = p.author_id
-						WHERE p.deleted_at IS NULL AND (p.content LIKE ? OR p.title LIKE ?)
-						ORDER BY p.id DESC LIMIT %d`, postHitColumns, searchPostLimit), like, like)
-					if err != nil {
-						return nil, err
-					}
-					defer rows.Close()
-					if hits, err = scanPostHits(rows); err != nil {
+					if hits, err = d.keywordPosts(ctx, q, filter); err != nil {
 						return nil, err
 					}
 				}

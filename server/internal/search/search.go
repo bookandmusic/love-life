@@ -33,9 +33,16 @@ type Config struct {
 // 故每次操作都取一遍——app_settings 只有两行，读取代价可忽略，省掉缓存失效逻辑。
 type Resolver func(ctx context.Context) (Config, bool)
 
+// UsageRecorder 嵌入调用的用量记录端口（由 main 注入 store 侧实现，避免 search 依赖 store）。
+// 只记调用次数、耗时与成败——token 不可靠（见 embed 注释）。
+type UsageRecorder interface {
+	EmbeddingCalled(latency time.Duration, ok bool)
+}
+
 // Index 向量索引。零值不可用，须经 Open 构造。
 type Index struct {
 	resolve Resolver
+	usage   UsageRecorder // 可选：未注入时不记用量
 	db      *chromem.DB
 	dimPath string // 当前集合的向量维度落盘位置（跨重启校验维度变化）
 
@@ -67,6 +74,10 @@ func Open(dir string, resolve Resolver) (*Index, error) {
 }
 
 // Enabled 当前是否已配置嵌入模型。
+// SetUsageRecorder 注入嵌入用量记录器；未注入（测试/单测）时静默跳过。
+// 非并发安全：须在启动后台任务与 HTTP 服务前调用一次。
+func (ix *Index) SetUsageRecorder(r UsageRecorder) { ix.usage = r }
+
 func (ix *Index) Enabled(ctx context.Context) bool {
 	_, ok := ix.resolve(ctx)
 	return ok
@@ -92,7 +103,7 @@ func (ix *Index) Upsert(ctx context.Context, postID int64, content string) error
 	if !ok {
 		return ErrDisabled
 	}
-	vec, err := embed(ctx, cfg, content)
+	vec, err := ix.embed(ctx, cfg, content)
 	if err != nil {
 		return err
 	}
@@ -177,7 +188,7 @@ func (ix *Index) Query(ctx context.Context, text string, k int) ([]int64, error)
 	if !ok {
 		return nil, ErrDisabled
 	}
-	vec, err := embed(ctx, cfg, text)
+	vec, err := ix.embed(ctx, cfg, text)
 	if err != nil {
 		return nil, err
 	}
@@ -252,11 +263,16 @@ func embeddingFunc(cfg Config) chromem.EmbeddingFunc {
 // 上游卡住会连带拖死调用方与那把写锁，故这里统一加界。
 const embedTimeout = 10 * time.Second
 
-// embed 做一次嵌入（HTTP）。
-func embed(ctx context.Context, cfg Config, text string) ([]float32, error) {
+// embed 做一次嵌入（HTTP），并记一次用量（次数 + 耗时 + 成败）。
+// 不记 token：OpenAI 兼容 /embeddings 的 usage 字段跨供应商不保证，强记 0 会误导。
+func (ix *Index) embed(ctx context.Context, cfg Config, text string) ([]float32, error) {
 	ctx, cancel := context.WithTimeout(ctx, embedTimeout)
 	defer cancel()
+	started := time.Now()
 	vec, err := embeddingFunc(cfg)(ctx, text)
+	if ix.usage != nil {
+		ix.usage.EmbeddingCalled(time.Since(started), err == nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("嵌入失败: %w", err)
 	}

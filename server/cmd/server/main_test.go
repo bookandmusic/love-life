@@ -214,3 +214,39 @@ func TestRunPurgeSkipsOutOfRangeRetention(t *testing.T) {
 		t.Fatalf("保留期越界必须跳过：posts=%d（want 1）logs=%d（want 0）", posts, logs)
 	}
 }
+
+// embeddingUsage 落库：嵌入调用写入 ai_usage_logs（次数与成败可见，token 恒 0）。
+func TestEmbeddingUsageRecordsToAIUsageLogs(t *testing.T) {
+	db, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+
+	// 先落嵌入配置：模型名须「调用时实时解析」（启动时固化会记成兜底名 embedding）
+	res, err := db.Exec("INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', '本地', 'http://127.0.0.1:1/v1', 'x', '', 0)")
+	if err != nil {
+		t.Fatalf("seed provider: %v", err)
+	}
+	pid, _ := res.LastInsertId()
+	if err := db.SaveEmbeddingConfig(t.Context(), pid, "bge-m3"); err != nil {
+		t.Fatalf("save embedding config: %v", err)
+	}
+
+	u := embeddingUsage{db: db}
+	u.EmbeddingCalled(120*time.Millisecond, true)
+	u.EmbeddingCalled(30*time.Millisecond, false)
+
+	var n, success, failed int
+	_ = db.QueryRow("SELECT COUNT(*) FROM ai_usage_logs WHERE model = 'bge-m3'").Scan(&n)
+	_ = db.QueryRow("SELECT COUNT(*) FROM ai_usage_logs WHERE model = 'bge-m3' AND status = 'success'").Scan(&success)
+	_ = db.QueryRow("SELECT COUNT(*) FROM ai_usage_logs WHERE model = 'bge-m3' AND status = 'failed'").Scan(&failed)
+	if n != 2 || success != 1 || failed != 1 {
+		t.Fatalf("rows=%d success=%d failed=%d, want 2/1/1", n, success, failed)
+	}
+	var tokens int
+	_ = db.QueryRow("SELECT COALESCE(SUM(total_tokens),0) FROM ai_usage_logs WHERE model = 'bge-m3'").Scan(&tokens)
+	if tokens != 0 {
+		t.Fatalf("total_tokens = %d, want 0（嵌入不记 token）", tokens)
+	}
+}
