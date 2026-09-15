@@ -19,12 +19,12 @@ type profileAPI struct {
 func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 	space, err := a.db.GetSpace(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	users, err := a.db.ListUsers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	type member struct {
@@ -101,7 +101,7 @@ func (a *profileAPI) updateSpace(w http.ResponseWriter, r *http.Request) {
 		LoveStartDate string `json:"love_start_date"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.LoveStartDate != "" {
@@ -113,7 +113,7 @@ func (a *profileAPI) updateSpace(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.UpdateSpace(r.Context(), &store.Space{
 		Name: req.Name, Signature: req.Signature, LoveStartDate: nullStr(req.LoveStartDate),
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -130,7 +130,7 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 		RetentionDays *int    `json:"chat_retention_days"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.AIStyle != nil {
@@ -138,7 +138,7 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 		if name := strings.TrimSpace(*req.AIStyle); name != "" {
 			styles, err := a.db.ListStyles(r.Context())
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, "服务器错误")
+				writeError(w, http.StatusInternalServerError, errInternal)
 				return
 			}
 			found := false
@@ -168,7 +168,7 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

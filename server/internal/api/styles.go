@@ -51,7 +51,7 @@ func (a *stylesAPI) listData(r *http.Request) (stylesData, error) {
 func (a *stylesAPI) list(w http.ResponseWriter, r *http.Request) {
 	data, err := a.listData(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
@@ -63,7 +63,7 @@ func (a *stylesAPI) create(w http.ResponseWriter, r *http.Request) {
 		Prompt string `json:"prompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -82,12 +82,12 @@ func (a *stylesAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	s, err := a.db.GetStyle(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusCreated, styleOut{ID: s.ID, Name: s.Name, Prompt: s.Prompt, Builtin: s.Builtin})
@@ -98,7 +98,7 @@ func (a *stylesAPI) setDefault(w http.ResponseWriter, r *http.Request) {
 		ID int64 `json:"id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.ID == 0 {
@@ -110,12 +110,12 @@ func (a *stylesAPI) setDefault(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "风格不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	data, err := a.listData(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
@@ -132,7 +132,7 @@ func (a *stylesAPI) update(w http.ResponseWriter, r *http.Request) {
 		Prompt *string `json:"prompt"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	// mock 语义：传了才更新，trim 后非空才合法
@@ -183,7 +183,7 @@ func (a *stylesAPI) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	def, err := a.db.DefaultStyleID(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if def == id {
@@ -207,7 +207,7 @@ func (a *stylesAPI) writeStyleErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrStyleNameTaken):
 		writeError(w, http.StatusBadRequest, "风格名称已存在")
 	default:
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 	}
 }
 
@@ -245,7 +245,7 @@ func (a *stylesAPI) setPrompt(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
 	saved, _ := json.Marshal(map[string]string{"content": req.Content, "updated_at": now})
 	if err := a.db.SetSetting(r.Context(), "system_prompt", string(saved)); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, systemPromptOut{Content: req.Content, UpdatedAt: now})

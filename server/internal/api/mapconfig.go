@@ -57,7 +57,7 @@ func validSourceType(t string) bool { return t == "public" || t == "tianditu" }
 func (a *mapConfigAPI) list(w http.ResponseWriter, r *http.Request) {
 	sources, err := a.db.ListSources(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	items := make([]mapSourceItem, 0, len(sources))
@@ -77,7 +77,7 @@ func validTileTemplate(tpl string) bool {
 func (a *mapConfigAPI) create(w http.ResponseWriter, r *http.Request) {
 	var req mapSourceRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if !validSourceType(req.Type) {
@@ -105,12 +105,12 @@ func (a *mapConfigAPI) create(w http.ResponseWriter, r *http.Request) {
 		TiandituKey: enc, TiandituLayer: req.TiandituLayer,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	s, err := a.db.GetSource(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusCreated, a.item(s))
@@ -120,7 +120,7 @@ func (a *mapConfigAPI) create(w http.ResponseWriter, r *http.Request) {
 func (a *mapConfigAPI) remove(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	s, err := a.db.GetSource(r.Context(), id)
@@ -129,7 +129,7 @@ func (a *mapConfigAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if s.Enabled {
@@ -137,7 +137,7 @@ func (a *mapConfigAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.DeleteSource(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -148,7 +148,7 @@ func (a *mapConfigAPI) remove(w http.ResponseWriter, r *http.Request) {
 func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	s, err := a.db.GetSource(r.Context(), id)
@@ -157,7 +157,7 @@ func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	switch s.Type {
@@ -177,12 +177,12 @@ func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.db.EnableSource(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	s, err = a.db.GetSource(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, a.item(s))
@@ -193,7 +193,7 @@ func (a *mapConfigAPI) config(w http.ResponseWriter, r *http.Request) {
 	s, err := a.db.GetEnabledSource(r.Context())
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		// DB 故障与「未启用任何源」必须区分：前者是服务器错误，后者才是正常空态
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	resp := map[string]any{
@@ -261,7 +261,7 @@ func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	upstream := ""
@@ -294,7 +294,7 @@ func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
 	// 用请求 context：客户端断开时取消上游请求
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstream, nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	applyUpstreamHeaders(req, s.Type, r.Header.Get("Referer"))

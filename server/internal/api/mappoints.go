@@ -50,7 +50,7 @@ func toMapPointItem(p *store.MapPoint) mapPointItem {
 func (a *mapPointsAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListPoints(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	items := make([]mapPointItem, 0, len(list))
@@ -65,7 +65,7 @@ func (a *mapPointsAPI) create(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	var req mapPointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.Name == "" {
@@ -79,7 +79,7 @@ func (a *mapPointsAPI) create(w http.ResponseWriter, r *http.Request) {
 		Source: "manual", UserID: claims.UserID,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if created {
@@ -101,7 +101,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	// 先取行：删除后拿不到名称与创建者（也用于把 404 判定提前）
@@ -111,7 +111,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	err = a.db.SoftDeletePoint(r.Context(), id, store.ActorTypeUser, claims.UserID)
@@ -120,7 +120,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// 删除对方创建的足迹 → 站内通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
@@ -136,7 +136,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 func (a *mapPointsAPI) cities(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.PointCities(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if list == nil {

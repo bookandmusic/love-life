@@ -288,7 +288,10 @@ func (p *Pipeline) CleanTmp(olderThan time.Duration) int {
 	return removed
 }
 
-// ---- 签名 URL（DESIGN 4.5：短期签名，默认 15 分钟）----
+// ---- 签名 URL（DESIGN 4.5：短期签名）----
+
+// signedURLTTL 媒体签名 URL 有效期（DESIGN 4.5 默认 15 分钟）。
+const signedURLTTL = 15 * time.Minute
 
 func (p *Pipeline) signPayload(mediaID int64, variant string, exp time.Time) string {
 	mac := hmac.New(sha256.New, p.secret)
@@ -297,7 +300,7 @@ func (p *Pipeline) signPayload(mediaID int64, variant string, exp time.Time) str
 }
 
 func (p *Pipeline) SignedURL(mediaID int64, variant string) string {
-	exp := time.Now().Add(15 * time.Minute)
+	exp := time.Now().Add(signedURLTTL)
 	return fmt.Sprintf("/api/v1/media/file/%d?v=%s&exp=%d&sig=%s",
 		mediaID, variant, exp.Unix(), p.signPayload(mediaID, variant, exp))
 }

@@ -25,7 +25,7 @@ type embeddingConfig struct {
 func (a *embeddingAPI) get(w http.ResponseWriter, r *http.Request) {
 	cfg, err := a.db.GetEmbeddingConfig(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, embeddingConfig{ProviderID: cfg.ProviderID, Model: cfg.Model})
@@ -34,7 +34,7 @@ func (a *embeddingAPI) get(w http.ResponseWriter, r *http.Request) {
 func (a *embeddingAPI) put(w http.ResponseWriter, r *http.Request) {
 	var req embeddingConfig
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	req.Model = strings.TrimSpace(req.Model)
@@ -52,7 +52,7 @@ func (a *embeddingAPI) put(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusBadRequest, "供应商不存在")
 				return
 			}
-			writeError(w, http.StatusInternalServerError, "服务器错误")
+			writeError(w, http.StatusInternalServerError, errInternal)
 			return
 		}
 		// 只有 OpenAI 兼容端点才提供 /embeddings（其余协议地址形态不同）。
@@ -62,7 +62,7 @@ func (a *embeddingAPI) put(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.db.SaveEmbeddingConfig(r.Context(), req.ProviderID, req.Model); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, req)

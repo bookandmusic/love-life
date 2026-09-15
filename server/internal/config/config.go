@@ -5,6 +5,9 @@ import (
 	"strconv"
 )
 
+// defaultMediaMaxMB 单媒体文件软限默认值（MB，DESIGN 4.8）；可用 MEDIA_MAX_MB 覆盖。
+const defaultMediaMaxMB = 500
+
 // Config 全部来自环境变量——部署口径是"单二进制 + 一个数据目录"，不引入配置文件。
 type Config struct {
 	Listen        string // 监听地址
@@ -15,7 +18,7 @@ type Config struct {
 }
 
 func Load() Config {
-	maxMB := getenvInt("MEDIA_MAX_MB", 500)
+	maxMB := getenvInt("MEDIA_MAX_MB", defaultMediaMaxMB)
 	return Config{
 		Listen:        getenv("LISTEN", ":8080"),
 		DataDir:       getenv("DATA_DIR", "./data"),

@@ -19,7 +19,7 @@ type adminAPI struct {
 func (a *adminAPI) listUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := a.db.ListUsers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	type item struct {
@@ -51,7 +51,7 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 		} `json:"boy"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.Girl.Username == "" || req.Girl.Password == "" || req.Boy.Username == "" || req.Boy.Password == "" {
@@ -77,7 +77,7 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	}
 	users, err := a.db.ListUsers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	for _, u := range users {
@@ -94,12 +94,12 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	}
 	girlHash, err := auth.HashPassword(req.Girl.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	boyHash, err := auth.HashPassword(req.Boy.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	girlID, boyID, err := a.db.CreateCouple(r.Context(),
@@ -110,7 +110,7 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "用户名已存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -139,12 +139,12 @@ func (a *adminAPI) updateNickname(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	u, err := a.db.GetUserByID(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "nickname": u.Nickname})
@@ -160,7 +160,7 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if len(req.Password) < 6 {
@@ -169,7 +169,7 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if err := a.db.UpdateUserPassword(r.Context(), id, hash); err != nil {
@@ -177,7 +177,7 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

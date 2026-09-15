@@ -43,19 +43,19 @@ func (a *interactionsAPI) toggleLike(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, ok := postIDFromPath(r)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	if _, err := a.db.GetPost(r.Context(), id); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "动态不存在")
 		return
 	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	liked, err := a.db.ToggleLike(r.Context(), id, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if liked {
@@ -68,19 +68,19 @@ func (a *interactionsAPI) toggleFavorite(w http.ResponseWriter, r *http.Request)
 	claims, _ := auth.UserFromContext(r.Context())
 	id, ok := postIDFromPath(r)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	if _, err := a.db.GetPost(r.Context(), id); errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "动态不存在")
 		return
 	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	favorited, err := a.db.ToggleFavorite(r.Context(), id, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if favorited {
@@ -93,7 +93,7 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 	claims, _ := auth.UserFromContext(r.Context())
 	id, ok := postIDFromPath(r)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	var req struct {
@@ -111,12 +111,12 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "动态不存在")
 		return
 	} else if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	commentID, err := a.db.CreateComment(r.Context(), id, claims.UserID, req.Content)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	a.notifyPartner(r, "post_commented", id, "收到评论",
@@ -127,12 +127,12 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 func (a *interactionsAPI) listComments(w http.ResponseWriter, r *http.Request) {
 	id, ok := postIDFromPath(r)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	comments, err := a.db.ListComments(r.Context(), id, 100, 0)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	type item struct {
@@ -152,7 +152,7 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	c, err := a.db.GetComment(r.Context(), id)
@@ -161,11 +161,11 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if err := a.db.SoftDeleteComment(r.Context(), id, "user", claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// 双方可删任意内容；删对方的评论 → 通知评论作者，自删静默
@@ -187,7 +187,7 @@ func (a *interactionsAPI) listNotifications(w http.ResponseWriter, r *http.Reque
 	}
 	list, err := a.db.ListNotifications(r.Context(), claims.UserID, 50, (page-1)*50)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	type item struct {
@@ -213,7 +213,7 @@ func (a *interactionsAPI) unreadCount(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	n, err := a.db.UnreadNotificationCount(r.Context(), claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]int{"count": n})
@@ -223,11 +223,11 @@ func (a *interactionsAPI) markRead(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	if err := a.db.MarkNotificationRead(r.Context(), id, claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -236,7 +236,7 @@ func (a *interactionsAPI) markRead(w http.ResponseWriter, r *http.Request) {
 func (a *interactionsAPI) markAllRead(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	if err := a.db.MarkAllNotificationsRead(r.Context(), claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

@@ -37,7 +37,7 @@ func toPATItem(t *store.PersonalAccessToken) patItem {
 func (a *patAPI) list(w http.ResponseWriter, r *http.Request) {
 	toks, err := a.db.ListPATs(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	out := make([]patItem, 0, len(toks))
@@ -57,7 +57,7 @@ func (a *patAPI) create(w http.ResponseWriter, r *http.Request) {
 		Tier string `json:"tier"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.Name == "" {
@@ -93,7 +93,7 @@ func (a *patAPI) create(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "绑定用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -116,7 +116,7 @@ func (a *patAPI) revoke(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, toPATItem(tok))

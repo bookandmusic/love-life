@@ -24,7 +24,10 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/webui"
 )
 
-// startJanitor 每小时例行：临时区孤儿媒体（24h 未发布）、过期 refresh token、
+// tmpMediaTTL 临时区孤儿媒体的保留时长（上传后未发布即清理）。
+const tmpMediaTTL = 24 * time.Hour
+
+// startJanitor 每小时例行：临时区孤儿媒体（tmpMediaTTL 未发布）、过期 refresh token、
 // 纪念日提醒检查（需求 §4.6 站内+外部同发；按「当日已发」幂等，每小时跑一次不会重复）。
 func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher, ix *search.Index) {
 	go func() {
@@ -33,7 +36,7 @@ func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher, ix *s
 		ticker := time.NewTicker(time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			if n := mp.CleanTmp(24 * time.Hour); n > 0 {
+			if n := mp.CleanTmp(tmpMediaTTL); n > 0 {
 				slog.Info("tmp media cleaned", "files", n)
 			}
 			if err := db.DeleteExpiredRefreshTokens(context.Background()); err != nil {

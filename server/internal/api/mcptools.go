@@ -26,7 +26,7 @@ type toolItem struct {
 func (a *mcpToolsAPI) list(w http.ResponseWriter, r *http.Request) {
 	disabled, err := a.db.DisabledTools(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -74,7 +74,7 @@ func (a *mcpToolsAPI) patch(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.db.SetToolEnabled(r.Context(), name, *req.Enabled); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 

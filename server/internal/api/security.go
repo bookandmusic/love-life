@@ -14,7 +14,7 @@ import (
 func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return 0, false
 	}
 	return id, true
@@ -29,7 +29,7 @@ type securityAPI struct {
 func (a *securityAPI) get(w http.ResponseWriter, r *http.Request) {
 	s, err := a.db.GetSecuritySettings(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -47,7 +47,7 @@ func (a *securityAPI) put(w http.ResponseWriter, r *http.Request) {
 		ChatRetention        *string `json:"chatRetention"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 
@@ -64,14 +64,14 @@ func (a *securityAPI) put(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.db.SaveSecuritySettings(r.Context(), req.RecycleRetentionDays, req.ChatRetention); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
 	// 与 GET 同形状返回合并后的最新值（契约：PUT 回整项）
 	s, err := a.db.GetSecuritySettings(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -89,7 +89,7 @@ type recycleAPI struct {
 func (a *recycleAPI) list(w http.ResponseWriter, r *http.Request) {
 	items, err := a.db.ListRecycle(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -122,7 +122,7 @@ func (a *recycleAPI) restoreOne(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -153,7 +153,7 @@ func (a *recycleAPI) restoreMany(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -176,7 +176,7 @@ func (a *recycleAPI) writeLog(r *http.Request, claims *auth.Claims, res *store.R
 func (a *recycleAPI) restoreLog(w http.ResponseWriter, r *http.Request) {
 	entries, err := a.db.ListRestoreLogs(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 

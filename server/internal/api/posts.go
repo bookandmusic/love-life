@@ -117,12 +117,12 @@ func (a *postsAPI) buildPostResponse(p *store.Post, medias []*store.MediaRow, in
 func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "未认证")
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
 		return
 	}
 	var req createPostRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	// 地点名解析：location 对象（含坐标）优先，其次 location_name 纯文本（对齐 mock 契约）
@@ -161,7 +161,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 			Name: locName, Lat: lat, Lng: lng, Source: "post", UserID: claims.UserID,
 		})
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "服务器错误")
+			writeError(w, http.StatusInternalServerError, errInternal)
 			return
 		}
 		pointID = sql.NullInt64{Int64: point.ID, Valid: true}
@@ -192,7 +192,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 	}, medias)
 	if err != nil {
 		a.cleanupPromoted(promoted)
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -235,7 +235,7 @@ func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
 	memories := r.URL.Query().Get("memories") == "1"
 	posts, total, err := a.db.ListPosts(r.Context(), page, pageSize, memories)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	ids := make([]int64, 0, len(posts))
@@ -244,12 +244,12 @@ func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
 	}
 	mediaMap, err := a.db.GetMediaByPostIDs(r.Context(), ids)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	interMap, err := a.db.GetInteractions(r.Context(), ids, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	items := make([]postResponse, 0, len(posts))
@@ -263,7 +263,7 @@ func (a *postsAPI) getPost(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	p, err := a.db.GetPost(r.Context(), id)
@@ -272,17 +272,17 @@ func (a *postsAPI) getPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	mediaMap, err := a.db.GetMediaByPostIDs(r.Context(), []int64{id})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	interMap, err := a.db.GetInteractions(r.Context(), []int64{id}, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, a.buildPostResponse(p, mediaMap[id], interMap[id]))
@@ -291,12 +291,12 @@ func (a *postsAPI) getPost(w http.ResponseWriter, r *http.Request) {
 func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 	claims, ok := auth.UserFromContext(r.Context())
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "未认证")
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	p, err := a.db.GetPost(r.Context(), id)
@@ -305,11 +305,11 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if err := a.db.SoftDeletePost(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// 双方可删任意内容（需求 §7.1）；删对方发布的内容 → 站内通知，自删静默
@@ -339,7 +339,7 @@ func (a *postsAPI) reurlMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	medias, err := a.db.GetMediaByIDs(r.Context(), req.IDs)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	type reurlItem struct {
@@ -357,7 +357,7 @@ func (a *postsAPI) reurlMedia(w http.ResponseWriter, r *http.Request) {
 func (a *postsAPI) serveMediaFile(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	variant := r.URL.Query().Get("v")
@@ -374,7 +374,7 @@ func (a *postsAPI) serveMediaFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -427,7 +427,7 @@ func (a *postsAPI) serveFile(w http.ResponseWriter, r *http.Request, relPath, co
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	w.Header().Set("Content-Type", contentType)

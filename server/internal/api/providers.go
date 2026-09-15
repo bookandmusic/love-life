@@ -64,7 +64,7 @@ func sqlNullInt(i int64) sql.NullInt64       { return sql.NullInt64{Int64: i, Va
 func (a *providersAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListProviders(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	out := make([]providerOut, 0, len(list))
@@ -142,7 +142,7 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 		Models       []modelIn `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if _, err := llm.NewForProtocol("", "", "", req.APIType); err != nil {
@@ -164,13 +164,13 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, err := crypto.Encrypt(a.key, req.APIKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// sort_order = 追加到链尾（当前最大 +1；空链从 0 起）
 	list, err := a.db.ListProviders(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	nextOrder := 0
@@ -186,12 +186,12 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := a.db.CreateProvider(r.Context(), p, models)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	fresh, err := a.db.GetProvider(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toProviderOut(fresh))
@@ -209,7 +209,7 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	var req struct {
@@ -220,7 +220,7 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		Models       *[]modelIn `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.APIType != nil {
@@ -256,12 +256,12 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		models = norm
 	}
 	if err := a.db.UpdateProvider(r.Context(), id, p.APIType, p.Name, p.BaseURL, p.DefaultModel, models, replaceModels); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	fresh, err := a.db.GetProvider(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProviderOut(fresh))
@@ -282,7 +282,7 @@ func (a *providersAPI) updateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, err := crypto.Encrypt(a.key, req.APIKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	if err := a.db.UpdateProviderKey(r.Context(), id, enc); err != nil {
@@ -290,12 +290,12 @@ func (a *providersAPI) updateKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "供应商不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	p, err := a.db.GetProvider(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProviderOut(p))
@@ -311,7 +311,7 @@ func (a *providersAPI) order(w http.ResponseWriter, r *http.Request) {
 	}
 	list, err := a.db.ListProviders(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// ids 必须恰好包含全部供应商（无未知、无重复）
@@ -332,12 +332,12 @@ func (a *providersAPI) order(w http.ResponseWriter, r *http.Request) {
 		seen[id] = true
 	}
 	if err := a.db.ReorderProviders(r.Context(), req.IDs); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	fresh, err := a.db.ListProviders(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	out := make([]providerOut, 0, len(fresh))
@@ -358,7 +358,7 @@ func (a *providersAPI) remove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "供应商不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -372,7 +372,7 @@ func (a *providersAPI) fetchModels(w http.ResponseWriter, r *http.Request) {
 		ProviderID int64  `json:"provider_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if _, err := llm.NewForProtocol("", "", "", req.APIType); err != nil {

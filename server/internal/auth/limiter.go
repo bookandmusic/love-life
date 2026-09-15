@@ -5,7 +5,14 @@ import (
 	"time"
 )
 
-// LoginLimiter 登录限速（安全基线三件套之一）：同一 用户名+IP 连续失败 5 次锁定 15 分钟。
+const (
+	// loginMaxFails 触发锁定的连续失败次数。
+	loginMaxFails = 5
+	// loginLockWindow 锁定时长（安全基线：15 分钟）。
+	loginLockWindow = 15 * time.Minute
+)
+
+// LoginLimiter 登录限速（安全基线三件套之一）：同一 用户名+IP 连续失败 loginMaxFails 次即锁定 loginLockWindow。
 // 单进程内存态即可——重启清零对本场景可接受（DESIGN 11.2）。
 type LoginLimiter struct {
 	mu          sync.Mutex
@@ -34,8 +41,8 @@ func (l *LoginLimiter) Fail(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.fails[key]++
-	if l.fails[key] >= 5 {
-		l.lockedUntil[key] = time.Now().Add(15 * time.Minute)
+	if l.fails[key] >= loginMaxFails {
+		l.lockedUntil[key] = time.Now().Add(loginLockWindow)
 		delete(l.fails, key)
 	}
 }

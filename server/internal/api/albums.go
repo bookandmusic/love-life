@@ -51,7 +51,7 @@ func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
 	includeHidden := r.URL.Query().Get("include_hidden") == "1"
 	list, err := a.db.ListAlbums(r.Context(), includeHidden)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	items := make([]albumResponse, 0, len(list))
@@ -73,7 +73,7 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := a.db.CreateAlbum(r.Context(), "manual", req.Name, req.Description, "", claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -89,7 +89,7 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	al, err := a.db.GetAlbum(r.Context(), id)
@@ -98,7 +98,7 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	var medias []*store.MediaRow
@@ -109,12 +109,12 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 		medias, err = a.db.ListAlbumMedia(r.Context(), id)
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	items, err := a.mediaItemsOut(r.Context(), medias)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	resp := a.toResponse(r.Context(), al)
@@ -174,7 +174,7 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	al, err := a.db.GetAlbum(r.Context(), id)
@@ -183,7 +183,7 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// 月度相册不可删除、仅可隐藏（需求 §4.5）
@@ -192,7 +192,7 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.SoftDeleteAlbum(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// 删除对方创建的手动相册 → 站内通知创建者（自删静默）。内容删除仅站内，
@@ -210,14 +210,14 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 func (a *albumsAPI) setHidden(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	var req struct {
 		Hidden bool `json:"hidden"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "请求格式错误")
+		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if err := a.db.SetAlbumHidden(r.Context(), id, req.Hidden); err != nil {
@@ -225,7 +225,7 @@ func (a *albumsAPI) setHidden(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "相册不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -235,7 +235,7 @@ func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	var req struct {
@@ -256,7 +256,7 @@ func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, owned.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -265,7 +265,7 @@ func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
 func (a *albumsAPI) removePhotos(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "无效 ID")
+		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
 	var req struct {
@@ -276,7 +276,7 @@ func (a *albumsAPI) removePhotos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.RemoveAlbumItems(r.Context(), id, req.MediaIDs); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -298,12 +298,12 @@ func (a *albumsAPI) timeline(w http.ResponseWriter, r *http.Request) {
 	}
 	medias, total, err := a.db.ListTimelineMediaPaged(r.Context(), page, size)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	items, err := a.mediaItemsOut(r.Context(), medias)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

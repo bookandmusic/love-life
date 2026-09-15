@@ -124,7 +124,7 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 			SELECT 'heart', '点赞了动态', created_at, post_id FROM likes
 		) ORDER BY time DESC LIMIT 8`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	defer rows.Close()
@@ -138,14 +138,14 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var x act
 		if err := rows.Scan(&x.Icon, &x.Text, &x.Time); err != nil {
-			writeError(w, http.StatusInternalServerError, "服务器错误")
+			writeError(w, http.StatusInternalServerError, errInternal)
 			return
 		}
 		x.Time = humanizeTime(x.Time)
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -156,7 +156,7 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 func (a *dashboardAPI) aiUsage(w http.ResponseWriter, r *http.Request) {
 	points, err := a.db.AIUsageSince(r.Context(), 14)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
@@ -200,14 +200,14 @@ func (a *dashboardAPI) alerts(w http.ResponseWriter, r *http.Request) {
 		FROM ai_usage_logs WHERE status = 'failed'
 		ORDER BY id DESC LIMIT 10`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	for rows.Next() {
 		var x alert
 		if err := rows.Scan(&x.ID, &x.Message, &x.Time); err != nil {
 			rows.Close()
-			writeError(w, http.StatusInternalServerError, "服务器错误")
+			writeError(w, http.StatusInternalServerError, errInternal)
 			return
 		}
 		x.Level = "error"
@@ -249,7 +249,7 @@ type auditAPI struct {
 func (a *auditAPI) list(w http.ResponseWriter, r *http.Request) {
 	entries, err := a.db.ListAuditLogs(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "服务器错误")
+		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 

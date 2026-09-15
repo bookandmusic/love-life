@@ -1378,7 +1378,7 @@ func Registry() []*Tool {
 				if v, ok := args["remind_days_before"].(float64); ok {
 					remind = int(v)
 				}
-				if remind < 0 || remind > 90 {
+				if remind < 0 || remind > store.MaxRemindDaysBefore {
 					remind = 1
 				}
 				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, remind, userID)
@@ -1437,8 +1437,8 @@ func Registry() []*Tool {
 			IsWrite: true,
 			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
 				id, days := num(args, "anniversary_id"), int(num(args, "days_before"))
-				if days < 0 || days > 90 {
-					return nil, fmt.Errorf("提前天数应为 0-90")
+				if days < 0 || days > store.MaxRemindDaysBefore {
+					return nil, fmt.Errorf("提前天数应为 0-%d", store.MaxRemindDaysBefore)
 				}
 				if _, err := d.DB.GetAnniversary(ctx, id); err != nil {
 					return nil, fmt.Errorf("纪念日不存在")
