@@ -164,6 +164,7 @@ flowchart TB
 | 事件源 | 业务写入瞬间（动态/评论/点赞/收藏/足迹）+ 删除对方发布内容时（仅站内）+ cron 每日纪念日检查（事件类型以需求文档 4.8 为准） |
 | 站内通知 | 写入通知表，APP 打开时同步显示红点；通知中心列表始终全量收录，不设站内通知开关（见需求文档 4.8） |
 | 外部渠道 | 空间级（admin 后台配置）的**通用 API Webhook** 出站调用：请求方式 / 服务地址 / 请求头 / 请求体模板（{{title}}、{{content}}、{{time}}、{{type}} 占位符）；每个渠道按事件订阅过滤（纪念日/新动态/评论/点赞/收藏/足迹/相册上新），站内通知始终全量；外部推送按事件触发、不区分操作者（与站内「自建静默」仅约束站内一致，需求 8.1），操作者信息随事件内容提供——快照 `operator` 记真实发起人用户名（AI 代操作同口径），文案同为真实用户名；AI 代操作另带 `via:"ai"` 标记来源，推送正文以「（AI）」后缀区分（Bark / Server酱 / Qmsg / 企业微信为预设模板，可套用后修改） |
+| 快照字段读法 | 快照 `operator` 恒为真实发起人用户名；`via:"ai"` **仅在 AI 代操作时出现**，缺省即发起人本人操作（REST 直连与站内自操作均不带）——接收端据此判别来源，无需另加字段 |
 | 设计动机 | 规避 Android 后台存活限制（国产 ROM 杀后台）；服务端常驻进程无此问题，实时性优于一切端上方案 |
 | 边界 | 出站第三方依赖仅限：模型 API、通知 Webhook 调用；地图瓦片走自建代理服务（XYZ 地址可配置，见 4.7），逆地理用本地离线数据，无地图第三方依赖；核心数据（内容/媒体/对话/审计）全部留在自部署服务器 |
 
@@ -173,14 +174,14 @@ flowchart TB
 
 | 决策项 | 方案 |
 |:---|:---|
-| 瓦片来源 | **服务端瓦片代理**：APP 统一请求 `GET /api/v1/map/tile?z=&x=&y=`，后端按配置转发；支持两类源——①公开 XYZ 瓦片（URL 模板含 `{z}/{x}/{y}` 占位，admin 可配）；②天地图（admin 配置 tk 密钥，加密存储，密钥永不下发 APP）。新增瓦片源 APP 零改动 |
-| 配置管理 | `map_sources` 多行表（type=public\|tianditu / url_template / tianditu_key 加密 / tianditu_layer / enabled，部分唯一索引保证至多一个使用中）；admin `GET/POST /api/v1/admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`（启用校验：public 需模板非空、tianditu 需已配密钥；使用中的源不可删除；不提供编辑）；APP `GET /api/v1/map/config` 仅下发使用中源的 provider 与 tile_api（public 附 url_template） |
+| 瓦片来源 | **服务端瓦片代理**：APP 统一请求 `GET /api/v1/map/tile?z=&x=&y=&exp=&sig=`（短时签名见「瓦片鉴权」行），后端按配置转发；支持两类源——①公开 XYZ 瓦片（URL 模板含 `{z}/{x}/{y}` 占位，admin 可配）；②天地图（admin 配置 tk 密钥，加密存储，密钥永不下发 APP）。新增瓦片源 APP 零改动 |
+| 配置管理 | `map_sources` 多行表（type=public\|tianditu / url_template / tianditu_key 加密 / tianditu_layer / enabled，部分唯一索引保证至多一个使用中）；admin `GET/POST /api/v1/admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`（启用校验：public 需模板非空、tianditu 需已配密钥；使用中的源不可删除；不提供编辑）；APP `GET /api/v1/map/config` 仅下发使用中源的 provider、tile_api（public 附 url_template）与瓦片短时签名 exp/sig |
 | 城市判定 | **写时判定落库**：创建点位时以坐标做 point-in-polygon（`server/internal/geo` 内置地级市边界多边形，DataV.GeoAtlas 简化数据、射线法零外部依赖），未命中回退「名称·」前缀，再未命中留空（留空不进城市列表）；`GET /api/v1/map/points/cities` 按 city 分组计数，不做独立 MCP 工具与「城市点亮」视觉 UI |
 | 点位生成 | 双来源进同一点位池：动态携带地点时服务端自动创建/同名复用点位（判定键 = 地点名，坐标以先创建者为准；不做邻近合并）；手动创建（REST + create_map_point） |
 | 地理编码（geocode） | `GET /api/v1/geocode?q=<地名>` 返回候选列表 `{name, city, lat, lng, display}`；包含匹配，无第三方 POI 依赖（mock 与真实后端同源内置同一离线表：`tools/mock/fixtures.mjs` GEOCODE_PLACES / `server/internal/geo/places.go`） |
 | 定位与选点 | APP 内置定位；添加地点 = 表单（名称 + geocode 候选回填 / 地图选点取得经纬度 / 手动输经纬度）；无第三方 POI 搜索 |
 | 转发请求头 | 两类源均设 `Accept: image/png,image/*;q=0.8,*/*;q=0.5`；public 源 UA=`love-life-server/0.1 (…; self-hosted)`（避免 OSM 等按 Go 默认 UA 黑名单 403）；天地图源 UA=浏览器 UA（实测其 WAF 对非浏览器 UA 一律 418「疑似攻击」，即使 Referer 在 key 白名单内）。**Referer 统一透传入站页面真实值**：天地图浏览器端 tk 在控制台绑定域名白名单，仅白名单内页面的 Referer 放行（不在白名单 418、完全无 Referer 403 code 301012）；缺时回退 public→项目仓库页、天地图→`https://map.tianditu.gov.cn/`（实测 2026-09，实现见 `api/mapconfig.go applyUpstreamHeaders`） |
-| 瓦片鉴权 | `GET /api/v1/map/tile` 允许 token 经 query 传递（`auth.AllowTokenQuery`）：img 标签无法携带 header。取舍：瓦片为只读非敏感数据，泄漏面仅为读瓦片，长期 JWT 进反代访问日志可接受；后续可与媒体签名 URL 统一为短时签名参数（届时移除 query token） |
+| 瓦片鉴权 | 短时签名（与媒体同口径）：`GET /api/v1/map/config` 下发 `exp+sig`，`GET /api/v1/map/tile?z=&x=&y=&exp=&sig=` 由 handler 校验（失败 401）——img 标签无法携带 header，签名即凭证。签名只绑 `exp`（HMAC-SHA256，密钥取 TokenManager 密钥），**一次覆盖全部坐标**：瓦片由 APP 按视口实时算出、数量随拖动变化，逐张签名会不断触发重签；TTL 30 分钟，APP 每 10 分钟静默换签（`mapTiles.startTileGrantRefresh`）。取舍：签名在有效期内可被持有者复用（同媒体 15 分钟签名），撤销依赖短 TTL 到期而非登出；长期 JWT 不再进反代访问日志/Referer |
 
 ### 4.8 媒体上传管线
 
@@ -258,7 +259,7 @@ flowchart TD
 |:---|:---|:---|
 | create_post | 创建一条新动态 | {content, media_urls?, location?, mood?, related_anniversary_id?} |
 | delete_post | 删除动态（进入回收站） | {post_id} |
-| search_posts | 语义搜索历史动态 | {query, date_range?, media_type?} |
+| search_posts | 语义搜索历史动态 | {query, date_range?, media_type?}；`date_range` 为闭区间 `YYYY-MM-DD~YYYY-MM-DD`（单边可省，本地日期口径），`media_type` ∈ photo/video/audio 表示动态含该类型媒体；两者均为过滤条件，关键词回落路径同样生效 |
 | get_today_in_history | 获取那年今日内容 | {years_back?} |
 | create_comment | 发表评论 | {post_id, content} |
 | delete_comment | 删除评论（软删除，进入回收站） | {comment_id} |
@@ -415,6 +416,8 @@ sequenceDiagram
 | 只读 | search_posts, get_today_in_history, suggest_photo_grouping, search_locations, get_location_posts, list_albums, list_comments, list_favorites, get_next_anniversary, get_space_summary, get_timeline_summary | 查询与推荐类，无副作用 |
 | 读写 | 只读全部 + create_post, create_album, add_photos_to_album, remove_photos_from_album, create_anniversary, configure_reminder, create_map_point, toggle_like, toggle_favorite, create_comment | 可写入，不可删除 |
 | 不对令牌开放 | delete_post, delete_comment, delete_album, delete_anniversary, delete_map_point | 仅 APP 内部使用 |
+
+**外部通道的确认口径（决策，2026-09-14）**：外部 MCP 通道（PAT）的写工具调用**不做逐次预览确认**——PAT 由本人在后台主动签发，视为**对该档位写操作的预授权长期凭据**（AGENTS §5 的「确认流程」针对的是 AI 在 APP 内代替用户操作，外部 Agent 无人可交互确认，逐次确认亦不可实现）。配套约束：① 每次写调用落审计（`actor_type=pat`，含人类可读参数与耗时）；② 后台可随时吊销 PAT，吊销即时生效；③ 只读档位不因预授权放宽。若后续需要更强约束，应新增「待确认队列」而非收紧为不可用。
 
 ### 8.4 接入流程
 
