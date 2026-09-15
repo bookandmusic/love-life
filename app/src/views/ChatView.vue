@@ -1,61 +1,21 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { Send, Search, CheckCircle2, XCircle, Timer, Check, Sparkles, Square, ImagePlus, X, Music } from 'lucide-vue-next'
 import { ApiError, api, errText, getBase, getToken } from '../api/client'
 import AppToast from '../components/AppToast.vue'
-import { mediaSrc } from '../types'
 import { useAuth } from '../stores/auth'
 import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
 import NavActions from '../components/NavActions.vue'
+import MessageList from '../components/chat/MessageList.vue'
+import CardActions from '../components/chat/CardActions.vue'
+import InputBar from '../components/chat/InputBar.vue'
 
 // 单次发送媒体上限（E7 保留）：防误传；与需求「连续追加」不冲突——未达上限前可继续追加选择
 const MAX_MEDIA = 9 // 与 PublishView 对齐
 
-interface ChatMedia {
-  name: string
-  type: string
-  size: number
-  data_url: string
-}
+import type { Bubble, CardItem, PickedMedia, SearchItem, PostDetailItem } from '../types/chat'
 
-// 本地待发送/待上：文件先留在设备（确认执行时才上传换 token，不提前产生服务端媒体资源）
-interface PickedMedia {
-  name: string
-  type: string
-  size: number
-  data_url: string
-  file: File
-}
+// 类型统一在 types/chat.ts：父级与 MessageList / CardActions / InputBar 共用一份定义
 
-// D2 搜索结果卡片（REQUIREMENTS §5.1：内联展示，不做跨模式跳转）
-interface SearchItem {
-  id: number
-  content: string
-  thumb_url: string
-}
-interface SearchResult {
-  tool: string
-  query?: string
-  items: SearchItem[]
-}
-
-interface Bubble {
-  role: 'user' | 'assistant' | 'tool'
-  content: string
-  cardID?: number
-  media?: ChatMedia[]
-  result?: SearchResult
-}
-
-interface CardItem {
-  action_id: number
-  tool: string
-  params: Record<string, unknown>
-  status: 'pending' | 'executed' | 'cancelled' | 'expired' | 'failed'
-  result?: string
-  expires_in?: number
-  received_at?: number // D4：本地收到时刻，用于推算剩余有效期（expires_in 是相对值）
-}
 
 interface HistoryMsg {
   id: number
@@ -63,7 +23,7 @@ interface HistoryMsg {
   content: string
   card_id?: number
   created_at?: string
-  media?: ChatMedia[]
+  media?: import('../types/chat').ChatMedia[]
   card?: { action_id: number; tool: string; params: Record<string, unknown>; status: CardItem['status']; expires_in: number }
 }
 
@@ -71,16 +31,15 @@ const auth = useAuth()
 const bubbles = ref<Bubble[]>([])
 const cards = ref<Record<number, CardItem>>({})
 const input = ref('')
-const inputRef = ref<HTMLInputElement | null>(null)
 // busy = 本轮「进行中」总开关（流式 + 卡片待确认 + 确认执行中）；streaming = 仅 SSE 流式阶段（可中止）
 const busy = ref(false)
 const streaming = ref(false)
 const pickedMedia = ref<PickedMedia[]>([])
 // 确认时才上传：pending 卡片 → 其携带的本地文件（action_id → 文件列表）
 const pendingCardFiles = new Map<number, PickedMedia[]>()
-const mediaInput = ref<HTMLInputElement | null>(null)
 const toast = ref('')
-const container = ref<HTMLElement>()
+const streamRef = ref<InstanceType<typeof MessageList> | null>(null)
+const inputBarRef = ref<InstanceType<typeof InputBar> | null>(null)
 const error = ref('')
 const chips = ['帮我发动态', '整理最近的照片', '上次去海边是什么时候']
 let abortCtrl: AbortController | null = null
@@ -90,9 +49,7 @@ function showToast(msg: string) {
 }
 
 function scrollBottom() {
-  nextTick(() => {
-    if (container.value) container.value.scrollTop = container.value.scrollHeight
-  })
+  nextTick(() => streamRef.value?.scrollBottom())
 }
 
 // 多选本地文件（不立即上传；确认执行时才经 /media/upload 换 token 落库，避免垃圾数据）
@@ -178,7 +135,7 @@ async function loadHistory() {
 // 4.1②：chips 点击填入输入框（§5.1「点击填入输入框」，不直接发送）
 function fillChip(c: string) {
   input.value = c + '：'
-  inputRef.value?.focus()
+  inputBarRef.value?.focus()
 }
 
 function mediaCount(p: Record<string, unknown>): number {
@@ -256,11 +213,6 @@ watch(now, () => {
 })
 
 // ---------- D2：搜索结果卡片（内联展开全文/大图，不跳转） ----------
-interface PostDetailItem {
-  id: number
-  content: string
-  media: { id?: number | string; kind?: string; url?: string; thumb_url?: string }[]
-}
 const resultDetail = ref<PostDetailItem | null>(null)
 const resultLoadingId = ref<number | null>(null)
 async function toggleResult(it: SearchItem) {
@@ -389,14 +341,6 @@ function cardOf(b: Bubble): CardItem | undefined {
   return b.cardID == null ? undefined : cards.value[b.cardID]
 }
 
-// 媒体类型语义 helper（模板三处 startsWith 收拢）
-function isImage(t: string): boolean {
-  return t.startsWith('image/')
-}
-function isVideo(t: string): boolean {
-  return t.startsWith('video/')
-}
-
 async function confirmCard(id: number, confirmed: boolean) {
   const card = cards.value[id]
   if (!card || card.status !== 'pending') return
@@ -446,107 +390,43 @@ onBeforeUnmount(() => {
       <NavActions :show-bell="false" />
     </header>
 
-    <div ref="container" class="stream">
-      <p v-if="bubbles.length === 0" class="empty"><Sparkles :size="30" stroke-width="1.2" class="spark" /><br />和我聊聊你们的日常吧</p>
-      <template v-for="(b, i) in bubbles" :key="i">
-        <div v-if="b.content || b.result" class="row" :class="b.role">
-          <span v-if="b.role === 'assistant'" class="ai-avatar" title="AI 助手">
-            <Sparkles :size="14" stroke-width="2" />
-          </span>
-          <div class="bubble" :class="b.role">
-          <span v-if="b.role === 'tool'" class="tool-icon"><Search :size="13" stroke-width="1.8" /></span>{{ b.content }}
-          <div v-if="b.media?.length" class="bubble-media">
-            <template v-for="m in b.media" :key="m.data_url">
-              <img v-if="isImage(m.type)" :src="m.data_url" alt="附件" loading="lazy" />
-              <video v-else-if="isVideo(m.type)" :src="m.data_url" controls />
-              <audio v-else :src="m.data_url" controls class="bubble-audio" />
-            </template>
-          </div>
-          <!-- D2 搜索结果卡片：内联展示，点击在流内展开全文/大图（不做跨模式跳转） -->
-          <div v-if="b.result" class="result-list">
-            <template v-if="b.result.items.length">
-              <div v-for="it in b.result.items" :key="it.id" class="result-card" @click="toggleResult(it)">
-                <div class="rc-head">
-                  <img v-if="it.thumb_url" :src="mediaSrc({ thumb_url: it.thumb_url }, 'thumb')" alt="" loading="lazy" />
-                  <span class="rc-text">{{ it.content || '（无文字）' }}</span>
-                </div>
-                <p v-if="resultLoadingId === it.id" class="rf-loading">加载中…</p>
-                <div v-if="resultDetail?.id === it.id" class="result-full">
-                  <p class="rf-text">{{ resultDetail.content || '（无文字）' }}</p>
-                  <div v-if="resultDetail.media.length" class="rf-media">
-                    <img v-for="(m, mi) in resultDetail.media" :key="mi" :src="mediaSrc(m, 'raw')" alt="" loading="lazy" />
-                  </div>
-                </div>
-              </div>
-            </template>
-            <p v-else class="result-empty">没找到相关回忆</p>
-          </div>
-          </div>
-        </div>
-        <template v-for="c in [cardOf(b)]" :key="c?.action_id">
-          <div v-if="c" class="card" :class="c.status">
-            <p class="desc">{{ describe(c) }}</p>
-            <template v-if="c.status === 'pending'">
-              <div class="btns">
-                <button class="ok" @click="confirmCard(b.cardID!, true)">
-                  <Check :size="15" stroke-width="2" />确认执行
-                </button>
-                <button class="no" @click="confirmCard(b.cardID!, false)">取消</button>
-              </div>
-              <p class="hint">
-                <template v-if="isCardExpired(c)">已过期，请重新发起</template>
-                <template v-else>剩余 {{ remainingMin(c) }} 分钟 · 单次有效</template>
-              </p>
-            </template>
-            <p v-else class="result">
-              <template v-if="c.status === 'executed'">
-                <span class="res-ok"><CheckCircle2 :size="14" stroke-width="1.8" />已执行</span>
-              </template>
-              <span v-else-if="c.status === 'cancelled'">已取消</span>
-              <span v-else-if="c.status === 'expired'" class="res-warn">
-                <Timer :size="14" stroke-width="1.8" />已过期
-              </span>
-              <span v-else-if="c.status === 'failed'" class="res-err">
-                <XCircle :size="14" stroke-width="1.8" />失败
-              </span>
-              {{ c.result }}
-            </p>
-          </div>
-        </template>
+    <MessageList
+      ref="streamRef"
+      :bubbles="bubbles"
+      :error="error"
+      :result-loading-id="resultLoadingId"
+      :result-detail="resultDetail"
+      @toggle-result="toggleResult"
+    >
+      <template #card="{ bubble }">
+        <CardActions
+          v-if="cardOf(bubble)"
+          :card="cardOf(bubble)!"
+          :bubble="bubble"
+          :describe="describe"
+          :remaining-min="remainingMin"
+          :is-card-expired="isCardExpired"
+          @confirm="confirmCard"
+        />
       </template>
-      <p v-if="error" class="error">{{ error }}</p>
-    </div>
-
+    </MessageList>
     <div v-if="bubbles.length === 0" class="chips">
       <button v-for="c in chips" :key="c" @click="fillChip(c)">{{ c }}</button>
     </div>
 
-    <footer class="input-bar">
-      <div v-if="pickedMedia.length" class="media-strip">
-        <div v-for="(m, i) in pickedMedia" :key="i" class="media-pick">
-          <img v-if="isImage(m.type)" :src="m.data_url" alt="" />
-          <video v-else-if="isVideo(m.type)" :src="m.data_url" muted />
-          <div v-else class="media-audio"><Music :size="18" stroke-width="1.8" /><span class="audio-name">{{ m.name }}</span></div>
-          <button class="rm" aria-label="移除附件" @click="pickedMedia.splice(i, 1)"><X :size="12" stroke-width="2" /></button>
-        </div>
-      </div>
-      <div class="compose">
-        <button class="media-btn" aria-label="选择图片/视频/音频" :disabled="busy || pickedMedia.length >= MAX_MEDIA" @click="mediaInput?.click()">
-          <ImagePlus :size="20" stroke-width="1.8" />
-        </button>
-        <input ref="mediaInput" class="file-input" type="file" accept="image/*,video/*,audio/*" multiple @change="pickMedia" />
-        <input ref="inputRef" v-model="input" placeholder="说点什么…" :disabled="busy" @keyup.enter="send()" />
-        <button v-if="streaming" class="send stop" aria-label="停止生成" @click="stopStream()">
-          <Square :size="14" stroke-width="2" fill="currentColor" />
-        </button>
-        <button v-else-if="busy" class="send running" aria-label="进行中" disabled>
-          <span class="dot" />进行中
-        </button>
-        <button v-else class="send" :disabled="!input.trim() && pickedMedia.length === 0" @click="send()">
-          <Send :size="16" stroke-width="1.8" />
-        </button>
-      </div>
-    </footer>
+    <InputBar
+      ref="inputBarRef"
+      :input="input"
+      :picked-media="pickedMedia"
+      :busy="busy"
+      :streaming="streaming"
+      :max-media="MAX_MEDIA"
+      @update:input="input = $event"
+      @pick="pickMedia"
+      @remove="pickedMedia.splice($event, 1)"
+      @send="send()"
+      @stop="stopStream()"
+    />
     <AppToast :text="toast" bottom="5rem" pill @done="toast = ''" />
   </section>
 </template>
@@ -584,235 +464,9 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
 }
-.stream {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.75rem 1rem;
-  background: var(--ai-bg, var(--bg));
-  min-height: 50vh;
-}
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  margin-top: 3rem;
-}
-.spark {
-  color: var(--primary-deep);
-  opacity: 0.6;
-  margin-bottom: 0.6rem;
-}
 /* D1 AI 专属头像标识（REQUIREMENTS:238）：助手气泡左侧固定标识，用户气泡不加 */
-.row {
-  display: flex;
-  align-items: flex-end;
-  gap: 0.4rem;
-}
-.row.user {
-  justify-content: flex-end;
-}
-.ai-avatar {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary), var(--sem-purple));
-  color: #fff;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  margin-bottom: 0.6rem;
-}
 /* D2 搜索结果卡片（内联，无跳转） */
-.result-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-  margin-top: 0.5rem;
-}
-.result-card {
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  padding: 0.4rem 0.5rem;
-  cursor: pointer;
-  background: var(--bg);
-}
-.rc-head {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-.rc-head img {
-  width: 42px;
-  height: 42px;
-  border-radius: 8px;
-  object-fit: cover;
-  flex-shrink: 0;
-}
-.rc-text {
-  font-size: 0.8125rem;
-  color: var(--ink);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.result-full {
-  margin-top: 0.5rem;
-  border-top: 1px dashed var(--rule);
-  padding-top: 0.5rem;
-}
-.rf-text {
-  margin: 0;
-  font-size: 0.8125rem;
-  color: var(--ink);
-  white-space: pre-wrap;
-}
-.rf-media {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 0.4rem;
-}
-.rf-media img {
-  width: 108px;
-  height: 108px;
-  object-fit: cover;
-  border-radius: 8px;
-}
-.rf-loading,
-.result-empty {
-  margin: 0.25rem 0 0;
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-}
-.bubble {
-  max-width: 80%;
-  margin-bottom: 0.6rem;
-  padding: 0.6rem 0.9rem;
-  border-radius: 18px;
-  font-size: 0.9375rem;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.bubble-media {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 0.5rem;
-}
-.bubble-media img {
-  width: 84px;
-  height: 84px;
-  object-fit: cover;
-  border-radius: 8px;
-  border: 1px solid rgba(255, 255, 255, 0.25);
-}
-.bubble.user {
-  margin-left: auto;
-  background: var(--primary);
-  color: #fff;
-  border-bottom-right-radius: 6px;
-}
-.bubble.assistant {
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--rule);
-  border-bottom-left-radius: 6px;
-}
-.bubble.tool {
-  background: transparent;
-  color: var(--muted-ink);
-  font-size: 0.8125rem;
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-}
-.tool-icon {
-  display: inline-flex;
-  color: var(--primary-deep);
-  flex-shrink: 0;
-}
-.card {
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 8px;
-  padding: 0.75rem;
-  margin-bottom: 0.8rem;
-  max-width: 90%;
-}
-.card.executed {
-  border-color: var(--primary);
-}
-.card.cancelled,
-.card.expired {
-  opacity: 0.6;
-}
-.desc {
-  margin: 0 0 0.5rem;
-  font-size: 0.875rem;
-}
-.btns {
-  display: flex;
-  gap: 0.5rem;
-}
-.ok {
-  flex: 1;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.3rem;
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  border-radius: 12px;
-  padding: 0.45rem;
-  font-weight: 600;
-}
-.no {
-  flex: 1;
-  background: none;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  padding: 0.45rem;
-  color: var(--muted-ink);
-}
-.hint,
-.result {
-  margin: 0.4rem 0 0;
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-}
-.result {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  flex-wrap: wrap;
-}
-.res-ok {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--primary-deep);
-}
-.res-warn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--muted-ink);
-}
-.res-err {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-  color: var(--danger);
-}
-.chips {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0 1rem 0.5rem;
-  flex-wrap: wrap;
-  background: var(--ai-bg, var(--bg));
-}
+
 .chips button {
   border: 1px solid var(--rule);
   background: var(--surface);
@@ -821,100 +475,7 @@ onBeforeUnmount(() => {
   font-size: 0.8125rem;
   color: var(--primary-deep);
 }
-.input-bar {
-  background: var(--surface);
-  border-top: 1px solid var(--rule);
-  padding-bottom: env(safe-area-inset-bottom);
-}
-.media-strip {
-  display: flex;
-  gap: 0.5rem;
-  overflow-x: auto;
-  padding: 0.6rem 0.8rem 0;
-}
-.media-pick {
-  position: relative;
-  flex: 0 0 56px;
-  width: 56px;
-  height: 56px;
-  border-radius: 10px;
-  overflow: hidden;
-  border: 1px solid var(--rule);
-}
-.media-pick img,
-.media-pick video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-.media-pick .rm {
-  position: absolute;
-  top: 2px;
-  right: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.55);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-}
-.media-pick .media-audio {
-  width: 100%;
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--bg);
-  color: var(--muted-ink);
-}
-.audio-name {
-  font-size: 10px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 60px;
-  margin-left: 4px;
-}
-.bubble-audio {
-  display: block;
-  max-width: 220px;
-  margin-top: 4px;
-}
-.compose {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 0.8rem;
-}
-.media-btn {
-  border: none;
-  background: none;
-  color: var(--muted-ink);
-  padding: 4px;
-  display: flex;
-  flex: 0 0 auto;
-}
-.media-btn:disabled {
-  opacity: 0.4;
-}
-.file-input {
-  display: none;
-}
-.compose > input[type='text'],
-.input-bar input:not(.file-input) {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  padding: 0.55rem 1rem;
-  font-size: 0.9375rem;
-  background: var(--ai-bg, var(--bg));
-  color: var(--ink);
-}
+
 .send {
   display: flex;
   align-items: center;
