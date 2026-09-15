@@ -602,7 +602,12 @@ func (s *Service) sseHeader(w http.ResponseWriter) (http.Flusher, bool) {
 }
 
 func (s *Service) sseEvent(w http.ResponseWriter, f http.Flusher, event string, data any) {
-	b, _ := json.Marshal(data)
+	b, err := json.Marshal(data)
+	if err != nil {
+		// 响应体序列化失败不能静默丢弃：发一条 error 事件让客户端知道本轮流不完整
+		b = []byte(`{"error":"响应序列化失败"}`)
+		event = "error"
+	}
 	fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, b)
 	f.Flush()
 }

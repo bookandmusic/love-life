@@ -34,6 +34,7 @@ func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targe
 		snapshot = map[string]any{}
 	}
 	snapshot["operator"] = claims.Username
+	// 通知快照仅含字符串，必然可序列化。
 	b, _ := json.Marshal(snapshot)
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
 	a.dp.Dispatch(r.Context(), recipients, eventType, "post", targetID, string(b), title, content)

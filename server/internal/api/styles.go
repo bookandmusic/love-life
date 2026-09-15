@@ -243,6 +243,7 @@ func (a *stylesAPI) setPrompt(w http.ResponseWriter, r *http.Request) {
 	}
 	// updatedAt 格式对齐 mock nowText()：UTC YYYY-MM-DD HH:MM:SS
 	now := time.Now().UTC().Format("2006-01-02 15:04:05")
+	// 快照仅含字符串，必然可序列化。
 	saved, _ := json.Marshal(map[string]string{"content": req.Content, "updated_at": now})
 	if err := a.db.SetSetting(r.Context(), "system_prompt", string(saved)); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)

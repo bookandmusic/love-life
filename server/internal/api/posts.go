@@ -198,6 +198,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 
 	// 新动态通知另一方（admin 不在情侣里，见 mock partnerIds 口径）+ 外部推送（订阅 new_post 的渠道）
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
+	// 通知快照仅含字符串，必然可序列化。
 	snapshot, _ := json.Marshal(map[string]any{
 		"title": req.Title, "content": textutil.TruncMark(req.Content, 50), "operator": claims.Username,
 	})

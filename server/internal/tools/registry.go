@@ -586,6 +586,7 @@ func Registry() []*Tool {
 				if hits == nil {
 					hits = []PostHit{}
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -648,6 +649,7 @@ func Registry() []*Tool {
 					hits = append(hits, PostHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -664,6 +666,7 @@ func Registry() []*Tool {
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM albums WHERE deleted_at IS NULL AND is_hidden=0`).Scan(&albums)
 				_ = d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM anniversaries WHERE deleted_at IS NULL`).Scan(&anniversaries)
 				summary := map[string]int64{"posts": posts, "albums": albums, "anniversaries": anniversaries}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(summary)
 				return &ExecResult{Content: string(b), Data: summary}, nil
 			},
@@ -695,6 +698,7 @@ func Registry() []*Tool {
 				if counts == nil {
 					counts = []store.PeriodCount{}
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(counts)
 				return &ExecResult{Content: string(b), Data: counts}, nil
 			},
@@ -731,6 +735,7 @@ func Registry() []*Tool {
 					}
 					return nil, err
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				snapshot, _ := json.Marshal(map[string]any{"content": content, "operator": d.aiOperatorName(ctx, userID), "via": "ai"})
 				d.notifyPartners(ctx, userID, "post_created", "post", postID, string(snapshot), "新动态", content)
 				return &ExecResult{Content: fmt.Sprintf("动态 #%d 已发布", postID), Data: map[string]any{"post_id": postID}}, nil
@@ -762,6 +767,7 @@ func Registry() []*Tool {
 				// 相册上新：站内通知另一方 + 按订阅外推（口径对齐 api/albums.go 的手动建相册，
 				// operator 记真实发起人、via 标记 AI 代操作）
 				operator := d.aiOperatorName(ctx, userID)
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				snapshot, _ := json.Marshal(map[string]any{"name": name, "operator": operator, "via": "ai"})
 				d.notifyPartners(ctx, userID, "album_created", "album", albumID, string(snapshot),
 					"相册上新", operator+"（AI）创建了相册「"+name+"」")
@@ -882,6 +888,7 @@ func Registry() []*Tool {
 					groups[i].MediaIDs = append(groups[i].MediaIDs, c.MediaID)
 					groups[i].Count++
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(groups)
 				return &ExecResult{Content: string(b), Data: groups}, nil
 			},
@@ -940,6 +947,7 @@ func Registry() []*Tool {
 					hi = total
 				}
 				out := pagedOut(items[lo:hi], total, page, size)
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -1045,6 +1053,7 @@ func Registry() []*Tool {
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
 				out := pagedOut(hits, total, page, size)
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -1083,6 +1092,7 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username})
 				d.notifyPartners(ctx, userID, "post_commented", "post", postID, string(snapshot),
 					"收到评论", operator.Username+"："+textutil.Trunc(content, 50))
@@ -1153,6 +1163,7 @@ func Registry() []*Tool {
 					})
 				}
 				out := pagedOut(items, total, page, size)
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -1203,6 +1214,7 @@ func Registry() []*Tool {
 				// 动态带地点自动建点不发（该次发布已有 post_created）
 				if created {
 					operator := d.aiOperatorName(ctx, userID)
+					// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 					snapshot, _ := json.Marshal(map[string]any{
 						"name": name, "latitude": lat, "longitude": lng, "operator": operator, "via": "ai",
 					})
@@ -1273,6 +1285,7 @@ func Registry() []*Tool {
 						"city": p.City, "visit_date": p.VisitDate.String, "description": p.Description,
 					})
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(out)
 				return &ExecResult{Content: string(b), Data: out}, nil
 			},
@@ -1304,6 +1317,7 @@ func Registry() []*Tool {
 					hits = append(hits, PostHit{ID: p.ID, Title: p.Title.String, Content: p.Content,
 						Date: p.CreatedAt, Author: p.AuthorNickname.String, LocationName: p.LocationName.String})
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(hits)
 				return &ExecResult{Content: string(b), Data: hits}, nil
 			},
@@ -1334,6 +1348,7 @@ func Registry() []*Tool {
 					"name": best.Name, "date": best.Date, "days_until": best.DaysUntil(now),
 					"type": best.Type, "next_solar_date": best.NextSolarDate(now),
 				}
+				// 入参/结果是结构化值（string、map[string]any、切片），JSON 编码不会失败；与仓库既有用法一致忽略错误。
 				b, _ := json.Marshal(item)
 				return &ExecResult{Content: string(b), Data: item}, nil
 			},
