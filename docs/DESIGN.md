@@ -179,7 +179,7 @@ flowchart TB
 | 城市判定 | **写时判定落库**：创建点位时以坐标做 point-in-polygon（`server/internal/geo` 内置地级市边界多边形，DataV.GeoAtlas 简化数据、射线法零外部依赖），未命中回退「名称·」前缀，再未命中留空（留空不进城市列表）；`GET /api/v1/map/points/cities` 按 city 分组计数，不做独立 MCP 工具与「城市点亮」视觉 UI |
 | 点位生成 | 双来源进同一点位池：动态携带地点时服务端自动创建/同名复用点位（判定键 = 地点名，坐标以先创建者为准；不做邻近合并）；手动创建（REST + create_map_point） |
 | 地理编码（geocode） | `GET /api/v1/geocode?q=<地名>` 返回候选列表 `{name, city, lat, lng, display}`；包含匹配，无第三方 POI 依赖（mock 与真实后端同源内置同一离线表：`tools/mock/fixtures.mjs` GEOCODE_PLACES / `server/internal/geo/places.go`） |
-| 定位与选点 | APP 内置定位；添加地点 = 表单（名称 + geocode 候选回填 / 地图选点取得经纬度 / 手动输经纬度）；无第三方 POI 搜索 |
+| 定位与选点 | 添加地点 = 表单（名称 + geocode 候选回填 / 地图选点取得经纬度 / 手动输经纬度）；不使用 GPS 定位、无第三方 POI 搜索（与 REQUIREMENTS §4.4 三态一致） |
 | 转发请求头 | 两类源均设 `Accept: image/png,image/*;q=0.8,*/*;q=0.5`；public 源 UA=`love-life-server/0.1 (…; self-hosted)`（避免 OSM 等按 Go 默认 UA 黑名单 403）；天地图源 UA=浏览器 UA（实测其 WAF 对非浏览器 UA 一律 418「疑似攻击」，即使 Referer 在 key 白名单内）。**Referer 统一透传入站页面真实值**：天地图浏览器端 tk 在控制台绑定域名白名单，仅白名单内页面的 Referer 放行（不在白名单 418、完全无 Referer 403 code 301012）；缺时回退 public→项目仓库页、天地图→`https://map.tianditu.gov.cn/`（实测 2026-09，实现见 `api/mapconfig.go applyUpstreamHeaders`） |
 | 瓦片鉴权 | 短时签名（与媒体同口径）：`GET /api/v1/map/config` 下发 `exp+sig`，`GET /api/v1/map/tile?z=&x=&y=&exp=&sig=` 由 handler 校验（失败 401）——img 标签无法携带 header，签名即凭证。签名只绑 `exp`（HMAC-SHA256，密钥取 TokenManager 密钥），**一次覆盖全部坐标**：瓦片由 APP 按视口实时算出、数量随拖动变化，逐张签名会不断触发重签；TTL 30 分钟，APP 每 10 分钟静默换签（`mapTiles.startTileGrantRefresh`）。取舍：签名在有效期内可被持有者复用（同媒体 15 分钟签名），撤销依赖短 TTL 到期而非登出；长期 JWT 不再进反代访问日志/Referer |
 
@@ -604,7 +604,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 
 | 实体 | 关键字段 | 说明 |
 |:---|:---|:---|
-| User | id, username, password_hash, role(admin/girl/boy), nickname, avatar_media_id?, birthday, ai_style, chat_retention_days | 用户级 AI 偏好（输出风格、对话保留天数）内嵌本表，按用户生效；admin 由部署环境变量内置 |
+| User | id, username, password_hash, role(admin/girl/boy), nickname, avatar_path?, birthday, ai_style, chat_retention_days | 用户级 AI 偏好（输出风格、对话保留天数）内嵌本表，按用户生效；admin 由部署环境变量内置。`avatar_path` 存相对数据目录的文件路径（独立通道，不归属 media 表——media 有 `post_id NOT NULL` 约束，头像无所属动态）；头像经 admin 后台独立上传，签名 URL 与媒体命名空间隔离（`avatar:<userID>` vs `media:<id>:<variant>`）；`birthday` 仅后台维护，不下发 APP（REQ §4.1 关系卡未列） |
 | Space | id, name, signature, love_start_date | 单行表（单空间部署）；`GET /space` 额外返回即时聚合字段 members / days_together / next_anniversary / anniversary_count / album_count（APP 首页「全新部署空态」判定用：无动态 + 无纪念日 + 无相册；用计数而非 `next_anniversary.name`，否则「纪念日存在但日期全部无效」会被误判成空态） |
 | WebhookChannel | id, name, method(GET/POST), url, headers_json, body_template, events_json | 空间级外部通知渠道（admin 后台配置，无用户归属）；events_json = 订阅的事件类型（7 类） |
 | ModelProvider | id, api_type(openai-chat/openai-responses/anthropic/gemini), name, base_url, api_key_encrypted, sort_order | admin 域；Key 加密存储，客户端永不接触；sort_order = 故障切换链顺序 |
@@ -632,7 +632,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 |:---|:---|:---|
 | Notification | id, recipient_id, event_type, target_type?, target_id?, snapshot_json?, is_read, read_at, created_at | 事件类型 12+1 类（见需求 §4.8：内容删除按内容类型细分为 `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`，`+1` 为兼容期保留的 `media_deleted`）；内容删除事件带文案快照（`name` + `deleted_by`）、无跳转、**仅站内**（不走外部推送 Dispatcher）；目标已被删时点击提示「内容已删除」 |
 | RestoreLog | id, operator, summary, created_at | 回收站操作日志（不可删除、永久保留）：恢复记录谁在何时恢复了什么；系统超期永久删除记 operator=系统定时任务 + 类型与条数汇总。后台回收站页展示 |
-| ChatMessage | id, user_id, role(user/assistant), content, card_id?, media, created_at | media=消息携带的客户端媒体引用 JSON（[{name,type,size,data_url}]，仅本会话展示+历史回显，不落媒体资源，零垃圾）；实际媒体仅在确认执行时经 media_token 落库为 Post 媒体。按用户保留时长定时清理（预设 7/30/90 天/永久，默认 30 天） |
+| ChatMessage | id, user_id, role(user/assistant/tool_result), content, card_id?, media, created_at | media=消息携带的客户端媒体引用 JSON（[{name,type,size,data_url}]，仅本会话展示+历史回显，不落媒体资源，零垃圾）；实际媒体仅在确认执行时经 media_token 落库为 Post 媒体。按用户保留时长定时清理（预设 7/30/90 天/永久，默认 30 天）。`role='tool_result'` 为确认执行回执（confirm 成功后写入，记录工具执行结果文案）；`GET /chat/history` 对带 `card_id` 的消息附带 `card` 快照对象（`{action_id, tool, params, status, expires_in}`，自 ConfirmAction 表即时查取、不落 ChatMessage），支撑 REQ §5.1「重进对话恢复确认卡片」 |
 | ConfirmAction | id, user_id, tool_name, params_json, status(pending/confirmed/cancelled/expired), expires_at, resolved_at, created_at | 确认卡片：单次有效（确认/取消即失效）；expires_at = 生成时间 + 15 分钟，超时置 expired，对话流内显示「已过期」不可再确认 |
 | AuditLog | id, actor_type(user/ai/pat), actor_id, action, params_digest, params, result, latency_ms, created_at | 永久保留；覆盖全部 MCP 工具调用（回收站恢复与系统超期永久删除写 RestoreLog）。`result` 仅记状态 `success` / `failed[: 原因]`（与 mock 契约 fixtures.mjs 一致，后台按 `result == 'success'` 展示成败）；入参人类可读摘要放 `params`（`key: value` 逗号分隔、单值超 60 字截断；`params_digest` 保留原始 JSON 供检索），`latency_ms` 仅 ai/pat 有值、user 为 null。一次工具调用只记一条审计（由调用方记账，工具内部不重复写） |
 

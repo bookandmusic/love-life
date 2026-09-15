@@ -55,6 +55,17 @@
 - 提交信息简短说明变更内容即可，不引用其它文档（如 `DESIGN §12.1`、`TODO Q5`、`AD1` 等章节号 / 编号 / 任务代号）。
 - 说明信息为列表项（每条一件事，简短独立），不用整段散文。
 
+### 3.5 验证命令
+
+| 范围 | 命令 |
+|:--|:--|
+| 后端编译 | `cd server && go build ./...` |
+| 后端测试 | `cd server && go test ./...` |
+| APP 类型检查 | `cd app && npx vue-tsc --noEmit` |
+| APP lint | `cd app && npx eslint src --max-warnings=0` |
+| admin 类型检查 | `cd admin && npx vue-tsc --noEmit` |
+| mock 契约脚本 | `.verify/*.mjs`（前置：先起 mock 服务 `cd tools/mock && node server.mjs`） |
+
 ## 4. 阶段规则：mock 先行
 
 > 本规则仅在「后端真实化」完成前有效（任务清单见 docs/TODO.md）。后端真实化完成并由用户宣布后，本节废止。
