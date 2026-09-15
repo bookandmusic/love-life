@@ -26,6 +26,18 @@ const emit = defineEmits<{
 
 const groups = computed<MonthGroup[]>(() => groupByMonth(props.items, (m) => m.taken_at))
 
+// monthOffsets: 每个月分组的首条在全局 items 数组中的索引（MediaViewer 的 start 期望全局索引，
+// 而模板里 v-for 只拿到月内索引——跨月点击会错位）。按 groupByMonth 的输出顺序累加。
+const monthOffsets = computed<Record<string, number>>(() => {
+  const offsets: Record<string, number> = {}
+  let acc = 0
+  for (const g of groups.value) {
+    offsets[g.key] = acc
+    acc += g.items.length
+  }
+  return offsets
+})
+
 function isSelected(id: number) {
   return props.selectedIds.includes(id)
 }
@@ -56,7 +68,7 @@ function isSelected(id: number) {
             :key="m.id"
             class="ph-wrap"
             :class="{ selected: isSelected(m.id) }"
-            @click="selectMode ? emit('toggle-select', m.id) : emit('open-viewer', i)"
+            @click="selectMode ? emit('toggle-select', m.id) : emit('open-viewer', monthOffsets[g.key] + i)"
           >
             <img :src="fullUrl(mediaUrl(m).thumb)" loading="lazy" class="ph" alt="" />
             <span v-if="selectMode" class="pick-mark" :class="{ on: isSelected(m.id) }">
@@ -184,4 +196,17 @@ function isSelected(id: number) {
 .tl-sel.go:disabled { opacity: 0.4; }
 .ph-wrap.selected .ph { outline: 2px solid var(--primary); }
 .pick-mark.on { background: var(--primary); color: #fff; }
+.empty {
+  text-align: center;
+  color: var(--muted-ink);
+  padding: 40px 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  grid-column: 1 / -1;
+}
+.empty-ic {
+  opacity: 0.6;
+  margin-bottom: 10px;
+}
 </style>

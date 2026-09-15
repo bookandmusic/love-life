@@ -467,6 +467,13 @@ onBeforeUnmount(() => {
 /* D1 AI 专属头像标识（REQUIREMENTS:238）：助手气泡左侧固定标识，用户气泡不加 */
 /* D2 搜索结果卡片（内联，无跳转） */
 
+.chips {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0 1rem 0.5rem;
+  flex-wrap: wrap;
+  background: var(--ai-bg, var(--bg));
+}
 .chips button {
   border: 1px solid var(--rule);
   background: var(--surface);
@@ -476,46 +483,6 @@ onBeforeUnmount(() => {
   color: var(--primary-deep);
 }
 
-.send {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--primary);
-  color: #fff;
-  border: none;
-  border-radius: 999px;
-  padding: 0 1.2rem;
-}
-.send.stop {
-  background: var(--danger);
-  padding: 0 0.9rem;
-}
-.send.running {
-  background: color-mix(in srgb, var(--primary) 55%, transparent);
-  padding: 0 0.9rem;
-  font-size: 0.75rem;
-  gap: 0.3rem;
-  cursor: default;
-}
-.send.running .dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-  animation: chat-dot 1.2s infinite;
-}
-@keyframes chat-dot {
-  0%,
-  100% {
-    opacity: 0.3;
-  }
-  50% {
-    opacity: 1;
-  }
-}
-.send:disabled {
-  opacity: 0.45;
-}
 .error {
   color: var(--danger);
   font-size: 0.8125rem;

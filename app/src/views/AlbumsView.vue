@@ -361,21 +361,6 @@ function onTimelineScroll(e: Event) {
   -webkit-overflow-scrolling: touch;
   padding: 0 16px 24px;
 }
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  padding: 40px 0;
-  grid-column: 1 / -1;
-}
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.empty-ic {
-  opacity: 0.6;
-  margin-bottom: 10px;
-}
 /* F2 时间轴多选工具栏 */
 /* F2 加入相册 sheet */
 </style>

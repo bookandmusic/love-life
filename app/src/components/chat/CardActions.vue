@@ -141,11 +141,12 @@ function confirm(confirmed: boolean) {
 }
 
 .card.cancelled,
+.card.expired {
+  opacity: 0.6;
+}
 .hint {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0 1rem 0.5rem;
-  flex-wrap: wrap;
-  background: var(--ai-bg, var(--bg));
+  margin: 0.4rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted-ink);
 }
 </style>

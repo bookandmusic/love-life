@@ -92,12 +92,6 @@ function onInput(e: Event) {
   border: 1px solid var(--rule);
 }
 
-.media-pick video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 .media-pick .rm {
   position: absolute;
   top: 2px;
@@ -168,7 +162,51 @@ function onInput(e: Event) {
   background: var(--ai-bg, var(--bg));
   color: var(--ink);
 }
-.media-pick img {
-  flex: 0 0 auto;
+.media-pick img,
+.media-pick video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.send {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--primary);
+  color: #fff;
+  border: none;
+  border-radius: 999px;
+  padding: 0 1.2rem;
+}
+.send.stop {
+  background: var(--danger);
+  padding: 0 0.9rem;
+}
+.send.running {
+  background: color-mix(in srgb, var(--primary) 55%, transparent);
+  padding: 0 0.9rem;
+  font-size: 0.75rem;
+  gap: 0.3rem;
+  cursor: default;
+}
+.send.running .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: chat-dot 1.2s infinite;
+}
+@keyframes chat-dot {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.send:disabled {
+  opacity: 0.45;
 }
 </style>

@@ -184,9 +184,15 @@ function onPointClick(p: PointItem, e: MouseEvent) {
   centerOnPoint(p.id)
 }
 
-// 居中并高亮某点位（列表点击 / ?focus=<id> 共用）：实际居中在 MapCanvas 内完成
-function centerOnPoint(id: number) {
+// 居中并高亮某点位（列表点击 / ?focus=<id> 共用）：列表视图下先切回地图再居中，
+// 否则地图被列表遮盖、focus 调用到的是隐藏的画布——用户感知「点了没反应」（5b9d798 回归）。
+async function centerOnPoint(id: number) {
   hlPoint.value = id
+  if (view.value !== 'map') {
+    view.value = 'map'
+    await nextTick()
+    mapRef.value?.attachMap()
+  }
   mapRef.value?.focus(id)
 }
 

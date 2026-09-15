@@ -117,4 +117,10 @@ function longPressDelete(a: AlbumItem, ev: PointerEvent) {
 :root[data-theme='dark'] .ac-ph {
   background: rgba(255, 143, 171, 0.22);
 }
+.empty {
+  text-align: center;
+  color: var(--muted-ink);
+  padding: 40px 0;
+  grid-column: 1 / -1;
+}
 </style>

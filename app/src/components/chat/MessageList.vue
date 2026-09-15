@@ -247,11 +247,9 @@ defineExpose({ scrollBottom })
 }
 
 .rf-loading {
-  display: flex;
-  gap: 0.5rem;
-  padding: 0 1rem 0.5rem;
-  flex-wrap: wrap;
-  background: var(--ai-bg, var(--bg));
+  margin: 0.25rem 0 0;
+  font-size: 0.75rem;
+  color: var(--muted-ink);
 }
 .error {
   color: var(--danger);
