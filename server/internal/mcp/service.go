@@ -138,9 +138,23 @@ func (s *Service) toolList(ctx context.Context, pat *store.PersonalAccessToken) 
 			"name":        t.Name,
 			"description": t.Description,
 			"inputSchema": t.Params,
+			"annotations": toolAnnotations(t),
 		})
 	}
 	return out
+}
+
+// toolAnnotations 派生 MCP 工具注解（2025-06-18 规范）。
+// 规范默认值：readOnlyHint=false、destructiveHint=true、idempotentHint=false、openWorldHint=true。
+// 本服务工具全部操作本地封闭数据集，openWorldHint 固定 false（覆盖默认）。
+// 不发 idempotentHint：toggle_like/toggle_favorite 名为 toggle 但重复调用切换状态，
+// 不满足规范「相同参数产生相同结果」语义。
+func toolAnnotations(t *tools.Tool) map[string]any {
+	return map[string]any{
+		"readOnlyHint":  !t.IsWrite,
+		"destructiveHint": t.IsWrite && t.AppOnly,
+		"openWorldHint": false,
+	}
 }
 
 // handleCall 执行 tools/call。审计记 actor_type=pat、actor_id=令牌 ID（DESIGN §8.2）。

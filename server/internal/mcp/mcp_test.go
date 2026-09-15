@@ -193,3 +193,79 @@ func TestTierRuleMatchesRegistryForPAT(t *testing.T) {
 		}
 	}
 }
+
+// 工具注解守卫（MCP 2025-06-18）：每个工具的 annotations 必须按 IsWrite/AppOnly
+// 三分类正确派生，且 openWorldHint 全为 false（本服务全部操作本地封闭数据集）。
+// 此测试钉死派生规则，防止注册表演进时注解口径漂移。
+func TestToolAnnotations(t *testing.T) {
+	for _, tl := range tools.Registry() {
+		a := toolAnnotations(tl)
+		// openWorldHint 对所有工具固定 false
+		if got, _ := a["openWorldHint"].(bool); got {
+			t.Errorf("工具 %s: openWorldHint 必须为 false", tl.Name)
+		}
+		switch {
+		case !tl.IsWrite:
+			// 读工具：readOnlyHint=true、destructiveHint=false
+			if got, _ := a["readOnlyHint"].(bool); !got {
+				t.Errorf("读工具 %s: readOnlyHint 必须为 true", tl.Name)
+			}
+			if got, _ := a["destructiveHint"].(bool); got {
+				t.Errorf("读工具 %s: destructiveHint 必须为 false", tl.Name)
+			}
+		case tl.AppOnly:
+			// 删除类：destructiveHint=true（与默认一致，显式标注）
+			if got, _ := a["destructiveHint"].(bool); !got {
+				t.Errorf("删除类工具 %s: destructiveHint 必须为 true", tl.Name)
+			}
+			if got, _ := a["readOnlyHint"].(bool); got {
+				t.Errorf("删除类工具 %s: readOnlyHint 必须为 false", tl.Name)
+			}
+		default:
+			// 写工具（创建/可撤销）：destructiveHint=false、readOnlyHint=false
+			if got, _ := a["destructiveHint"].(bool); got {
+				t.Errorf("写工具 %s: destructiveHint 必须为 false（非删除类）", tl.Name)
+			}
+			if got, _ := a["readOnlyHint"].(bool); got {
+				t.Errorf("写工具 %s: readOnlyHint 必须为 false", tl.Name)
+			}
+		}
+	}
+}
+
+// tools/list 响应必须带上 annotations 字段（派生取值由 TestToolAnnotations 钉死，
+// 此处只做集成层断言：字段存在 + openWorldHint 全为 false）。
+func TestMCPListIncludesAnnotations(t *testing.T) {
+	db, svc, _, _ := newEnv(t)
+	ctx := t.Context()
+	rw, _, err := db.CreatePAT(ctx, "rw_ann", 2, "readwrite")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := call(t, svc, rw, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status %d", rec.Code)
+	}
+	var resp struct {
+		Result struct {
+			Tools []map[string]any `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Result.Tools) == 0 {
+		t.Fatal("no tools listed")
+	}
+	for _, tl := range resp.Result.Tools {
+		name, _ := tl["name"].(string)
+		ann, ok := tl["annotations"].(map[string]any)
+		if !ok {
+			t.Errorf("工具 %s 缺少 annotations 字段", name)
+			continue
+		}
+		if v, _ := ann["openWorldHint"].(bool); v {
+			t.Errorf("工具 %s openWorldHint 必须为 false", name)
+		}
+	}
+}

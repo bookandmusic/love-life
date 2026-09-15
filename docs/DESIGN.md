@@ -417,7 +417,17 @@ sequenceDiagram
 | 读写 | 只读全部 + create_post, create_album, add_photos_to_album, remove_photos_from_album, create_anniversary, configure_reminder, create_map_point, toggle_like, toggle_favorite, create_comment | 可写入，不可删除 |
 | 不对令牌开放 | delete_post, delete_comment, delete_album, delete_anniversary, delete_map_point | 仅 APP 内部使用 |
 
-**外部通道的确认口径（决策，2026-09-14）**：外部 MCP 通道（PAT）的写工具调用**不做逐次预览确认**——PAT 由本人在后台主动签发，视为**对该档位写操作的预授权长期凭据**（AGENTS §5 的「确认流程」针对的是 AI 在 APP 内代替用户操作，外部 Agent 无人可交互确认，逐次确认亦不可实现）。配套约束：① 每次写调用落审计（`actor_type=pat`，含人类可读参数与耗时）；② 后台可随时吊销 PAT，吊销即时生效；③ 只读档位不因预授权放宽。若后续需要更强约束，应新增「待确认队列」而非收紧为不可用。
+**外部通道的确认口径（依 MCP 规范「User Interaction Model」）**：外部 MCP 通道（PAT）的写工具确认由**客户端**（外部 Agent，如 Claude Desktop）负责——服务端通过 `tools/list` 下发的 `annotations`（`readOnlyHint` / `destructiveHint` / `openWorldHint`）声明工具风险属性，客户端据此决定是否向用户呈现确认提示。服务端不 gated 执行、不持有待确认状态。这与 APP 内部 AI 模式的**服务端确认卡**流程是两条不同的 UX 面：前者是「客户端确认」（MCP 规范标准模型），后者是「服务端确认」（APP 自控 UX，AGENTS §5 铁律约束的是这条），两条面「写操作须经人确认」的精神一致，差异仅在确认由谁发起。配套约束：每次写调用落审计（`actor_type=pat`，含人类可读参数与耗时）；后台可随时吊销 PAT 即时生效；只读档位不见写工具。
+
+工具注解派生规则（基于 `IsWrite` / `AppOnly` 三分类，见 `mcp/service.go` `toolAnnotations`）：
+
+| 类别 | 判定 | `readOnlyHint` | `destructiveHint` | `openWorldHint` |
+|:--|:--|:--|:--|:--|
+| 读工具 | `!IsWrite` | `true` | `false` | `false` |
+| 写工具（创建 / 可撤销） | `IsWrite && !AppOnly` | `false` | `false` | `false` |
+| 删除类（不可逆） | `IsWrite && AppOnly` | `false` | `true` | `false` |
+
+`openWorldHint` 对全部工具固定 `false`（本服务全部操作本地封闭数据集，不与外部世界实体交互）。删除类工具不对 PAT 开放（见上表），其注解仍按删除类标注以保持注册表一致性。
 
 ### 8.4 接入流程
 
@@ -430,9 +440,9 @@ sequenceDiagram
 
 | 传输方式 | 说明 |
 |:---|:---|
-| Streamable HTTP | 唯一传输（规范推荐）：HTTP POST + SSE 流式响应，支持会话与断线恢复 |
+| Streamable HTTP | 唯一传输（规范推荐）：客户端 POST JSON-RPC 请求，服务端以 `application/json` 返回单个响应（规范允许的可选简化，不启用 SSE 流 / 会话 / 断线恢复——均为规范 MAY 项，单实例自部署场景不需要） |
 
-> 注：MCP 旧版 HTTP+SSE 传输已被官方废弃，新实现一律使用 Streamable HTTP；不引入 WebSocket——全部通信为客户端发起的单向流式响应，SSE 足够。
+> 注：MCP 旧版 HTTP+SSE 传输已被官方废弃；Streamable HTTP 的 SSE 流、`Mcp-Session-Id`、断线恢复均为规范可选特性，本实现采用 JSON 单响应模式，合规且适配单实例自部署。不引入 WebSocket——全部通信为客户端发起的请求 / 响应。
 
 - 端点：`POST /api/v1/mcp`，鉴权用 `Authorization: Bearer <PAT>`（与内部通道的 JWT 相互独立）
 - 方法：`initialize` / `tools/list` / `tools/call` / `ping`；通知类消息（无 `id`）按 JSON-RPC 约定不返回响应体
