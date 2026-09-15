@@ -616,15 +616,15 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 
 | 实体 | 关键字段 | 说明 |
 |:---|:---|:---|
-| Post | id, author_id, content, mood?, point_id?, location_name?(快照), related_anniversary_id?, created_at, deleted_at | 地点 = 外键 + 名称快照：点位被删/合并后时间轴仍显示快照名；无标题字段（REQUIREMENTS §4.5 发布表单不采集标题） |
+| Post | id, author_id, content, title?(遗留可空列：不采集、仅关键词检索兼容), mood?, point_id?, location_name?(快照), related_anniversary_id?, created_at, deleted_at | 地点 = 外键 + 名称快照：点位被删/合并后时间轴仍显示快照名；发布表单不采集标题（REQUIREMENTS §4.5），表内 `title` 属遗留可空列、仅供关键词检索兼容 |
 | Media | id, post_id, kind(photo/video/audio), file_path, thumb_path, width, height, size, duration?, taken_at?, author_id?, album_id?, created_at, deleted_at | 媒体不再独立存在，随动态发布（post_id 必填）；历史独立媒体只读兼容（不可新建、独立媒体接口 410）；kind 含 audio（mp3/m4a/wav，无缩略图、duration 必填）；taken_at 取 EXIF 拍摄时间，供时间轴与那年今日排序 |
 | Comment | id, post_id, author_id, content, created_at, deleted_at | 记录内容，软删进回收站 |
 | Like | (post_id, user_id), created_at | 可撤销关系数据，复合主键，不进回收站 |
 | Favorite | (post_id, user_id), created_at | 同上；首版收藏对象仅动态 |
-| Album | id, type(manual/monthly), name, description?, month_key?, is_hidden, cover_media_id?, created_at, deleted_at | 手动相册=用户建册后从时间轴选入（一文件一相册）；月度相册=纯逻辑展示概念（不落 album_items，详情按 month_key 虚拟查询该月未归属媒体），不可删除只可隐藏；封面默认取首图；列表行标签按 type 渲染（月度相册/手动相册） |
+| Album | id, type(manual/monthly), name, description?, month_key?, is_hidden, cover_media_id?, created_by?(手动=创建者；月度由系统生成，留空), created_at, deleted_at | 手动相册=用户建册后从时间轴选入（一文件一相册）；月度相册=纯逻辑展示概念（不落 album_items，详情按 month_key 虚拟查询该月未归属媒体），不可删除只可隐藏；封面默认取首图；列表行标签按 type 渲染（月度相册/手动相册） |
 | AlbumItem | (album_id, media_id), added_by, added_at + UNIQUE(media_id)（一文件一相册） | 相册是照片池之上的组织视图；手动相册全相册唯一 |
-| MapPoint | id, name, lat, lng, visit_date?, description?, source(post/manual), created_at, deleted_at | 同名地点复用同一点位（判定键 = 地点名），坐标以先创建者为准；城市统计/点位列表按点位本身统计；无合并链，无可见性开关（toggle_point_visibility 已移除，仅查看与删除） |
-| Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, deleted_at | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历（每年按公历重复）；lunar=农历日期（如 1996-05-15=农历1996年五月十五，按农历月/日每年重复）；**不存 lunar_month/lunar_day 冗余字段**，闰月语义由 `is_leap` 标记承载（true=闰月，缺省=平月）；倒计时/排序/下一次公历由服务端推算（mock 与后端使用同一离线算法，客户端仅展示服务端值，表单预览可用客户端换算）；提醒配置为内嵌单值字段（每纪念日仅一个提前天数）；**列表/表单按 iOS 风格**：列表行主标题(17px semibold)+副行（农历两行：`年 · 农历X月X日` 与 `下个公历 YYYY-MM-DD`），农历月/日选择器全部用汉字与农历日历写法（正月…腊月；初一…初十、二十、廿一…廿九、三十）；农历换算离线算法（1900–2100 社区表驱动，全量校准真实化见 docs/TODO.md A2） |
+| MapPoint | id, name, lat, lng, city?(写时判定落库：point-in-polygon 命中 / 「名称·」前缀 / 留空), visit_date?, description?, source(post/manual), created_at, created_by, deleted_at | 同名地点复用同一点位（判定键 = 地点名），坐标以先创建者为准；城市统计/点位列表按点位本身统计；无合并链，无可见性开关（toggle_point_visibility 已移除，仅查看与删除） |
+| Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, created_by, deleted_at | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历（每年按公历重复）；lunar=农历日期（如 1996-05-15=农历1996年五月十五，按农历月/日每年重复）；**不存 lunar_month/lunar_day 冗余字段**，闰月语义由 `is_leap` 标记承载（true=闰月，缺省=平月）；倒计时/排序/下一次公历由服务端推算（mock 与后端使用同一离线算法，客户端仅展示服务端值，表单预览可用客户端换算）；提醒配置为内嵌单值字段（每纪念日仅一个提前天数）；**列表/表单按 iOS 风格**：列表行主标题(17px semibold)+副行（农历两行：`年 · 农历X月X日` 与 `下个公历 YYYY-MM-DD`），农历月/日选择器全部用汉字与农历日历写法（正月…腊月；初一…初十、二十、廿一…廿九、三十）；农历换算离线算法（1900–2100 社区表驱动；不引入外部天文数据做「权威校准」，改以不变量测试与 Go/TS 双表逐项一致性护栏防漂移，见 `lunar/invariants_test.go`、`lunar/crosscheck_test.go`） |
 
 ### 12.3 通知与 AI
 
