@@ -1249,6 +1249,34 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/users\/\d+$/, handler:
 
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users\/\d+\/reset-password$/, handler: () => ok({}) })
 
+// GAP16 头像上传（mock 仅回执，不持久化文件）
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users\/\d+\/avatar$/, handler: (url) => {
+  const user = adminUsers.find((u) => u.id === idOf(url))
+  if (!user) return notFound('用户不存在')
+  user.avatar = `/api/v1/avatar/${user.id}?exp=0&sig=mock`
+  return ok({ status: 'ok', avatar: user.avatar })
+} })
+
+// GAP16 生日（仅后台维护，空串清除）
+routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/users\/\d+\/birthday$/, handler: (url, body) => {
+  const user = adminUsers.find((u) => u.id === idOf(url))
+  if (!user) return notFound('用户不存在')
+  const b = JSON.parse(body || '{}')
+  if (b.birthday && !/^\d{4}-\d{2}-\d{2}$/.test(b.birthday)) return badRequest('生日格式应为 YYYY-MM-DD')
+  user.birthday = b.birthday || ''
+  return ok({ status: 'ok' })
+} })
+
+// GAP16 头像公开读取（签名即凭证，mock 不校验签名）
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/avatar\/\d+$/, handler: () => {
+  // 占位 1x1 PNG，前端真实展示由 SignedURL 驱动
+  return {
+    status: 200,
+    headers: { 'content-type': 'image/png' },
+    body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64'),
+  }
+} })
+
 // 通知渠道：CRUD（DESIGN 第 9 章：GET/POST/PUT/DELETE + test）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/webhooks$/, handler: () => ok({ items: webhooks }) })
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/webhooks$/, handler: (url, body) => {

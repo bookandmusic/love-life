@@ -216,7 +216,7 @@ func TestAlbums(t *testing.T) {
 	// 手动相册可软删
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/albums/1", adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete manual album: %d", res.StatusCode)
 	}
 }

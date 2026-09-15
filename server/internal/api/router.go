@@ -32,12 +32,15 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.Handle("GET /api/v1/auth/me", authSvc.RequireAuth(http.HandlerFunc(authSvc.Me)))
 
 	// 后台成员管理（仅 admin）
-	adminAPI := &adminAPI{db: db}
+	adminAPI := &adminAPI{db: db, mp: mp}
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("GET /api/v1/admin/users", adminAPI.listUsers)
 	adminMux.HandleFunc("POST /api/v1/admin/users/couple", adminAPI.createCouple)
 	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}", adminAPI.updateNickname)
 	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/reset-password", adminAPI.resetPassword)
+	// GAP16 头像/生日（独立通道）：admin 上传头像、设置生日
+	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/avatar", adminAPI.uploadAvatar)
+	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}/birthday", adminAPI.updateBirthday)
 	hooksAPI := &webhooksAPI{db: db, dp: dp}
 	adminMux.HandleFunc("GET /api/v1/admin/webhooks", hooksAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/webhooks", hooksAPI.create)
@@ -140,7 +143,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.HandleFunc("POST /api/v1/mcp", mcpSvc.Handle)
 
 	// 空间信息与个人资料（登录用户；配置信息可修改，需求 §7.1）
-	profileAPI := &profileAPI{db: db}
+	profileAPI := &profileAPI{db: db, mp: mp}
 	profileMux := http.NewServeMux()
 	profileMux.HandleFunc("GET /api/v1/space", profileAPI.getSpace)
 	profileMux.HandleFunc("PUT /api/v1/space", profileAPI.updateSpace)
@@ -208,6 +211,8 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.Handle("/api/v1/albums/", authSvc.RequireAuth(annivMux))
 	// 媒体文件：签名即凭证（DESIGN 4.5 短期签名 URL），不走 Bearer
 	mux.HandleFunc("GET /api/v1/media/file/{id}", postsAPI.serveMediaFile)
+	// 头像：签名即凭证（GAP16 独立命名空间），不走 Bearer
+	mux.HandleFunc("GET /api/v1/avatar/{userID}", adminAPI.serveAvatar)
 
 	// 后台管理页面静态资源（构建产物由 webui.Dist 内嵌）
 	mux.Handle("/", spaHandler(webuiDist))

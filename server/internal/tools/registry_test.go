@@ -113,10 +113,10 @@ func TestNextAnniversaryTool(t *testing.T) {
 	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
 	now := time.Now()
-	if _, err := db.CreateAnniversary(ctx, "生日", now.AddDate(0, 0, 10).Format("2006-01-02"), "solar", 1, 1); err != nil {
+	if _, err := db.CreateAnniversary(ctx, "生日", now.AddDate(0, 0, 10).Format("2006-01-02"), "solar", false, 1, 1); err != nil {
 		t.Fatalf("create a1: %v", err)
 	}
-	if _, err := db.CreateAnniversary(ctx, "领证", now.AddDate(0, 0, 3).Format("2006-01-02"), "solar", 1, 1); err != nil {
+	if _, err := db.CreateAnniversary(ctx, "领证", now.AddDate(0, 0, 3).Format("2006-01-02"), "solar", false, 1, 1); err != nil {
 		t.Fatalf("create a2: %v", err)
 	}
 	res, err := findTool(t, "get_next_anniversary").Exec(ctx, d, 1, map[string]any{})
@@ -155,6 +155,73 @@ func TestCreateAnniversaryRemindDefault(t *testing.T) {
 	id = res.Data.(map[string]any)["anniversary_id"].(int64)
 	if got := anniversaryRemindDays(t, db, id); got != 0 {
 		t.Fatalf("显式 0 应保留为当天提醒，got %d", got)
+	}
+
+	// GAP19：lunar + is_leap=true 应落库为 1（DESIGN §12.2 / REQUIREMENTS §4.6）
+	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "闰六月纪念日", "date": "2025-06-01", "type": "lunar", "is_leap": true})
+	if err != nil {
+		t.Fatalf("create lunar is_leap=true: %v", err)
+	}
+	id = res.Data.(map[string]any)["anniversary_id"].(int64)
+	if got := anniversaryIsLeap(t, db, id); got != 1 {
+		t.Fatalf("lunar is_leap=true 应落库 1，got %d", got)
+	}
+	// solar + is_leap=true 应被忽略（恒 0）
+	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "公历忽略闰月", "date": "2026-11-11", "type": "solar", "is_leap": true})
+	if err != nil {
+		t.Fatalf("create solar is_leap=true: %v", err)
+	}
+	id = res.Data.(map[string]any)["anniversary_id"].(int64)
+	if got := anniversaryIsLeap(t, db, id); got != 0 {
+		t.Fatalf("solar is_leap 应被忽略恒 0，got %d", got)
+	}
+}
+
+func anniversaryIsLeap(t *testing.T, db *store.DB, id int64) int {
+	t.Helper()
+	var v int
+	if err := db.QueryRow(`SELECT is_leap FROM anniversaries WHERE id = ?`, id).Scan(&v); err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+// GAP20：create_post 的 location_name 入参应落库到 posts.location_name 列（DESIGN §6.1 / mock fixtures 契约）。
+func TestCreatePostLocationName(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "poster", PasswordHash: hash, Role: "girl"}); err != nil {
+		t.Fatal(err)
+	}
+	create := findTool(t, "create_post")
+
+	// 带 location_name
+	res, err := create.Exec(ctx, d, 1, map[string]any{"content": "海边散步", "location_name": "厦门 · 鼓浪屿"})
+	if err != nil {
+		t.Fatalf("create_post with location_name: %v", err)
+	}
+	id := res.Data.(map[string]any)["post_id"].(int64)
+	var loc sql.NullString
+	if err := db.QueryRow(`SELECT location_name FROM posts WHERE id = ?`, id).Scan(&loc); err != nil {
+		t.Fatal(err)
+	}
+	if !loc.Valid || loc.String != "厦门 · 鼓浪屿" {
+		t.Fatalf("location_name 落库 = %q valid=%v, want \"厦门 · 鼓浪屿\"", loc.String, loc.Valid)
+	}
+
+	// 不带 location_name → 落 NULL
+	res, err = create.Exec(ctx, d, 1, map[string]any{"content": "无地点"})
+	if err != nil {
+		t.Fatalf("create_post without location_name: %v", err)
+	}
+	id = res.Data.(map[string]any)["post_id"].(int64)
+	if err := db.QueryRow(`SELECT location_name FROM posts WHERE id = ?`, id).Scan(&loc); err != nil {
+		t.Fatal(err)
+	}
+	if loc.Valid {
+		t.Fatalf("未传 location_name 应落 NULL，got %q", loc.String)
 	}
 }
 
@@ -198,7 +265,7 @@ func TestAIDeleteNotifiesCreator(t *testing.T) {
 	}
 
 	// 纪念日：user1 建 → user2 代删 → user1 收到
-	annID, err := db.CreateAnniversary(ctx, "AI删纪念日", "2020-06-06", "solar", 1, 1)
+	annID, err := db.CreateAnniversary(ctx, "AI删纪念日", "2020-06-06", "solar", false, 1, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

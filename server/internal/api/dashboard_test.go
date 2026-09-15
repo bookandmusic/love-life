@@ -104,7 +104,7 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 	if err := ts.db.InsertAuditLogFull(ctx, store.ActorTypeAI, 1, "search_posts", "digest", `query: "海边"`, "success", ptrInt64(1320)); err != nil {
 		t.Fatal(err)
 	}
-	if err := ts.db.InsertAuditLog(ctx, store.ActorTypeUser, 1, "create_post", "content", "success"); err != nil {
+	if err := ts.db.InsertAuditLogFull(ctx, store.ActorTypeUser, 1, "create_post", "content", "", "success", nil); err != nil {
 		t.Fatal(err)
 	}
 	// pat 行：actor 解析为令牌名

@@ -164,7 +164,7 @@ func TestAnniversaryLunarType(t *testing.T) {
 	}
 	_ = json.NewDecoder(res.Body).Decode(&spaceResp)
 	res.Body.Close()
-	wantDate := lunar.NextLunarOccurrence(8, 15, time.Now())
+	wantDate := lunar.NextLunarOccurrence(8, 15, false, time.Now())
 	if spaceResp.NextAnniversary.Name != "七夕" || spaceResp.NextAnniversary.Date != wantDate {
 		t.Fatalf("space next_anniversary: %+v (want date %s)", spaceResp.NextAnniversary, wantDate)
 	}
@@ -199,12 +199,12 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	}
 
 	// admin 发动态 → 渠道收到外部推送（模板占位符已渲染）
-	res = doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{"content": "纪念日测试动态", "title": "周年快乐"})
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{"content": "纪念日测试动态"})
 	res.Body.Close()
 	if rc.hits != 1 || rc.method != "POST" {
 		t.Fatalf("webhook push: hits=%d method=%s", rc.hits, rc.method)
 	}
-	if !strings.Contains(rc.body, `"t":"周年快乐"`) || !strings.Contains(rc.body, `"ty":"new_post"`) {
+	if !strings.Contains(rc.body, `"t":"新动态"`) || !strings.Contains(rc.body, `"ty":"new_post"`) {
 		t.Fatalf("template render: %s", rc.body)
 	}
 	if strings.Contains(rc.body, "{{") {
@@ -256,7 +256,7 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	}
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/anniversaries/1", adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete anniversary: %d", res.StatusCode)
 	}
 	res = doJSON(t, "GET", ts.URL+"/api/v1/anniversaries", adminToken, nil)

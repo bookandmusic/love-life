@@ -73,11 +73,11 @@ func Open(dir string, resolve Resolver) (*Index, error) {
 	return ix, nil
 }
 
-// Enabled 当前是否已配置嵌入模型。
 // SetUsageRecorder 注入嵌入用量记录器；未注入（测试/单测）时静默跳过。
 // 非并发安全：须在启动后台任务与 HTTP 服务前调用一次。
 func (ix *Index) SetUsageRecorder(r UsageRecorder) { ix.usage = r }
 
+// Enabled 当前是否已配置嵌入模型。
 func (ix *Index) Enabled(ctx context.Context) bool {
 	_, ok := ix.resolve(ctx)
 	return ok

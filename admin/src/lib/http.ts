@@ -97,7 +97,8 @@ export async function http<T = unknown>(
   options: RequestInit = {},
 ): Promise<T> {
   const headers = new Headers(options.headers)
-  if (!headers.has('Content-Type')) {
+  // FormData 上传：让浏览器自带 boundary，不要手动塞 application/json（会导致服务端解析失败）
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
   const token = getToken()

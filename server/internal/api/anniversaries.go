@@ -23,6 +23,9 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		Date string `json:"date"`
 		Type string `json:"type"`
+		// IsLeap 仅 type=lunar 有效（DESIGN §12.2 / REQUIREMENTS §4.6：闰月标记）；
+		// solar 一律忽略，恒按平月。
+		IsLeap *bool `json:"is_leap"`
 		// 指针以区分「未传」与「显式 0」：未传 → 默认提前 1 天（REQUIREMENTS §4.6）；
 		// 显式 0 = 当天提醒，不得被缺省逻辑改写（契约同 mock routes.mjs）。
 		RemindDays *int `json:"remind_days_before"`
@@ -36,6 +39,11 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	annivType := "solar"
 	if req.Type == "lunar" {
 		annivType = "lunar"
+	}
+	// is_leap 仅 lunar 生效（mock routes.mjs 同口径）
+	isLeap := false
+	if annivType == "lunar" && req.IsLeap != nil {
+		isLeap = *req.IsLeap
 	}
 	if !lunar.ValidDateShape(req.Date) {
 		writeError(w, http.StatusBadRequest, "日期格式应为 YYYY-MM-DD")
@@ -54,7 +62,7 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	if remindDays < 0 || remindDays > 90 {
 		remindDays = 1
 	}
-	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, remindDays, claims.UserID)
+	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, isLeap, remindDays, claims.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
@@ -74,6 +82,7 @@ func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
 		Name       string `json:"name"`
 		Date       string `json:"date"`
 		Type       string `json:"type"`
+		IsLeap     bool   `json:"is_leap"`
 		RemindDays int    `json:"remind_days_before"`
 		DaysUntil  int    `json:"days_until"`
 		CreatedBy  int64  `json:"created_by"`
@@ -84,7 +93,7 @@ func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
 		if t != "lunar" {
 			t = "solar" // 与 mock 一致：非 lunar 一律输出 solar
 		}
-		items = append(items, item{ID: ann.ID, Name: ann.Name, Date: ann.Date, Type: t, RemindDays: ann.RemindDaysBefore, DaysUntil: ann.DaysUntil(now), CreatedBy: ann.CreatedBy})
+		items = append(items, item{ID: ann.ID, Name: ann.Name, Date: ann.Date, Type: t, IsLeap: ann.IsLeap, RemindDays: ann.RemindDaysBefore, DaysUntil: ann.DaysUntil(now), CreatedBy: ann.CreatedBy})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -144,7 +153,8 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
 		Extra: map[string]any{"name": ann.Name},
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// DESIGN §13.3：删除一律 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- Webhook 渠道（空间级，admin 后台配置） ----

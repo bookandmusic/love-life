@@ -6,12 +6,12 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// TestFullSchema 验证压缩版 001_init.sql 一次建出的最新库结构：
+// TestFullSchema 验证 001_init.sql 一次建出的库结构 + 增量迁移 002/003：
 // 覆盖 011/012/013 的最终约束（kind 收 audio、一文件一相册、
 // anniversaries.type、chat_messages.media、webhook_channels 空间级），
 // 以及模型网关数据模型（model_providers/provider_models/output_styles/app_settings，
 // 内置风格种子与全局默认风格）。
-// 压缩后无 002~013 升级路径，此测试确保收敛后的单一迁移仍满足全部最终不变式。
+// 当前迁移：001_init.sql 全量 schema（所有增量已合并入 001）。
 func TestFullSchema(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -19,7 +19,7 @@ func TestFullSchema(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 迁移记录只有 001（无 002~013 残留）
+	// 迁移记录：001 全量
 	var n int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("schema_migrations rows = %d err=%v, want 1", n, err)
@@ -83,6 +83,14 @@ func TestFullSchema(t *testing.T) {
 	// 纪念日 created_by 非空：缺列必须被拒（月相册不同，见上）
 	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type) VALUES ('无主', '2020-02-02', 'solar')`); err == nil {
 		t.Fatal("anniversaries.created_by must be NOT NULL")
+	}
+	// 不变式 3.1：anniversaries.is_leap（DESIGN §12.2 / REQUIREMENTS §4.6）——默认 0、可写 1
+	var isLeapDefault int
+	if err := db.QueryRow(`SELECT is_leap FROM anniversaries WHERE name = '生日'`).Scan(&isLeapDefault); err != nil || isLeapDefault != 0 {
+		t.Fatalf("is_leap default = %d err=%v, want 0", isLeapDefault, err)
+	}
+	if _, err := db.Exec(`INSERT INTO anniversaries (name, date, type, is_leap, created_by) VALUES ('闰月生日', '2025-06-01', 'lunar', 1, 1)`); err != nil {
+		t.Fatalf("is_leap=1 must be accepted: %v", err)
 	}
 	// albums.created_by 可空：月度相册已在上方以 NULL 写入成功，此处再显式确认一次
 	var mNull int
@@ -211,5 +219,22 @@ func TestFullSchema(t *testing.T) {
 	}
 	if _, err := db.Exec(`UPDATE posts SET deleted_by_type = 'bogus' WHERE id = 1`); err == nil {
 		t.Fatal("invalid deleted_by_type must be rejected")
+	}
+
+	// 不变式 10：users.avatar_path（GAP16 头像独立通道）——默认 NULL、可写相对路径
+	var avatarDefault *string
+	if err := db.QueryRow(`SELECT avatar_path FROM users WHERE id = 1`).Scan(&avatarDefault); err != nil || avatarDefault != nil {
+		t.Fatalf("avatar_path default = %v err=%v, want NULL", avatarDefault, err)
+	}
+	if _, err := db.Exec(`UPDATE users SET avatar_path = 'avatars/2026/09/abc.png' WHERE id = 1`); err != nil {
+		t.Fatalf("avatar_path must be writable: %v", err)
+	}
+	var avatar string
+	if err := db.QueryRow(`SELECT avatar_path FROM users WHERE id = 1`).Scan(&avatar); err != nil || avatar != "avatars/2026/09/abc.png" {
+		t.Fatalf("avatar_path round-trip = %q err=%v", avatar, err)
+	}
+	// avatar_media_id 不存在（死列，GAP16 后零引用）
+	if _, err := db.Exec(`SELECT avatar_media_id FROM users LIMIT 0`); err == nil {
+		t.Fatal("avatar_media_id column must not exist")
 	}
 }

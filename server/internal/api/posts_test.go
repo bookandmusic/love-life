@@ -145,7 +145,7 @@ func TestPostsMediaLoop(t *testing.T) {
 	// 7) girl 删除 admin 的动态 → 通知入库（需求：删对方内容才通知）
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/posts/1", girlToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("girl delete admin's post: %d", res.StatusCode)
 	}
 	var snap string

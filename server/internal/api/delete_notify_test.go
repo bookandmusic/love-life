@@ -37,7 +37,7 @@ func TestDeleteContentNotifiesCreator(t *testing.T) {
 	alOther := createID("/api/v1/albums", girlToken, map[string]any{"name": "GAP2 对方相册"})
 	res := doJSON(t, "DELETE", ts.URL+"/api/v1/albums/"+itoa(alOther), adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete other album: %d", res.StatusCode)
 	}
 	if n := notifCount("album_deleted", alOther); n != 1 {
@@ -55,7 +55,7 @@ func TestDeleteContentNotifiesCreator(t *testing.T) {
 	annOther := createID("/api/v1/anniversaries", girlToken, map[string]any{"name": "GAP2 对方纪念日", "date": "2020-03-03", "type": "solar"})
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/anniversaries/"+itoa(annOther), adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete other anniversary: %d", res.StatusCode)
 	}
 	if n := notifCount("anniversary_deleted", annOther); n != 1 {

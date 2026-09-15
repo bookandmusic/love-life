@@ -102,6 +102,15 @@ func (d *DB) SoftDeleteAlbum(ctx context.Context, id int64, actorType string, ac
 	return err
 }
 
+// CountAlbumItems 手动相册中未删媒体数（addPhotos/removePhotos 返回 item_count 用）。
+func (d *DB) CountAlbumItems(ctx context.Context, albumID int64) (int, error) {
+	var n int
+	err := d.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM album_items i JOIN media m ON m.id = i.media_id WHERE i.album_id = ? AND m.deleted_at IS NULL`,
+		albumID).Scan(&n)
+	return n, err
+}
+
 func (d *DB) SetAlbumHidden(ctx context.Context, id int64, hidden bool) error {
 	res, err := d.ExecContext(ctx, `UPDATE albums SET is_hidden = ? WHERE id = ? AND deleted_at IS NULL`, hidden, id)
 	if err != nil {

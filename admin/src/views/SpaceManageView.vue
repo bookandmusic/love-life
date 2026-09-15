@@ -106,6 +106,61 @@ async function submitEdit() {
   }
 }
 
+// ---------- GAP16：头像与生日（仅后台维护；头像独立通道，生日不下发 APP） ----------
+const avatarTarget = ref<UserItem | null>(null)
+const avatarUploading = ref(false)
+
+function openAvatar(u: UserItem) {
+  avatarTarget.value = u
+}
+
+async function onPickAvatar(e: Event) {
+  if (!avatarTarget.value) return
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file) return
+  avatarUploading.value = true
+  try {
+    await usersApi.uploadAvatar(avatarTarget.value.id, file)
+    toast.success('头像已更新')
+    avatarTarget.value = null
+    await loadAll()
+  } catch (err) {
+    toast.error(errMsg(err, '头像上传失败'))
+  } finally {
+    avatarUploading.value = false
+    // 重置 input 以便同一文件可重复选择
+    input.value = ''
+  }
+}
+
+const birthdayTarget = ref<UserItem | null>(null)
+const birthdayValue = ref('')
+
+function openBirthday(u: UserItem) {
+  birthdayTarget.value = u
+  birthdayValue.value = u.birthday ?? ''
+}
+
+async function submitBirthday() {
+  if (!birthdayTarget.value) return
+  if (birthdayValue.value) {
+    const ok = /^\d{4}-\d{2}-\d{2}$/.test(birthdayValue.value)
+    if (!ok) {
+      toast.error('生日格式应为 YYYY-MM-DD')
+      return
+    }
+  }
+  try {
+    await usersApi.updateBirthday(birthdayTarget.value.id, birthdayValue.value)
+    toast.success('生日已更新')
+    birthdayTarget.value = null
+    await loadAll()
+  } catch (e) {
+    toast.error(errMsg(e, '保存失败'))
+  }
+}
+
 const pwTarget = ref<UserItem | null>(null)
 const pw = ref('')
 
@@ -259,16 +314,23 @@ onMounted(loadAll)
           <div class="table-wrapper">
             <table>
               <thead>
-                <tr><th>角色</th><th>用户名</th><th>昵称</th><th></th></tr>
+                <tr><th>角色</th><th>头像</th><th>用户名</th><th>昵称</th><th>生日</th><th></th></tr>
               </thead>
               <tbody>
                 <tr v-for="u in couple" :key="u.id">
                   <td><AppBadge :variant="roleMeta[u.role as 'girl' | 'boy'].variant">{{ roleMeta[u.role as 'girl' | 'boy'].label }}</AppBadge></td>
+                  <td>
+                    <img v-if="u.avatar" :src="u.avatar" :alt="u.nickname || u.username" class="avatar-thumb" />
+                    <span v-else class="avatar-empty">无</span>
+                  </td>
                   <td>{{ u.username }}</td>
                   <td>{{ u.nickname || '—' }}</td>
+                  <td>{{ u.birthday || '—' }}</td>
                   <td class="text-right">
                     <div class="flex gap-2" style="justify-content: flex-end">
                       <AppButton variant="secondary" size="sm" icon="edit" @click="openEdit(u)">改昵称</AppButton>
+                      <AppButton variant="secondary" size="sm" icon="image" @click="openAvatar(u)">头像</AppButton>
+                      <AppButton variant="secondary" size="sm" icon="calendar" @click="openBirthday(u)">生日</AppButton>
                       <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="openReset(u)">重置密码</AppButton>
                     </div>
                   </td>
@@ -362,6 +424,37 @@ onMounted(loadAll)
         </div>
       </form>
     </AppModal>
+
+    <AppModal v-if="avatarTarget" :title="`上传头像 — ${avatarTarget.username}`" @close="avatarTarget = null">
+      <div class="flex" style="flex-direction: column; gap: 14px">
+        <p class="form-hint">支持 jpg/png/webp，建议正方形；最大 5 MiB。此入口仅后台使用，头像独立存储，不占用动态媒体配额。</p>
+        <div class="avatar-preview-row">
+          <img v-if="avatarTarget.avatar" :src="avatarTarget.avatar" :alt="avatarTarget.username" class="avatar-thumb" />
+          <span v-else class="avatar-empty">当前无头像</span>
+        </div>
+        <label class="form-label">
+          <input type="file" accept="image/jpeg,image/png,image/webp" :disabled="avatarUploading" @change="onPickAvatar" />
+        </label>
+        <div class="flex gap-2" style="justify-content: flex-end">
+          <AppButton variant="secondary" icon="x" type="button" :disabled="avatarUploading" @click="avatarTarget = null">关闭</AppButton>
+        </div>
+      </div>
+    </AppModal>
+
+    <AppModal v-if="birthdayTarget" :title="`设置生日 — ${birthdayTarget.username}`" @close="birthdayTarget = null">
+      <form class="flex" style="flex-direction: column; gap: 14px" @submit.prevent="submitBirthday">
+        <p class="form-hint">仅后台维护，不会下发到 APP（需求 §4.1 关系卡未列）。</p>
+        <div class="form-group" style="margin: 0">
+          <label class="form-label">生日</label>
+          <input v-model="birthdayValue" class="form-input" type="date" />
+          <span class="form-hint">清空日期 = 清除生日。</span>
+        </div>
+        <div class="flex gap-2" style="justify-content: flex-end">
+          <AppButton variant="secondary" icon="x" type="button" @click="birthdayTarget = null">取消</AppButton>
+          <AppButton variant="primary" icon="save" type="submit">保存</AppButton>
+        </div>
+      </form>
+    </AppModal>
   </div>
 </template>
 
@@ -378,5 +471,26 @@ onMounted(loadAll)
 }
 .accent-text {
   color: var(--color-accent);
+}
+.avatar-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  object-fit: cover;
+  display: block;
+}
+.avatar-empty {
+  display: inline-block;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+}
+.avatar-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.avatar-preview-row .avatar-thumb {
+  width: 64px;
+  height: 64px;
 }
 </style>

@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
+	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
 type profileAPI struct {
 	db *store.DB
+	mp *media.Pipeline
 }
 
 // spaceSummary GET /api/v1/space：空间信息 + 双方昵称 + 在一起天数 + 下一个纪念日倒计时（首页关系栏一次拉全）。
@@ -31,6 +33,7 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 		ID       int64  `json:"id"`
 		Nickname string `json:"nickname"`
 		Role     string `json:"role"`
+		Avatar   string `json:"avatar"` // GAP16：头像签名 URL；无头像时空串（前端 fallback 首字母）
 	}
 	members := []member{}
 	for _, u := range users {
@@ -39,7 +42,11 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 			if name == "" {
 				name = u.Username
 			}
-			members = append(members, member{ID: u.ID, Nickname: name, Role: u.Role})
+			avatar := ""
+			if u.AvatarPath.Valid && u.AvatarPath.String != "" {
+				avatar = a.mp.SignedAvatarURL(u.ID)
+			}
+			members = append(members, member{ID: u.ID, Nickname: name, Role: u.Role, Avatar: avatar})
 		}
 	}
 

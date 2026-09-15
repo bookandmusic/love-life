@@ -107,10 +107,10 @@ func LunarToSolar(y, m, d int, isLeap bool) (time.Time, bool) {
 	return baseDate.AddDate(0, 0, offset), true
 }
 
-// NextLunarOccurrence 农历 m 月 d 日的下一次（含 today）公历日期 YYYY-MM-DD；
-// 自农历当年起逐年、先平月后闰月；找不到（超出表尾）返回 ""。
+// NextLunarOccurrence 农历 m 月 d 日（isLeap=是否闰月）的下一次（含 today）公历日期 YYYY-MM-DD；
+// 逐年按 isLeap 标记查对应月份（闰月仅在该年有此闰月时存在）；找不到（超出表尾 / 该年无此闰月）返回 ""。
 // 注意用换算结果自身的公历年比较：冬月/腊月常落到次年 1 月，取农历年会差一年。
-func NextLunarOccurrence(m, d int, today time.Time) string {
+func NextLunarOccurrence(m, d int, isLeap bool, today time.Time) string {
 	tYear, tMonth, tDay := today.Date()
 	todayDay := time.Date(tYear, tMonth, tDay, 0, 0, 0, 0, today.Location())
 	endYear := baseYear + len(info) - 1
@@ -118,18 +118,16 @@ func NextLunarOccurrence(m, d int, today time.Time) string {
 		if !inTable(y) {
 			break
 		}
-		for _, leap := range []bool{false, true} {
-			if leap && LeapMonth(y) != m {
-				continue
-			}
-			dt, ok := LunarToSolar(y, m, d, leap)
-			if !ok {
-				continue
-			}
-			day := time.Date(dt.Year(), dt.Month(), dt.Day(), 0, 0, 0, 0, today.Location())
-			if !day.Before(todayDay) {
-				return day.Format("2006-01-02")
-			}
+		if isLeap && LeapMonth(y) != m {
+			continue
+		}
+		dt, ok := LunarToSolar(y, m, d, isLeap)
+		if !ok {
+			continue
+		}
+		day := time.Date(dt.Year(), dt.Month(), dt.Day(), 0, 0, 0, 0, today.Location())
+		if !day.Before(todayDay) {
+			return day.Format("2006-01-02")
 		}
 	}
 	return ""

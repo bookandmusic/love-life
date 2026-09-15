@@ -23,6 +23,7 @@ type User struct {
 	Role              string
 	Nickname          string
 	Birthday          sql.NullString
+	AvatarPath        sql.NullString // 独立头像通道（GAP16）：相对数据目录的文件路径；空则无头像
 	AIStyle           string
 	ChatRetentionDays int
 }
@@ -41,10 +42,10 @@ func (d *DB) CreateUser(ctx context.Context, u *User) (int64, error) {
 }
 
 func (d *DB) GetUserByUsername(ctx context.Context, username string) (*User, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, ai_style, chat_retention_days
+	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style, chat_retention_days
 		FROM users WHERE username = ?`, username)
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AIStyle, &u.ChatRetentionDays)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle, &u.ChatRetentionDays)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -55,10 +56,10 @@ func (d *DB) GetUserByUsername(ctx context.Context, username string) (*User, err
 }
 
 func (d *DB) GetUserByID(ctx context.Context, id int64) (*User, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, ai_style, chat_retention_days
+	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style, chat_retention_days
 		FROM users WHERE id = ?`, id)
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AIStyle, &u.ChatRetentionDays)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle, &u.ChatRetentionDays)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -69,7 +70,7 @@ func (d *DB) GetUserByID(ctx context.Context, id int64) (*User, error) {
 }
 
 func (d *DB) ListUsers(ctx context.Context) ([]*User, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, ai_style, chat_retention_days
+	rows, err := d.QueryContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style, chat_retention_days
 		FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -78,7 +79,7 @@ func (d *DB) ListUsers(ctx context.Context) ([]*User, error) {
 	var users []*User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AIStyle, &u.ChatRetentionDays); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle, &u.ChatRetentionDays); err != nil {
 			return nil, err
 		}
 		users = append(users, &u)
@@ -164,6 +165,32 @@ func isUniqueConstraint(err error) bool {
 // UpdateUserNickname 仅昵称更新（AD9：用户名/角色为登录身份与数据归属，不可修改）。
 func (d *DB) UpdateUserNickname(ctx context.Context, id int64, nickname string) error {
 	res, err := d.ExecContext(ctx, `UPDATE users SET nickname = ? WHERE id = ?`, nickname, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateUserAvatar 设置用户头像路径（GAP16 独立通道；空串 = 清除头像）。
+func (d *DB) UpdateUserAvatar(ctx context.Context, id int64, avatarPath string) error {
+	res, err := d.ExecContext(ctx, `UPDATE users SET avatar_path = NULLIF(?, '') WHERE id = ?`, avatarPath, id)
+	if err != nil {
+		return err
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateUserBirthday 设置用户生日（GAP16；空串 = 清除生日）。仅后台维护，不下发 APP。
+func (d *DB) UpdateUserBirthday(ctx context.Context, id int64, birthday string) error {
+	res, err := d.ExecContext(ctx, `UPDATE users SET birthday = NULLIF(?, '') WHERE id = ?`, birthday, id)
 	if err != nil {
 		return err
 	}

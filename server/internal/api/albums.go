@@ -83,7 +83,13 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 	a.dp.Dispatch(r.Context(), ids, "album_created", "album", id, string(snapshot),
 		"相册上新", claims.Username+" 创建了相册「"+req.Name+"」")
 
-	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+	// 返回完整相册对象（R5：补齐返回值，对齐契约）
+	al, err := a.db.GetAlbum(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusCreated, map[string]any{"id": id})
+		return
+	}
+	writeJSON(w, http.StatusCreated, a.toResponse(r.Context(), al))
 }
 
 func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
@@ -204,7 +210,8 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 			Extra: map[string]any{"name": al.Name},
 		})
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// DESIGN §13.3：删除一律 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *albumsAPI) setHidden(w http.ResponseWriter, r *http.Request) {
@@ -259,7 +266,8 @@ func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	itemCount, _ := a.db.CountAlbumItems(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "item_count": itemCount})
 }
 
 func (a *albumsAPI) removePhotos(w http.ResponseWriter, r *http.Request) {
@@ -279,7 +287,8 @@ func (a *albumsAPI) removePhotos(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	itemCount, _ := a.db.CountAlbumItems(r.Context(), id)
+	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "item_count": itemCount})
 }
 
 // timeline 媒体时间轴分页（D5，mock 契约）：page/size(size≤50) → {items,total,page,size,has_more}；

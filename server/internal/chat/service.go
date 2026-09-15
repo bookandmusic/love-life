@@ -545,11 +545,28 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
 		return
 	}
+	// 收集所有 card_id，批量查 ConfirmAction 快照（REQ §5.1 恢复确认卡片）
+	cardIDs := make([]int64, 0)
+	for _, m := range list {
+		if m.CardID.Valid && m.CardID.Int64 > 0 {
+			cardIDs = append(cardIDs, m.CardID.Int64)
+		}
+	}
+	cards, _ := s.db.ListConfirmActionsByIDs(r.Context(), cardIDs)
+
+	type cardSnapshot struct {
+		ActionID  int64           `json:"action_id"`
+		Tool      string          `json:"tool"`
+		Params    json.RawMessage `json:"params"`
+		Status    string          `json:"status"`
+		ExpiresIn int             `json:"expires_in"`
+	}
 	type item struct {
 		ID        int64           `json:"id"`
 		Role      string          `json:"role"`
 		Content   string          `json:"content"`
 		CardID    int64           `json:"card_id,omitempty"`
+		Card      *cardSnapshot   `json:"card,omitempty"`
 		CreatedAt string          `json:"created_at"`
 		Media     json.RawMessage `json:"media,omitempty"`
 	}
@@ -563,7 +580,27 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 		if m.Media != "" {
 			media = json.RawMessage(m.Media)
 		}
-		items = append(items, item{ID: m.ID, Role: m.Role, Content: m.Content, CardID: cardID, CreatedAt: m.CreatedAt, Media: media})
+		var card *cardSnapshot
+		if cardID > 0 && cards != nil {
+			if ca, ok := cards[cardID]; ok {
+				params := json.RawMessage(ca.ParamsJSON)
+				if ca.ParamsJSON == "" {
+					params = json.RawMessage("{}")
+				}
+				expiresIn := int(time.Until(ca.ExpiresAt).Seconds())
+				if expiresIn < 0 {
+					expiresIn = 0
+				}
+				card = &cardSnapshot{
+					ActionID:  ca.ID,
+					Tool:      ca.ToolName,
+					Params:    params,
+					Status:    ca.Status,
+					ExpiresIn: expiresIn,
+				}
+			}
+		}
+		items = append(items, item{ID: m.ID, Role: m.Role, Content: m.Content, CardID: cardID, Card: card, CreatedAt: m.CreatedAt, Media: media})
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

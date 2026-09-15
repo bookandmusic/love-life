@@ -13,8 +13,8 @@ CREATE TABLE users (
     password_hash       TEXT    NOT NULL,
     role                TEXT    NOT NULL CHECK (role IN ('admin', 'girl', 'boy')),
     nickname            TEXT    NOT NULL DEFAULT '',
-    avatar_media_id     INTEGER,
     birthday            TEXT,
+    avatar_path         TEXT,
     ai_style            TEXT    NOT NULL DEFAULT '文艺',
     chat_retention_days INTEGER NOT NULL DEFAULT 30,
     created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
@@ -142,6 +142,7 @@ CREATE TABLE anniversaries (
     name               TEXT    NOT NULL,
     date               TEXT    NOT NULL,
     type               TEXT    NOT NULL DEFAULT 'solar' CHECK (type IN ('solar', 'lunar')),
+    is_leap            INTEGER NOT NULL DEFAULT 0,
     remind_days_before INTEGER NOT NULL DEFAULT 1,
     created_at         TEXT    NOT NULL DEFAULT (datetime('now')),
     -- 创建者：纪念日无系统生成路径，恒为用户创建

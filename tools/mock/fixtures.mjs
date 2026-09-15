@@ -308,7 +308,7 @@ export const webhooks = [
 ]
 
 export const adminUsers = [
-  { id: 1, username: 'admin', role: 'admin', nickname: '管理员' },
-  { id: 2, username: 'girl', role: 'girl', nickname: '她' },
-  { id: 3, username: 'boy', role: 'boy', nickname: '他' },
+  { id: 1, username: 'admin', role: 'admin', nickname: '管理员', birthday: '', avatar: '' },
+  { id: 2, username: 'girl', role: 'girl', nickname: '她', birthday: '1998-06-15', avatar: '' },
+  { id: 3, username: 'boy', role: 'boy', nickname: '他', birthday: '1996-03-22', avatar: '' },
 ]

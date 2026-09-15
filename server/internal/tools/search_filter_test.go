@@ -2,9 +2,31 @@ package tools
 
 import (
 	"testing"
+	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
+
+// timeZoneGuard 保存切换前的 time.Local 以便恢复。
+type timeZoneGuard struct{ prev *time.Location }
+
+func (g timeZoneGuard) restore() { time.Local = g.prev }
+
+// dateOnly 取日期部分（仅测试断言用，薄包装 datePrefix；零值 → 空串）。
+func dateOnly(s string) string { return datePrefix(s) }
+
+// getTimeZoneSetter 临时把进程时区设为 name；返回的 guard 在测试结束时调用 restore()。
+// 测试进程时区决定 SQLite 'localtime' 修饰符与 Go time.Local 的口径。
+func getTimeZoneSetter(t *testing.T, name string) timeZoneGuard {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatalf("load location %s: %v", name, err)
+	}
+	g := timeZoneGuard{prev: time.Local}
+	time.Local = loc
+	return g
+}
 
 // seedPostAt 造一条指定创建时间（库内 UTC 形如 2006-01-02 15:04:05）的动态。
 func seedPostAt(t *testing.T, db *store.DB, content, createdAt string) int64 {
@@ -187,4 +209,46 @@ func TestSearchPostsSemanticEmptyAfterFilter(t *testing.T) {
 	if fake.gotK <= searchPostLimit {
 		t.Fatalf("带过滤应扩大召回，gotK=%d", fake.gotK)
 	}
+}
+
+// GAP15：date_range 比对按部署者本地时区，不按 UTC（DESIGN §6.1 / §12）。
+// 构造：动态 created_at 为 UTC 18:30（东八区次日 02:30）；按本地应归次日。
+// 关键词路径（where）与语义路径（matchDate）均须按本地日期命中。
+func TestSearchPostsLocalTimeZone(t *testing.T) {
+	// 强制东八区；测试进程时区由此决定（time.Local）。
+	prevZone := getTimeZoneSetter(t, "Asia/Shanghai")
+
+	db := newToolDB(t)
+	ctx := t.Context()
+	// UTC 2026-09-15 18:30 → 上海 2026-09-16 02:30
+	pid := seedPostAt(t, db, "海边夜归", "2026-09-15 18:30:00")
+
+	// 关键词路径：按本地日期 2026-09-16 命中
+	res, err := findTool(t, "search_posts").Exec(ctx, &Deps{DB: db}, 1, map[string]any{"query": "海边", "date_range": "2026-09-16~2026-09-16"})
+	if err != nil {
+		t.Fatalf("keyword path: %v", err)
+	}
+	if hits := res.Data.([]PostHit); len(hits) != 1 || hits[0].ID != pid {
+		t.Fatalf("keyword localtime 应命中 UTC18:30 → 本地次日: %+v", hits)
+	}
+	// 反向断言：本地日期 2026-09-15 不命中（按 UTC 旧口径会误命中）
+	res, err = findTool(t, "search_posts").Exec(ctx, &Deps{DB: db}, 1, map[string]any{"query": "海边", "date_range": "2026-09-15~2026-09-15"})
+	if err != nil {
+		t.Fatalf("keyword negative: %v", err)
+	}
+	if hits := res.Data.([]PostHit); len(hits) != 0 {
+		t.Fatalf("本地 2026-09-15 不应命中该条（UTC 旧口径会误中）: %+v", hits)
+	}
+
+	// 语义路径：matchDate 同样按本地日期
+	fake := &fakeSearch{enabled: true, ids: []int64{pid}}
+	res, err = findTool(t, "search_posts").Exec(ctx, &Deps{DB: db, Search: fake}, 1, map[string]any{"query": "海边", "date_range": "2026-09-16~2026-09-16"})
+	if err != nil {
+		t.Fatalf("semantic path: %v", err)
+	}
+	if hits := res.Data.([]PostHit); len(hits) != 1 || hits[0].ID != pid {
+		t.Fatalf("semantic localtime 应命中: %+v", hits)
+	}
+
+	prevZone.restore()
 }

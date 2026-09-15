@@ -122,7 +122,20 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 	}
 	a.notifyPartner(r, "post_commented", id, "收到评论",
 		claims.Username+"："+textutil.TruncMark(req.Content, 50), map[string]any{"content": textutil.TruncMark(req.Content, 50)})
-	writeJSON(w, http.StatusCreated, map[string]any{"id": commentID})
+	// 返回完整评论对象（R7：补齐返回值，对齐契约）
+	c, err := a.db.GetComment(r.Context(), commentID)
+	if err != nil {
+		writeJSON(w, http.StatusCreated, map[string]any{"id": commentID, "post_id": id, "author_id": claims.UserID, "content": req.Content})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"id":         c.ID,
+		"post_id":    c.PostID,
+		"author_id":  c.AuthorID,
+		"author":     nullStrText(c.AuthorNickname),
+		"content":    c.Content,
+		"created_at": c.CreatedAt,
+	})
 }
 
 func (a *interactionsAPI) listComments(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +188,8 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 		EventType: "comment_deleted", TargetType: "comment", TargetID: id,
 		Extra: map[string]any{"content": textutil.TruncMark(c.Content, 50)},
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// DESIGN §13.3：删除一律 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- 通知中心 ----

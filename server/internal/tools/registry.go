@@ -243,7 +243,7 @@ var searchMediaTypes = map[string]bool{"photo": true, "video": true, "audio": tr
 
 // searchFilter 检索过滤条件（零值表示不限）。
 type searchFilter struct {
-	from, to  string // YYYY-MM-DD（库内 UTC 日期），闭区间
+	from, to  string // YYYY-MM-DD（部署者本地日期口径，闭区间）
 	mediaType string // photo / video / audio
 }
 
@@ -251,15 +251,17 @@ type searchFilter struct {
 func (f searchFilter) empty() bool { return f.from == "" && f.to == "" && f.mediaType == "" }
 
 // where 关键词路径的附加谓词与参数（列名限定 p. 前缀，供 JOIN 查询使用）。
+// 日期按 localtime 比对（DESIGN §6.1 / §12：用户可见日期按部署者本地时区；
+// 与 store/posts.go、store/albums.go 既有的 localtime 口径一致）。
 func (f searchFilter) where() (string, []any) {
 	var conds []string
 	var args []any
 	if f.from != "" {
-		conds = append(conds, "date(p.created_at) >= date(?)")
+		conds = append(conds, "strftime('%Y-%m-%d', p.created_at, 'localtime') >= ?")
 		args = append(args, f.from)
 	}
 	if f.to != "" {
-		conds = append(conds, "date(p.created_at) <= date(?)")
+		conds = append(conds, "strftime('%Y-%m-%d', p.created_at, 'localtime') <= ?")
 		args = append(args, f.to)
 	}
 	if f.mediaType != "" {
@@ -273,8 +275,9 @@ func (f searchFilter) where() (string, []any) {
 }
 
 // matchDate 语义路径的日期过滤（闭区间、本地日期口径）。
+// h.Date 是库内 UTC 串（YYYY-MM-DD HH:MM:SS），先按 UTC 解析再转部署者本地时区取日期部分。
 func (f searchFilter) matchDate(h PostHit) bool {
-	d := datePrefix(h.Date)
+	d := utcToLocalDate(h.Date)
 	if f.from != "" && d < f.from {
 		return false
 	}
@@ -282,6 +285,18 @@ func (f searchFilter) matchDate(h PostHit) bool {
 		return false
 	}
 	return true
+}
+
+// utcToLocalDate 把库内 UTC 时间串（YYYY-MM-DD [HH:MM:SS]）转部署者本地日期 YYYY-MM-DD。
+// 解析失败时回退到原串的日期前缀（兼容已经只含日期的输入）。
+func utcToLocalDate(s string) string {
+	layouts := []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05Z", "2006-01-02"}
+	for _, lay := range layouts {
+		if t, err := time.Parse(lay, s); err == nil {
+			return t.Local().Format("2006-01-02")
+		}
+	}
+	return datePrefix(s)
 }
 
 // parseSearchFilter 解析可选入参；格式非法时报错（不静默忽略）。
@@ -327,9 +342,6 @@ func parseDateRange(s string) (from, to string, err error) {
 	}
 	return from, to, nil
 }
-
-// dateOnly 取日期部分（测试断言用；零值 → 空串）。
-func dateOnly(s string) string { return datePrefix(s) }
 
 // datePrefix 从库内 `YYYY-MM-DD HH:MM:SS` 取日期部分；不含空格时原样返回。
 func datePrefix(s string) string {
@@ -708,12 +720,16 @@ func Registry() []*Tool {
 			Category:    "动态",
 			Description: "发布一条动态（需用户确认后生效）",
 			Schema: map[string]string{
-				"content": "string — 动态正文",
-				"mood":    "string — 心情（可选）",
+				"content":       "string — 动态正文",
+				"media_tokens":  "string[] — 已上传媒体令牌（可选）",
+				"location_name": "string — 地点名（可选，纯文本）",
+				"mood":          "string — 心情（可选）",
 			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
-				"content": map[string]any{"type": "string"},
-				"mood":    map[string]any{"type": "string"},
+				"content":       map[string]any{"type": "string"},
+				"media_tokens":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"location_name": map[string]any{"type": "string"},
+				"mood":          map[string]any{"type": "string"},
 			}, "required": []string{"content"}},
 			IsWrite: true,
 			Exec: func(ctx context.Context, d *Deps, userID int64, args map[string]any) (*ExecResult, error) {
@@ -725,8 +741,12 @@ func Registry() []*Tool {
 				if err != nil {
 					return nil, err
 				}
+				// location_name 纯文本地名（mock fixtures 契约）；不解析坐标、不创点位——
+				// 那是 REST 表单的「location 对象」场景，MCP 简化为字符串。
+				locName := str(args, "location_name")
 				postID, err := d.DB.CreatePostWithMedia(ctx, &store.Post{
 					AuthorID: userID, Content: content, Mood: store.NullStr(str(args, "mood")),
+					LocationName: store.NullStr(locName),
 				}, medias)
 				if err != nil {
 					// 落库失败回收已转正的正式区文件，避免孤儿媒体（与 REST cleanupPromoted 同口径）
@@ -1356,17 +1376,19 @@ func Registry() []*Tool {
 		{
 			Name:        "create_anniversary",
 			Category:    "纪念日",
-			Description: "创建纪念日（date 统一 YYYY-MM-DD；solar=公历，lunar=农历日期；需用户确认后生效）",
+			Description: "创建纪念日（date 统一 YYYY-MM-DD；solar=公历，lunar=农历日期；lunar 可用 is_leap 标记闰月；需用户确认后生效）",
 			Schema: map[string]string{
 				"name":               "string — 名称",
 				"date":               "string — YYYY-MM-DD",
 				"type":               "solar | lunar",
+				"is_leap":            "boolean — 仅 type=lunar 有效，true 表示闰月纪念日",
 				"remind_days_before": "number — 提前提醒天数",
 			},
 			Params: map[string]any{"type": "object", "properties": map[string]any{
 				"name":               map[string]any{"type": "string"},
 				"date":               map[string]any{"type": "string"},
 				"type":               map[string]any{"type": "string"},
+				"is_leap":            map[string]any{"type": "boolean"},
 				"remind_days_before": map[string]any{"type": "integer"},
 			}, "required": []string{"name", "date"}},
 			IsWrite: true,
@@ -1379,6 +1401,13 @@ func Registry() []*Tool {
 				annivType := "solar"
 				if str(args, "type") == "lunar" {
 					annivType = "lunar"
+				}
+				// is_leap 仅 lunar 生效；solar 一律按 false（对齐 REST 与 mock routes.mjs）
+				isLeap := false
+				if annivType == "lunar" {
+					if v, ok := args["is_leap"].(bool); ok {
+						isLeap = v
+					}
 				}
 				if !lunar.ValidDateShape(date) {
 					return nil, fmt.Errorf("日期格式应为 YYYY-MM-DD")
@@ -1396,12 +1425,12 @@ func Registry() []*Tool {
 				if remind < 0 || remind > store.MaxRemindDaysBefore {
 					remind = 1
 				}
-				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, remind, userID)
+				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, isLeap, remind, userID)
 				if err != nil {
 					return nil, err
 				}
 				return &ExecResult{Content: fmt.Sprintf("纪念日「%s」已创建", name),
-					Data: map[string]any{"anniversary_id": id, "type": annivType}}, nil
+					Data: map[string]any{"anniversary_id": id, "type": annivType, "is_leap": isLeap}}, nil
 			},
 		},
 		{

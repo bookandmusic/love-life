@@ -107,7 +107,7 @@ func TestLunarNewYearMonotonic(t *testing.T) {
 // NextLunarOccurrence 在给定日期之后（含当日）返回，且落在同一年内。
 func TestNextLunarOccurrenceInvariant(t *testing.T) {
 	today := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	got := NextLunarOccurrence(8, 15, today) // 中秋
+	got := NextLunarOccurrence(8, 15, false, today) // 中秋（平月）
 	dt, err := time.ParseInLocation("2006-01-02", got, time.UTC)
 	if err != nil {
 		t.Fatalf("返回值不是合法日期 %q: %v", got, err)

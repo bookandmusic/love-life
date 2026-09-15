@@ -128,7 +128,7 @@ func TestInteractionsAndNotifications(t *testing.T) {
 	// 评论列表 + girl 删 admin 的？不——评论是 girl 自己发的；admin 删 girl 的评论 → 通知 girl
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/comments/1", adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete comment: %d", res.StatusCode)
 	}
 	var girlSnap string

@@ -91,7 +91,7 @@ func TestMediaOwnershipRules(t *testing.T) {
 	// 删除甲 → 媒体回未归属 → 可入乙
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/albums/"+itoa(alA), adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK {
+	if res.StatusCode != http.StatusNoContent {
 		t.Fatalf("delete album: %d", res.StatusCode)
 	}
 	res = doJSON(t, "POST", ts.URL+"/api/v1/albums/"+itoa(alB)+"/photos", adminToken, map[string]any{"media_ids": []int64{mediaID}})

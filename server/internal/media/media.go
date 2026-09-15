@@ -313,6 +313,61 @@ func (p *Pipeline) VerifySig(mediaID int64, variant, expStr, sig string) bool {
 	return hmac.Equal([]byte(p.signPayload(mediaID, variant, time.Unix(exp, 0))), []byte(sig))
 }
 
+// signAvatarPayload 头像签名载荷（独立命名空间 avatar:<userID>，与 media 签名隔离）。
+func (p *Pipeline) signAvatarPayload(userID int64, exp time.Time) string {
+	mac := hmac.New(sha256.New, p.secret)
+	fmt.Fprintf(mac, "avatar:%d:%d", userID, exp.Unix())
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// SignedAvatarURL 头像签名 URL（独立通道，不归属 media 表；GAP16）。
+func (p *Pipeline) SignedAvatarURL(userID int64) string {
+	exp := time.Now().Add(signedURLTTL)
+	return fmt.Sprintf("/api/v1/avatar/%d?exp=%d&sig=%s", userID, exp.Unix(), p.signAvatarPayload(userID, exp))
+}
+
+// VerifyAvatarSig 头像签名校验。
+func (p *Pipeline) VerifyAvatarSig(userID int64, expStr, sig string) bool {
+	exp, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil || time.Now().Unix() > exp {
+		return false
+	}
+	return hmac.Equal([]byte(p.signAvatarPayload(userID, time.Unix(exp, 0))), []byte(sig))
+}
+
+// SaveAvatar 保存头像图片到正式区（avatars/<YYYY>/<MM>/<rand>.<ext>），返回相对数据目录的路径。
+// 仅接受照片格式；视频/音频一律拒绝。独立通道，不走媒体表与临时区两段式流程（GAP16）。
+func (p *Pipeline) SaveAvatar(r io.Reader, filename string) (string, error) {
+	kind, ext, err := kindOf(filename)
+	if err != nil {
+		return "", err
+	}
+	if kind != "photo" {
+		return "", ErrUnsupportedFormat
+	}
+	now := time.Now()
+	finalDir := filepath.Join(p.dataDir, "avatars", now.Format("2006"), now.Format("01"))
+	if err := os.MkdirAll(finalDir, 0o755); err != nil {
+		return "", err
+	}
+	name := randHex(16) + ext
+	dst := filepath.Join(finalDir, name)
+	f, err := os.Create(dst)
+	if err != nil {
+		return "", err
+	}
+	if _, err := io.Copy(f, r); err != nil {
+		_ = f.Close()
+		_ = os.Remove(dst)
+		return "", err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(dst)
+		return "", err
+	}
+	return filepath.Rel(p.dataDir, dst)
+}
+
 // Open 安全打开数据目录内相对路径（防目录穿越）。
 func (p *Pipeline) Open(rel string) (*os.File, error) {
 	abs := filepath.Join(p.dataDir, rel)

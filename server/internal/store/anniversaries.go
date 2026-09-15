@@ -17,37 +17,48 @@ type Anniversary struct {
 	Name             string
 	Date             string // YYYY-MM-DD；type=lunar 时为农历日期（统一契约，不存 lunar_* 冗余）
 	Type             string // solar | lunar
+	IsLeap           bool   // 仅 type=lunar 时有意义（true=闰月纪念日）；solar 恒 false
 	RemindDaysBefore int
 	CreatedAt        string
 	CreatedBy        int64
 }
 
-func (d *DB) CreateAnniversary(ctx context.Context, name, date, annivType string, remindDaysBefore int, createdBy int64) (int64, error) {
+func (d *DB) CreateAnniversary(ctx context.Context, name, date, annivType string, isLeap bool, remindDaysBefore int, createdBy int64) (int64, error) {
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO anniversaries (name, date, type, remind_days_before, created_by) VALUES (?, ?, ?, ?, ?)`,
-		name, date, annivType, remindDaysBefore, createdBy)
+		`INSERT INTO anniversaries (name, date, type, is_leap, remind_days_before, created_by) VALUES (?, ?, ?, ?, ?, ?)`,
+		name, date, annivType, isLeapToInt(isLeap), remindDaysBefore, createdBy)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
+// isLeapToInt bool → INTEGER 0/1（schema 列语义；对齐 SQLite 无原生 bool）。
+func isLeapToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // GetAnniversary 单个纪念日（删除/提醒配置前校验用）；不存在或已删返回 ErrNotFound。
 func (d *DB) GetAnniversary(ctx context.Context, id int64) (*Anniversary, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, name, date, type, remind_days_before, created_at, created_by
+	row := d.QueryRowContext(ctx, `SELECT id, name, date, type, is_leap, remind_days_before, created_at, created_by
 		FROM anniversaries WHERE id = ? AND deleted_at IS NULL`, id)
 	var a Anniversary
-	if err := row.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &a.RemindDaysBefore, &a.CreatedAt, &a.CreatedBy); err != nil {
+	var isLeap int
+	if err := row.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &isLeap, &a.RemindDaysBefore, &a.CreatedAt, &a.CreatedBy); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
+	a.IsLeap = isLeap == 1
 	return &a, nil
 }
 
 func (d *DB) ListAnniversaries(ctx context.Context) ([]*Anniversary, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, name, date, type, remind_days_before, created_at, created_by
+	rows, err := d.QueryContext(ctx, `SELECT id, name, date, type, is_leap, remind_days_before, created_at, created_by
 		FROM anniversaries WHERE deleted_at IS NULL ORDER BY date`)
 	if err != nil {
 		return nil, err
@@ -56,9 +67,11 @@ func (d *DB) ListAnniversaries(ctx context.Context) ([]*Anniversary, error) {
 	var list []*Anniversary
 	for rows.Next() {
 		var a Anniversary
-		if err := rows.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &a.RemindDaysBefore, &a.CreatedAt, &a.CreatedBy); err != nil {
+		var isLeap int
+		if err := rows.Scan(&a.ID, &a.Name, &a.Date, &a.Type, &isLeap, &a.RemindDaysBefore, &a.CreatedAt, &a.CreatedBy); err != nil {
 			return nil, err
 		}
+		a.IsLeap = isLeap == 1
 		list = append(list, &a)
 	}
 	return list, rows.Err()
@@ -99,7 +112,7 @@ func (a *Anniversary) NextOccurrence(now time.Time) time.Time {
 		if m == 0 {
 			return time.Time{}
 		}
-		next, _ := time.ParseInLocation("2006-01-02", lunar.NextLunarOccurrence(m, d, now), now.Location())
+		next, _ := time.ParseInLocation("2006-01-02", lunar.NextLunarOccurrence(m, d, a.IsLeap, now), now.Location())
 		return next
 	}
 	anniv, err := time.ParseInLocation("2006-01-02", a.Date, now.Location())

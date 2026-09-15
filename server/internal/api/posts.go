@@ -27,6 +27,14 @@ func nullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
 }
 
+// nullStrText 把 sql.NullString 反解为串（NULL → ""）。
+func nullStrText(n sql.NullString) string {
+	if n.Valid {
+		return n.String
+	}
+	return ""
+}
+
 // ---- 媒体上传（两段式第一段：临时区） ----
 
 func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
@@ -58,7 +66,6 @@ type locationInput struct {
 }
 
 type createPostRequest struct {
-	Title       string         `json:"title"`
 	Content     string         `json:"content"`
 	Mood        string         `json:"mood"`
 	Loc         *locationInput `json:"location"`
@@ -79,7 +86,6 @@ type postResponse struct {
 	ID           int64           `json:"id"`
 	AuthorID     int64           `json:"author_id"`
 	Author       string          `json:"author"`
-	Title        string          `json:"title"`
 	Content      string          `json:"content"`
 	Mood         string          `json:"mood"`
 	Location     string          `json:"location_name"`
@@ -98,7 +104,7 @@ func (a *postsAPI) buildPostResponse(p *store.Post, medias []*store.MediaRow, in
 	}
 	resp := postResponse{
 		ID: p.ID, AuthorID: p.AuthorID, Author: p.AuthorNickname.String,
-		Title: p.Title.String, Content: p.Content, Mood: p.Mood.String,
+		Content: p.Content, Mood: p.Mood.String,
 		Location: p.LocationName.String, CreatedAt: p.CreatedAt, Media: []mediaResponse{},
 		LikeCount: inter.LikeCount, Liked: inter.Liked,
 		FavCount: inter.FavoriteCount, Favorited: inter.Favorited,
@@ -187,7 +193,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 
 	postID, err := a.db.CreatePostWithMedia(r.Context(), &store.Post{
 		AuthorID: claims.UserID, Content: req.Content,
-		Title: nullStr(req.Title), Mood: nullStr(req.Mood),
+		Title: sql.NullString{}, Mood: nullStr(req.Mood),
 		LocationName: nullStr(locName), PointID: pointID,
 	}, medias)
 	if err != nil {
@@ -200,14 +206,10 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
 	// 通知快照仅含字符串，必然可序列化。
 	snapshot, _ := json.Marshal(map[string]any{
-		"title": req.Title, "content": textutil.TruncMark(req.Content, 50), "operator": claims.Username,
+		"content": textutil.TruncMark(req.Content, 50), "operator": claims.Username,
 	})
-	pushTitle := req.Title
-	if pushTitle == "" {
-		pushTitle = "新动态"
-	}
 	a.dp.Dispatch(r.Context(), recipients, "post_created", "post", postID, string(snapshot),
-		pushTitle, textutil.TruncMark(req.Content, 100))
+		"新动态", textutil.TruncMark(req.Content, 100))
 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": postID})
 }
@@ -317,9 +319,10 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
 		CreatorID: p.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
 		EventType: "post_deleted", TargetType: "post", TargetID: id,
-		Extra: map[string]any{"title": p.Title.String, "content": textutil.TruncMark(p.Content, 50)},
+		Extra: map[string]any{"content": textutil.TruncMark(p.Content, 50)},
 	})
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	// DESIGN §13.3：删除一律 204 No Content
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- 媒体文件服务（签名 URL，无 Authorization 头） ----

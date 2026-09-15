@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"strings"
 	"time"
 )
 
@@ -131,6 +132,40 @@ func (d *DB) GetConfirmAction(ctx context.Context, id int64) (*ConfirmAction, er
 	return &a, nil
 }
 
+// ListConfirmActionsByIDs 批量按 ID 查确认卡片（chat history 补 card 快照用）。
+// 不存在的 ID 跳过；返回 map[id]*ConfirmAction。
+func (d *DB) ListConfirmActionsByIDs(ctx context.Context, ids []int64) (map[int64]*ConfirmAction, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	query := "SELECT id, user_id, tool_name, params_json, status, expires_at, resolved_at, created_at FROM confirm_actions WHERE id IN (" +
+		strings.Join(placeholders, ",") + ")"
+	rows, err := d.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[int64]*ConfirmAction, len(ids))
+	for rows.Next() {
+		var a ConfirmAction
+		var expires string
+		if err := rows.Scan(&a.ID, &a.UserID, &a.ToolName, &a.ParamsJSON, &a.Status, &expires, &a.ResolvedAt, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		if a.ExpiresAt, err = time.Parse(time.RFC3339, expires); err != nil {
+			return nil, err
+		}
+		result[a.ID] = &a
+	}
+	return result, rows.Err()
+}
+
 // ResolveConfirmAction 单次有效：仅 pending 且未过期可流转；过期置 expired。
 func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) error {
 	allowed := map[string]bool{"confirmed": true, "cancelled": true, "expired": true}
@@ -155,18 +190,6 @@ func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) erro
 }
 
 // ---- 审计 ----
-
-// InsertAuditLog 基础审计（无 params 全文与耗时；user 直接写库路径用，
-// 契约 latencyMs 仅 ai/pat 有值）。
-//
-// result 仅记状态（success / failed[: 原因]），与 mock 契约 fixtures.mjs audit 一致；
-// 后台按 result == 'success' 判定成败，故不得写入业务摘要或工具输出正文。
-func (d *DB) InsertAuditLog(ctx context.Context, actorType string, actorID int64, action, digest, result string) error {
-	_, err := d.ExecContext(ctx,
-		`INSERT INTO audit_logs (actor_type, actor_id, action, params_digest, result) VALUES (?, ?, ?, ?, ?)`,
-		actorType, actorID, action, digest, result)
-	return err
-}
 
 // InsertAuditLogFull 完整审计（AD7）：params 存人类可读摘要（单值超 60 字截断）供后台展示，
 // latencyMs 记调用耗时（仅 ai/pat 调用有值；传 nil 则记 NULL）。
