@@ -13,7 +13,7 @@ import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
 import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
 import { useAuth } from '../stores/auth'
-import { latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
+import { ensureTileGrant, latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
 
 // ============ 瓦片引擎（统一实现见 utils/mapTiles.ts：APP 统一请求后端 /api/v1/map/tile，密钥不下发） ============
 const MAX_ZOOM = 12
@@ -166,6 +166,8 @@ watch(view, () => { nextTick(() => layout()) })
 
 onMounted(async () => {
   await loadPoints()
+  // 首次布局前拿到瓦片签名，避免首帧无签导致整屏瓦片 401
+  await ensureTileGrant()
   // FAB「添加地点」→ 打开完整表单页
   if (route.query.new === '1') {
     newForm.value = true

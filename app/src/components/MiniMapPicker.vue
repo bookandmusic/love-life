@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { LocateFixed, MapPin, Minus, Plus } from 'lucide-vue-next'
-import { latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
+import { ensureTileGrant, latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
 
 // 迷你瓦片地图：用于「地点选择」——展示底图，支持点击选点 / 拖拽平移 / ±缩放 / 重置视角。
 // 瓦片契约与 MapView 共用（/api/v1/map/tile，WebMercator，TILE=256，见 utils/mapTiles.ts）。
@@ -109,6 +109,8 @@ function resetView() {
 }
 
 onMounted(() => {
+  // 首个签名到位后 tileUrl 会经 version 依赖重渲染，补齐初始无签的瓦片
+  void ensureTileGrant()
   if (!container.value) return
   const el = container.value
   const update = () => {

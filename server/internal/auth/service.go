@@ -205,30 +205,6 @@ func (s *Service) RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
-// AllowTokenQuery 认证中间件：支持 Authorization header 或 ?token= query 参数
-// （瓦片等 img 资源无法带 header，用签名 query 参数）。
-func (s *Service) AllowTokenQuery(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tok := ""
-		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
-			tok = strings.TrimPrefix(h, "Bearer ")
-		} else if q := r.URL.Query().Get("token"); q != "" {
-			tok = q
-		}
-		if tok == "" {
-			writeError(w, http.StatusUnauthorized, "未认证")
-			return
-		}
-		claims, err := s.tm.ParseAccessToken(tok)
-		if err != nil {
-			writeError(w, http.StatusUnauthorized, "认证已过期")
-			return
-		}
-		ctx := context.WithValue(r.Context(), ctxKey{}, claims)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
 func UserFromContext(ctx context.Context) (*Claims, bool) {
 	claims, ok := ctx.Value(ctxKey{}).(*Claims)
 	return claims, ok

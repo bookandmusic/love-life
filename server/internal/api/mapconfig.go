@@ -1,8 +1,12 @@
 package api
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,8 +21,9 @@ import (
 // mapConfigAPI 地图瓦片源管理（DESIGN 4.7：多卡片，类型限 public/tianditu，至多一个使用中；
 // 密钥加密存储、只写不读、永不下发 APP）。
 type mapConfigAPI struct {
-	db  *store.DB
-	key []byte
+	db        *store.DB
+	key       []byte
+	sigSecret []byte // 瓦片短时签名密钥（= TokenManager 密钥，与媒体签名同源）
 }
 
 type mapSourceItem struct {
@@ -188,7 +193,34 @@ func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.item(s))
 }
 
-// config GET /api/v1/map/config 下发「使用中」的源给 APP（契约不变：provider/tile_api/url_template?）。
+// tileGrantTTL 瓦片短时签名有效期（DESIGN §4.7）：一次签名覆盖全部坐标，APP 定时重取。
+const tileGrantTTL = 30 * time.Minute
+
+// tileSig 空间级签名：只绑 exp、不绑 z/x/y。瓦片坐标由客户端按视口实时算出，
+// 逐张签名会让拖动视口不断触发重签，故一张签名覆盖全部瓦片。
+func (a *mapConfigAPI) tileSig(exp int64) string {
+	mac := hmac.New(sha256.New, a.sigSecret)
+	fmt.Fprintf(mac, "map:tile:%d", exp)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// tileGrant 签发当前时刻的 (exp, sig)。
+func (a *mapConfigAPI) tileGrant() (int64, string) {
+	exp := time.Now().Add(tileGrantTTL).Unix()
+	return exp, a.tileSig(exp)
+}
+
+// verifyTileGrant 校验 exp 未过期且签名一致。
+func (a *mapConfigAPI) verifyTileGrant(expStr, sig string) bool {
+	exp, err := strconv.ParseInt(expStr, 10, 64)
+	if err != nil || time.Now().Unix() > exp {
+		return false
+	}
+	return hmac.Equal([]byte(a.tileSig(exp)), []byte(sig))
+}
+
+// config GET /api/v1/map/config 下发「使用中」的源与瓦片短时签名给 APP
+// （provider/tile_api/url_template? 契约不变，新增 exp/sig）。
 func (a *mapConfigAPI) config(w http.ResponseWriter, r *http.Request) {
 	s, err := a.db.GetEnabledSource(r.Context())
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -196,9 +228,12 @@ func (a *mapConfigAPI) config(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
+	exp, sig := a.tileGrant()
 	resp := map[string]any{
 		"provider": "",
 		"tile_api": "/api/v1/map/tile",
+		"exp":      exp,
+		"sig":      sig,
 	}
 	if s != nil {
 		resp["provider"] = s.Type
@@ -246,11 +281,17 @@ func applyUpstreamHeaders(req *http.Request, provider, inboundReferer string) {
 	}
 }
 
-// tile GET /api/v1/map/tile?z=&x=&y= 服务端瓦片代理：按「使用中」的源转发，返回瓦片图。
+// tile GET /api/v1/map/tile?z=&x=&y=&exp=&sig= 服务端瓦片代理：按「使用中」的源转发，返回瓦片图。
+// 鉴权走短时签名（img 标签无法带 header）：/map/config 下发 exp+sig，过期即 401。
 func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
-	z, err1 := strconv.Atoi(r.URL.Query().Get("z"))
-	x, err2 := strconv.Atoi(r.URL.Query().Get("x"))
-	y, err3 := strconv.Atoi(r.URL.Query().Get("y"))
+	q := r.URL.Query()
+	if !a.verifyTileGrant(q.Get("exp"), q.Get("sig")) {
+		writeError(w, http.StatusUnauthorized, "签名无效或已过期")
+		return
+	}
+	z, err1 := strconv.Atoi(q.Get("z"))
+	x, err2 := strconv.Atoi(q.Get("x"))
+	y, err3 := strconv.Atoi(q.Get("y"))
 	if err1 != nil || err2 != nil || err3 != nil || z < 0 || z > 20 || x < 0 || y < 0 {
 		writeError(w, http.StatusBadRequest, "无效的瓦片坐标")
 		return

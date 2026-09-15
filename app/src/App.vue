@@ -6,6 +6,7 @@ import { applyWindowState } from './utils/windowState'
 import { ACCENTS } from './utils/accents'
 import { probeAndSelect } from './utils/netProbe'
 import { startMediaRefresh } from './utils/mediaUrls'
+import { startTileGrantRefresh } from './utils/mapTiles'
 
 const router = useRouter()
 
@@ -35,6 +36,8 @@ onMounted(() => {
   probeTimer = window.setInterval(() => void probeAndSelect(), 5 * 60 * 1000)
   // 媒体签名 URL 定时重签（AP3）：15 分钟 TTL 临期前静默换新
   startMediaRefresh()
+  // 地图瓦片短时签名定时换新（DB3）：30 分钟 TTL，每 10 分钟静默重取
+  startTileGrantRefresh()
 })
 
 onUnmounted(() => {

@@ -44,7 +44,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("PUT /api/v1/admin/webhooks/{id}", hooksAPI.update)
 	adminMux.HandleFunc("DELETE /api/v1/admin/webhooks/{id}", hooksAPI.remove)
 	adminMux.HandleFunc("POST /api/v1/admin/webhooks/{id}/test", hooksAPI.test)
-	mapAPI := &mapConfigAPI{db: db, key: crypto.KeyFrom(tm.Secret())}
+	mapAPI := &mapConfigAPI{db: db, key: crypto.KeyFrom(tm.Secret()), sigSecret: tm.Secret()}
 	adminMux.HandleFunc("GET /api/v1/admin/map-config", mapAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/map-config", mapAPI.create)
 	adminMux.HandleFunc("DELETE /api/v1/admin/map-config/{id}", mapAPI.remove)
@@ -103,12 +103,12 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.Handle("GET /api/v1/styles", authSvc.RequireAuth(http.HandlerFunc(stylesAPI.list)))
 
 	// 地图（登录用户；瓦片走服务端代理，密钥不下发）
-	// tile 接口允许 token query 认证（img 标签无法带 header），config 走 RequireAuth
+	// config 走 RequireAuth；tile 用 config 下发的短时签名（exp+sig）鉴权——img 无法带 header
 	mapMux := http.NewServeMux()
 	mapMux.HandleFunc("GET /api/v1/map/config", mapAPI.config)
 	mux.Handle("/api/v1/map/config", authSvc.RequireAuth(mapMux))
 	mapMux.HandleFunc("GET /api/v1/map/tile", mapAPI.tile)
-	mux.Handle("/api/v1/map/tile", authSvc.AllowTokenQuery(mapMux))
+	mux.Handle("/api/v1/map/tile", mapMux)
 
 	// 地图点位（登录用户；双来源同池、同名复用，软删进回收站体系——DESIGN §4.7）
 	pointsAPI := &mapPointsAPI{db: db, dp: dp}

@@ -2,11 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/crypto"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -26,7 +28,8 @@ func newTestMapDB(t *testing.T) *store.DB {
 func newTestMapAPI(t *testing.T) (*mapConfigAPI, *store.DB) {
 	t.Helper()
 	db := newTestMapDB(t)
-	return &mapConfigAPI{db: db, key: crypto.KeyFrom([]byte("test-secret-1234567890abcdef"))}, db
+	secret := []byte("test-secret-1234567890abcdef")
+	return &mapConfigAPI{db: db, key: crypto.KeyFrom(secret), sigSecret: secret}, db
 }
 
 // newMapMux 按路由表注册地图 admin 接口（{id} PathValue 须经 ServeMux 解析）。
@@ -249,14 +252,14 @@ func TestMapConfigAppAPI(t *testing.T) {
 func TestMapTileBadCoords(t *testing.T) {
 	api, _ := newTestMapAPI(t)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=-1&x=0&y=0", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=-1&x=0&y=0"), nil)
 	w := httptest.NewRecorder()
 	api.tile(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("bad z status = %d, want 400", w.Code)
 	}
 
-	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=5&x=abc&y=0", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=5&x=abc&y=0"), nil)
 	w2 := httptest.NewRecorder()
 	api.tile(w2, req2)
 	if w2.Code != http.StatusBadRequest {
@@ -270,7 +273,7 @@ func TestMapTileNoUpstream(t *testing.T) {
 	ctx := t.Context()
 
 	// 空表：未启用任何源
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=4&x=13&y=5", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=4&x=13&y=5"), nil)
 	w := httptest.NewRecorder()
 	api.tile(w, req)
 	if w.Code != http.StatusBadGateway {
@@ -280,7 +283,7 @@ func TestMapTileNoUpstream(t *testing.T) {
 	// public 但 URL 模板为空（直接落库启用，绕过 enable 校验）
 	id, _ := db.CreateSource(ctx, &store.MapSource{Type: "public"})
 	_ = db.EnableSource(ctx, id)
-	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=4&x=13&y=5", nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=4&x=13&y=5"), nil)
 	w2 := httptest.NewRecorder()
 	api.tile(w2, req2)
 	if w2.Code != http.StatusBadGateway {
@@ -290,7 +293,7 @@ func TestMapTileNoUpstream(t *testing.T) {
 	// tianditu 但无密钥
 	id2, _ := db.CreateSource(ctx, &store.MapSource{Type: "tianditu"})
 	_ = db.EnableSource(ctx, id2)
-	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=4&x=13&y=5", nil)
+	req3 := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=4&x=13&y=5"), nil)
 	w3 := httptest.NewRecorder()
 	api.tile(w3, req3)
 	if w3.Code != http.StatusBadGateway {
@@ -345,7 +348,7 @@ func TestMapTileForwardsHeaders(t *testing.T) {
 	srv, cap := newCapturingUpstream(t)
 	enabledPublicSource(t, db, srv.URL+"/{z}/{x}/{y}.png")
 
-	in := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=4&x=13&y=5", nil)
+	in := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=4&x=13&y=5"), nil)
 	in.Header.Set("Referer", "http://10.10.2.2:1420/map")
 	w := httptest.NewRecorder()
 	api.tile(w, in)
@@ -381,7 +384,7 @@ func TestMapTileRefererFallback(t *testing.T) {
 	enabledPublicSource(t, db, srv.URL+"/{z}/{x}/{y}.png")
 
 	// 入站不设 Referer
-	in := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=4&x=13&y=5", nil)
+	in := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=4&x=13&y=5"), nil)
 	w := httptest.NewRecorder()
 	api.tile(w, in)
 
@@ -419,5 +422,55 @@ func TestMapTileTiandituHeaders(t *testing.T) {
 	}
 	if out.Header.Get("Referer") != "https://github.com/bookandmusic/love-life" {
 		t.Errorf("public Referer fallback = %q", out.Header.Get("Referer"))
+	}
+}
+
+// tileQuery 在给定 query 上追加一对合法短时签名（签名只绑 exp，一次覆盖全部瓦片坐标）。
+func tileQuery(api *mapConfigAPI, extra string) string {
+	exp := time.Now().Add(tileGrantTTL).Unix()
+	return fmt.Sprintf("%s&exp=%d&sig=%s", extra, exp, api.tileSig(exp))
+}
+
+// 断言：/map/config 下发可验签的短时 grant（exp 在未来、sig 与服务端口径一致）。
+func TestMapConfigIssuesTileGrant(t *testing.T) {
+	api, db := newTestMapAPI(t)
+	ctx := t.Context()
+	id, _ := db.CreateSource(ctx, &store.MapSource{Type: "public", URLTemplate: "https://a.example.com/{z}/{x}/{y}.png"})
+	_ = db.EnableSource(ctx, id)
+
+	w := httptest.NewRecorder()
+	api.config(w, httptest.NewRequest(http.MethodGet, "/api/v1/map/config", nil))
+	var got struct {
+		Exp int64  `json:"exp"`
+		Sig string `json:"sig"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Exp <= time.Now().Unix() {
+		t.Fatalf("exp = %d, want 未来时间", got.Exp)
+	}
+	if want := api.tileSig(got.Exp); got.Sig != want {
+		t.Errorf("sig = %q, want %q", got.Sig, want)
+	}
+}
+
+// 断言：无签名 / 旧 token / 过期 / 篡改 / exp 非法一律 401，且不触达上游。
+func TestMapTileRejectsBadGrant(t *testing.T) {
+	api, _ := newTestMapAPI(t)
+	now := time.Now().Unix()
+	cases := []struct{ name, q string }{
+		{"缺签名", "z=4&x=13&y=5"},
+		{"旧 query token", "z=4&x=13&y=5&token=legacy.jwt.value"},
+		{"过期签名", fmt.Sprintf("z=4&x=13&y=5&exp=%d&sig=%s", now-1, api.tileSig(now-1))},
+		{"篡改签名", fmt.Sprintf("z=4&x=13&y=5&exp=%d&sig=%s", now+60, "deadbeef")},
+		{"exp 非数字", "z=4&x=13&y=5&exp=abc&sig=deadbeef"},
+	}
+	for _, c := range cases {
+		w := httptest.NewRecorder()
+		api.tile(w, httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+c.q, nil))
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s status = %d, want 401", c.name, w.Code)
+		}
 	}
 }

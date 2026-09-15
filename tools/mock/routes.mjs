@@ -5,7 +5,7 @@
  * 辅助函数（ok/created/placeholder/daysBetween/spaceResponse/postOut）也在此。
  */
 
-import { randomBytes } from 'node:crypto'
+import { createHmac, randomBytes } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -1055,10 +1055,16 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
 }})
 
 // --- Map ---
-// APP 配置：下发「使用中」的源（契约不变：provider/tile_api/url_template?，无密钥）
+// 瓦片短时签名：与真实服务端口径一致——只绑 exp 的空间级签名（一次覆盖全部坐标）
+const TILE_GRANT_TTL_SEC = 1800
+const TILE_SIG_SECRET = 'mock-tile-secret'
+const tileSig = (exp) => createHmac('sha256', TILE_SIG_SECRET).update(`map:tile:${exp}`).digest('hex')
+
+// APP 配置：下发「使用中」的源与瓦片短时签名（provider/tile_api/url_template? 不变，新增 exp/sig，无密钥）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/map\/config$/, handler: () => {
   const s = mapSources.find((x) => x.enabled)
-  const out = { provider: s?.type ?? '', tile_api: '/api/v1/map/tile' }
+  const exp = Math.floor(Date.now() / 1000) + TILE_GRANT_TTL_SEC
+  const out = { provider: s?.type ?? '', tile_api: '/api/v1/map/tile', exp, sig: tileSig(exp) }
   if (s?.type === 'public' && s.url_template) out.url_template = s.url_template
   return ok(out)
 } })
@@ -1101,6 +1107,10 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/map-config\/\d+\/enabl
 
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/map\/tile$/, handler: (url) => {
   const q = queryParams(url)
+  const exp = Number(q.exp)
+  if (!exp || exp < Math.floor(Date.now() / 1000) || q.sig !== tileSig(exp)) {
+    return unauthorized('签名无效或已过期')
+  }
   const z = q.z || 4
   const x = q.x || 13
   const y = q.y || 5
