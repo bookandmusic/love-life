@@ -33,16 +33,19 @@ const LUNAR_INFO = [
 
 const BASE_YEAR = 1900
 
-function leapMonth(y: number): number {
+/** 该农历年的闰月（1-12；0 表示无闰） */
+export function leapMonth(y: number): number {
   return LUNAR_INFO[y - BASE_YEAR] & 0xf
 }
 
-function leapDays(y: number): number {
+/** 该农历年闰月的天数（无闰返回 0） */
+export function leapDays(y: number): number {
   const lm = leapMonth(y)
   return lm ? (LUNAR_INFO[y - BASE_YEAR] & 0x10000 ? 30 : 29) : 0
 }
 
-function monthDays(y: number, m: number): number {
+/** 农历某月天数（大月 30，小月 29） */
+export function monthDays(y: number, m: number): number {
   return LUNAR_INFO[y - BASE_YEAR] & (0x10000 >> m) ? 30 : 29 // 大月 30，小月 29
 }
 
@@ -105,12 +108,12 @@ const LUNAR_MONTHS = ['', '正', '二', '三', '四', '五', '六', '七', '八'
 /** 农历日名（1-30：初一…初十、十一…十九、二十、十一…廿九、三十）——农历日历写法 */
 export const LUNAR_DAYS = ['', '初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十', '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十', '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十']
 
-/** 农历月 → 中文（如“农历八月”） */
-export function lunarMonthText(m: number): string {
-  return `农历${LUNAR_MONTHS[m] || m}月`
+/** 农历月 → 中文（如“农历八月”/“农历闰八月”） */
+export function lunarMonthText(m: number, isLeap = false): string {
+  return `农历${isLeap ? '闰' : ''}${LUNAR_MONTHS[m] || m}月`
 }
 
 /** 农历月/日 → 中文（如“农历八月十五”/“农历闰八月十五”） */
 export function lunarDayText(m: number, d: number, isLeap = false): string {
-  return `农历${isLeap ? '闰' : ''}${LUNAR_MONTHS[m] || m}月${LUNAR_DAYS[d] || d}`
+  return `${lunarMonthText(m, isLeap)}${LUNAR_DAYS[d] || d}`
 }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, ChevronLeft, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
+import { Bell, ChevronLeft, ChevronRight, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
 import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
@@ -9,11 +9,12 @@ import ErrorState from '../components/ErrorState.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import AppToast from '../components/AppToast.vue'
 import Sheet from '../components/Sheet.vue'
+import WheelDatePicker from '../components/WheelDatePicker.vue'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
 import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
 import { useAuth } from '../stores/auth'
-import { nextLunarOccurrence, lunarDayText, lunarMonthText, LUNAR_DAYS } from '../utils/lunar'
+import { nextLunarOccurrence, lunarDayText } from '../utils/lunar'
 import { daysUntilDate, nextSolarDate, ymdOf } from '../utils/dates'
 
 interface Anniv {
@@ -42,17 +43,43 @@ const remindOptions = [0, 1, 3, 7, 14, 30]
 const newForm = ref(false)
 const fName = ref('')
 const fType = ref<'solar' | 'lunar'>('solar')
-const fSolarDate = ref('')
-const fLunarYear = ref<number>(new Date().getFullYear())
+// 表单初值：阳历默认今天（与 resetForm 保持一致）
+const _today = new Date()
+const fSolarY = ref<number>(_today.getFullYear())
+const fSolarM = ref<number>(_today.getMonth() + 1)
+const fSolarD = ref<number>(_today.getDate())
+const fLunarYear = ref<number>(_today.getFullYear())
 const fLunarMonth = ref<number>(8)
 const fLunarDay = ref<number>(15)
 const fLunarLeap = ref(false)
 const fRemind = ref(1)
-const lunarYearOpts = computed(() => {
-  const cur = new Date().getFullYear()
-  const years: number[] = []
-  for (let y = 1900; y <= cur; y++) years.push(y)
-  return years.reverse()
+// 日期选择：滚轮 sheet（iOS 风格），行内只显示当前值
+const showPicker = ref(false)
+const pickedDateLabel = computed(() =>
+  fType.value === 'solar'
+    ? `${fSolarY.value} 年 ${fSolarM.value} 月 ${fSolarD.value} 日`
+    : lunarDayText(fLunarMonth.value, fLunarDay.value, fLunarLeap.value),
+)
+// 滚轮「完成」写回：闰月由所选月份携带（无独立开关）
+function applyPickedDate(v: { year: number; month: number; day: number; leap: boolean }) {
+  if (fType.value === 'solar') {
+    fSolarY.value = v.year
+    fSolarM.value = v.month
+    fSolarD.value = v.day
+  } else {
+    fLunarYear.value = v.year
+    fLunarMonth.value = v.month
+    fLunarDay.value = v.day
+    fLunarLeap.value = v.leap
+  }
+  showPicker.value = false
+}
+// 统一契约：阳历 date 同样落 YYYY-MM-DD（YYYY 为选中的原始年份）
+const solarRefDate = computed(() => {
+  if (fType.value !== 'solar') return ''
+  const mm = String(fSolarM.value).padStart(2, '0')
+  const dd = String(fSolarD.value).padStart(2, '0')
+  return `${fSolarY.value}-${mm}-${dd}`
 })
 
 // B9 删除确认 sheet
@@ -143,10 +170,14 @@ function closeForm() {
 }
 
 function resetForm() {
+  const today = new Date()
   fName.value = ''
   fType.value = 'solar'
-  fSolarDate.value = ''
-  fLunarYear.value = new Date().getFullYear()
+  // 阳历默认今天（记录当下的直觉），用户可在滚轮里改
+  fSolarY.value = today.getFullYear()
+  fSolarM.value = today.getMonth() + 1
+  fSolarD.value = today.getDate()
+  fLunarYear.value = today.getFullYear()
   fLunarMonth.value = 8
   fLunarDay.value = 15
   fLunarLeap.value = false
@@ -156,7 +187,7 @@ function resetForm() {
 
 const canSave = computed(() => {
   if (saving.value || !fName.value.trim()) return false
-  if (fType.value === 'solar') return !!fSolarDate.value
+  if (fType.value === 'solar') return !!solarRefDate.value
   return !!lunarRefDate.value
 })
 
@@ -169,7 +200,7 @@ async function save() {
     if (fType.value === 'solar') {
       await api('/api/v1/anniversaries', {
         method: 'POST',
-        body: JSON.stringify({ name, type: 'solar', date: fSolarDate.value, remind_days_before: fRemind.value }),
+        body: JSON.stringify({ name, type: 'solar', date: solarRefDate.value, remind_days_before: fRemind.value }),
       })
     } else {
       // 统一契约：date = 真实农历年月日 + is_leap 闰月标记；换算/倒计时由服务端推算
@@ -274,44 +305,46 @@ onMounted(async () => {
         <button class="np-save" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
       </header>
       <div class="af-body">
-        <input v-model="fName" class="s-field" placeholder="名字（如：中秋）" maxlength="30" />
-
-        <div class="seg">
-          <button :class="{ on: fType === 'solar' }" @click="fType = 'solar'"><CalendarDays :size="14" stroke-width="2" /> 阳历</button>
-          <button :class="{ on: fType === 'lunar' }" @click="fType = 'lunar'"><Moon :size="14" stroke-width="2" /> 农历</button>
-        </div>
-
-        <template v-if="fType === 'solar'">
-          <label class="s-label">日期（每年按阳历重复）</label>
-          <input v-model="fSolarDate" type="date" class="s-field" />
-        </template>
-        <template v-else>
-          <div class="lunar-row">
-            <select v-model.number="fLunarYear" class="s-select">
-              <option v-for="y in lunarYearOpts" :key="y" :value="y">{{ y }}年</option>
-            </select>
-            <select v-model.number="fLunarMonth" class="s-select">
-              <option v-for="m in 12" :key="m" :value="m">{{ lunarMonthText(m) }}</option>
-            </select>
-            <select v-model.number="fLunarDay" class="s-select">
-              <option v-for="d in 30" :key="d" :value="d">{{ LUNAR_DAYS[d] }}</option>
+        <div class="group form-rows">
+          <label class="frow">
+            <input v-model="fName" class="cell-input" placeholder="名字（如：中秋）" maxlength="30" />
+          </label>
+          <div class="frow">
+            <span class="rlabel">类型</span>
+            <div class="seg">
+              <button :class="{ on: fType === 'solar' }" @click="fType = 'solar'"><CalendarDays :size="14" stroke-width="2" /> 阳历</button>
+              <button :class="{ on: fType === 'lunar' }" @click="fType = 'lunar'"><Moon :size="14" stroke-width="2" /> 农历</button>
+            </div>
+          </div>
+          <button class="frow frow-tap" @click="showPicker = true">
+            <span class="rlabel">日期</span>
+            <span class="rvalue">{{ pickedDateLabel }}</span>
+            <ChevronRight class="rchev" :size="15" stroke-width="2" />
+          </button>
+          <div class="frow">
+            <span class="rlabel">提前提醒</span>
+            <select v-model.number="fRemind" class="row-select" aria-label="提前提醒">
+              <option v-for="d in remindOptions" :key="d" :value="d">{{ d === 0 ? '当天提醒' : `提前 ${d} 天提醒` }}</option>
             </select>
           </div>
-          <label class="leap-row"><input v-model="fLunarLeap" type="checkbox" /> 闰月</label>
-          <p v-if="lunarPreviewLabel" class="lunar-pv">你选的是 <b>{{ lunarPreviewLabel }}</b>
-            <template v-if="lunarPreview">（本次 {{ lunarPreview }}）</template>
-          </p>
-          <p v-else class="lunar-nopv">该农历日期在近几十年内不存在，请调整月份/日期</p>
-        </template>
-
-        <div class="s-row">
-          <span class="s-label">提前提醒</span>
-          <select v-model.number="fRemind" class="s-select">
-            <option v-for="d in remindOptions" :key="d" :value="d">{{ d === 0 ? '当天提醒' : `提前 ${d} 天提醒` }}</option>
-          </select>
         </div>
+        <p v-if="fType === 'lunar' && lunarPreviewLabel" class="foot-hint">
+          你选的是 <b>{{ lunarPreviewLabel }}</b>
+          <template v-if="lunarPreview">（本次 {{ lunarPreview }}）</template>
+        </p>
+        <p v-else-if="fType === 'lunar'" class="foot-hint warn">该农历日期在近几十年内不存在，请调整月份/日期</p>
 
         <p v-if="error" class="error">{{ error }}</p>
+
+        <WheelDatePicker
+          v-model:show="showPicker"
+          :mode="fType"
+          :year="fType === 'solar' ? fSolarY : fLunarYear"
+          :month="fType === 'solar' ? fSolarM : fLunarMonth"
+          :day="fType === 'solar' ? fSolarD : fLunarDay"
+          :leap="fType === 'lunar' && fLunarLeap"
+          @confirm="applyPickedDate"
+        />
       </div>
     </template>
 
@@ -361,12 +394,7 @@ onMounted(async () => {
           </div>
           <div class="count">
             <span v-if="a.meta.invalid" class="days-invalid">日期无效</span>
-            <template v-else>
-              <span class="days-num num" :class="{ done: !a.meta.hot }">
-                <b>{{ a.meta.days }}</b><small>天</small>
-              </span>
-              <span v-if="a.meta.hot" class="count-tip">后</span>
-            </template>
+            <span v-else class="days-num num" :class="{ far: !a.meta.hot }"><b>{{ a.meta.days }}</b><small>天</small></span>
           </div>
         </div>
       </div>
@@ -422,56 +450,36 @@ onMounted(async () => {
 .nav-btn {
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   padding: 4px;
   display: flex;
 }
+/* 导航栏动作 = tint 色文字按钮（iOS HIG），不用填充 pill */
 .np-save {
   border: none;
-  background: var(--primary);
-  color: #fff;
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 14px;
-  font-weight: 600;
+  background: none;
+  color: var(--tint);
+  font-size: 17px;
+  cursor: pointer;
+  padding: 4px;
 }
 .np-save:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
 .af-body {
   flex: 1;
   overflow-y: auto;
   padding: 12px 16px 32px;
 }
-.s-field {
-  width: 100%;
-  box-sizing: border-box;
-  border: none;
-  border-radius: 12px;
-  padding: 13px 14px;
-  font-size: 15px;
-  font-family: inherit;
-  background: var(--surface);
-  color: var(--ink);
-  margin-bottom: 12px;
-  box-shadow: var(--shadow);
-}
-.s-field:focus {
-  outline: none;
-}
-.s-label {
-  display: block;
-  font-size: 13px;
-  color: var(--muted-ink);
-  margin: 4px 0 6px;
-}
+/* 行结构样式（.form-rows/.frow/.rlabel/.rvalue/.cell-input/.row-select）已提升到
+   App.vue 全局，与 .group .row 同族复用；此处只放本页专有项 */
 .seg {
   display: flex;
   background: rgba(120, 120, 128, 0.16);
   border-radius: 9px;
   padding: 2px;
-  margin: 4px 0 14px;
+  margin: 0 0 0 auto;
   width: max-content;
 }
 .seg button {
@@ -492,51 +500,24 @@ onMounted(async () => {
   box-shadow: var(--shadow);
   font-weight: 600;
 }
-.s-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin: 4px 0 14px;
+/* 行结构样式（.frow/.frow-tap/.rlabel/.rvalue/.row-select/.cell-input）已提升到 App.vue 全局，
+   与 .group .row 同族复用；此处只放本页专有项 */
+.rchev {
+  color: var(--muted-ink);
+  opacity: 0.6;
+  flex-shrink: 0;
 }
-.s-select {
-  border: none;
-  border-radius: 10px;
-  padding: 9px 12px;
-  font-size: 14px;
-  font-family: inherit;
-  background: var(--surface);
-  color: var(--ink);
-  box-shadow: var(--shadow);
-}
-.lunar-pv {
-  font-size: 14px;
-  color: var(--ink);
-  background: var(--surface);
-  border-radius: 10px;
-  padding: 10px 12px;
-  box-shadow: var(--shadow);
-  margin: 0 0 12px;
-}
-.lunar-pv b {
-  color: var(--primary-deep);
-}
-.lunar-nopv {
+.foot-hint {
   font-size: 13px;
   color: var(--muted-ink);
-  margin-bottom: 12px;
+  margin: 10px 4px 0;
 }
-.lunar-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
+.foot-hint b {
+  color: var(--primary-deep);
+  font-weight: 600;
 }
-.leap-row {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 14px;
-  margin-bottom: 12px;
+.foot-hint.warn {
+  color: var(--danger);
 }
 .scroll-area {
   flex: 1;
@@ -657,7 +638,7 @@ onMounted(async () => {
   background: none;
   padding: 0;
   font-size: 11px;
-  color: var(--primary-deep);
+  color: var(--tint);
   cursor: pointer;
   width: max-content;
 }
@@ -677,10 +658,8 @@ onMounted(async () => {
 }
 .count {
   display: flex;
-  flex-direction: column;
-  align-items: center;
+  align-items: baseline;
   flex-shrink: 0;
-  min-width: 44px;
 }
 .days-num {
   font-size: 22px;
@@ -703,16 +682,8 @@ onMounted(async () => {
 :root[data-theme='dark'] .days-num {
   color: #ffd166;
 }
-.count-tip {
-  font-size: 11px;
+.days-num.far {
   color: var(--muted-ink);
-}
-.days-num.done {
-  color: var(--muted-ink);
-  font-size: 15px;
-}
-.days-num.done small {
-  font-size: 10px;
 }
 .days-invalid {
   font-size: 12px;
