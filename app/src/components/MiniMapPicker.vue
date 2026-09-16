@@ -18,7 +18,6 @@ const props = withDefaults(defineProps<{ lat?: number | null; lng?: number | nul
 })
 const emit = defineEmits<{ (e: 'pick', pos: { lat: number; lng: number }): void }>()
 
-const container = ref<HTMLElement | null>(null)
 const cw = ref(0)
 const ch = ref(0)
 const zoom = ref(DEFAULT_ZOOM)
@@ -111,8 +110,10 @@ function resetView() {
 onMounted(() => {
   // 首个签名到位后 tileUrl 会经 version 依赖重渲染，补齐初始无签的瓦片
   void ensureTileGrant()
-  if (!container.value) return
-  const el = container.value
+  // 注意：模板上绑定的是 ref="canvas"（容器），此前误读 container 导致测量从未生效、
+  // cw/ch 恒为 0，进而使点击落点与 marker 定位全部错位（点击处被当作零尺寸画布中心）
+  const el = canvas.value
+  if (!el) return
   const update = () => {
     cw.value = el.clientWidth || 300
     ch.value = el.clientHeight || props.height
