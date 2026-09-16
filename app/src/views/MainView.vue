@@ -7,8 +7,10 @@ const router = useRouter()
 const route = useRoute()
 const fabOpen = ref(false)
 
+// 整页表单（记动态/动态详情/相册详情）隐藏全部外壳；?new=1 的添加表单同理（iOS 模态不露 TabBar/FAB）
 const chromeHidden = computed(() =>
-  route.path.startsWith('/publish') || /\/posts\/\d+/.test(route.path) || /\/albums\/\d+/.test(route.path),
+  route.path.startsWith('/publish') || /\/posts\/\d+/.test(route.path) || /\/albums\/\d+/.test(route.path) ||
+  ((route.path === '/map' || route.path === '/anniversaries') && route.query.new === '1'),
 )
 
 const addItems = [
@@ -45,25 +47,27 @@ function addClick(fn: () => void) {
         <Plus :size="26" stroke-width="2" />
       </button>
 
+      <!-- TabBar：图标 24px / 标签 11px；选中项由 CSS 统一加粗描边（stroke-width 2.6）+ 换色，
+           不改变字重（避免切换页时文字宽度抖动）；纵向撑满以满足 ≥44px 触控目标 -->
       <nav class="tabbar glass">
         <RouterLink to="/home" class="tab">
-          <Home :size="22" stroke-width="1.8" />
+          <Home :size="24" stroke-width="1.8" />
           <span>首页</span>
         </RouterLink>
         <RouterLink to="/posts" class="tab">
-          <Newspaper :size="22" stroke-width="1.8" />
+          <Newspaper :size="24" stroke-width="1.8" />
           <span>动态</span>
         </RouterLink>
         <RouterLink to="/albums" class="tab">
-          <Images :size="22" stroke-width="1.8" />
+          <Images :size="24" stroke-width="1.8" />
           <span>相册</span>
         </RouterLink>
         <RouterLink to="/anniversaries" class="tab">
-          <Calendar :size="22" stroke-width="1.8" />
+          <Calendar :size="24" stroke-width="1.8" />
           <span>纪念日</span>
         </RouterLink>
         <RouterLink to="/map" class="tab">
-          <Map :size="22" stroke-width="1.8" />
+          <Map :size="24" stroke-width="1.8" />
           <span>地图</span>
         </RouterLink>
       </nav>
@@ -89,30 +93,35 @@ function addClick(fn: () => void) {
 
 .tabbar {
   display: flex;
-  padding: 4px 0 calc(4px + env(safe-area-inset-bottom));
+  padding: 6px 0 calc(6px + env(safe-area-inset-bottom));
   z-index: 10;
   flex: 0 0 auto;
   border-bottom: none;
   border-top: 0.5px solid var(--glass-edge);
 }
+/* 纵向撑满 + min-height，保证触控目标 ≥44px（iOS HIG 最小点击区） */
 .tab {
   flex: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  font-size: 10px;
+  justify-content: center;
+  gap: 3px;
+  min-height: 44px;
+  font-size: 11px;
+  line-height: 1.15;
   text-decoration: none;
   color: var(--muted-ink);
-  padding: 3px 0;
   -webkit-tap-highlight-color: transparent;
 }
+/* 选中态：换色 + 描边加粗（近似 SF Symbols .fill 的视觉重量差）。
+   lucide 为纯描边图标，填充会糊成实心黑块，故用 stroke-width 而非 fill */
 .tab.router-link-active {
   color: var(--primary-deep);
-  font-weight: 600;
 }
 .tab.router-link-active svg {
   color: var(--primary-deep);
+  stroke-width: 2.6;
 }
 
 .fab {
