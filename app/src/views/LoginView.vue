@@ -157,14 +157,11 @@ async function submit() {
 
 <template>
   <div class="login-page page-col">
-    <header class="navbar glass">
-      <span class="title">情侣生活记录</span>
-    </header>
-
     <div class="content">
       <div class="form-wrap">
         <div class="brand">
           <span class="brand-tile" aria-hidden="true"><Heart :size="20" :stroke-width="1.8" /></span>
+          <p class="brand-name">情侣生活记录</p>
           <p class="brand-line">只属于我们的私密生活空间</p>
         </div>
 
@@ -276,30 +273,11 @@ async function submit() {
 </template>
 
 <style scoped>
-/* 独立整页：与通知/设置/AI 对话同壳（.page-col 桌面档切浮窗） */
+/* 独立整页：与通知/设置/AI 对话同壳（.page-col 桌面档切浮窗）。登录页无导航栏，全屏 brand + 表单 */
 .login-page {
   height: 100%;
   display: flex;
   flex-direction: column;
-}
-
-/* 本页没有返回按钮撑高导航栏，用 min-height 对齐其他页 51px 的栏高，
-   并把标题改为 flex 居中（全局 .navbar .title 是绝对定位，居中依赖同排控件的高度） */
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  min-height: 51px;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.navbar .title {
-  position: static;
-  transform: none;
-  font-size: 17px;
-  font-weight: 600;
 }
 
 .content {
@@ -308,7 +286,7 @@ async function submit() {
   -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
-  padding: 16px 16px calc(28px + env(safe-area-inset-bottom));
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom));
 }
 
 /* margin:auto 而非 justify-content:center：内容高于视口时（小屏 + 软键盘）不裁顶 */
@@ -325,8 +303,14 @@ async function submit() {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   text-align: center;
+}
+.brand-name {
+  margin: 4px 0 0;
+  font-size: 19px;
+  font-weight: 700;
+  color: var(--ink);
 }
 .brand-tile {
   width: 44px;
@@ -369,7 +353,6 @@ async function submit() {
   padding: 0;
   font-size: 16px;
   color: var(--ink);
-  text-align: right;
 }
 .row input:focus {
   outline: none;

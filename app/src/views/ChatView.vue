@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
+import { ChevronLeft } from 'lucide-vue-next'
 import { ApiError, api, errText, getBase, getToken } from '../api/client'
 import AppToast from '../components/AppToast.vue'
 import { useAuth } from '../stores/auth'
@@ -381,11 +383,14 @@ let expiryTimer: number | undefined
 onBeforeUnmount(() => {
   if (expiryTimer) window.clearInterval(expiryTimer)
 })
+const router = useRouter()
 </script>
 
 <template>
   <section class="chat page-col">
     <header class="navbar glass">
+      <!-- AI 对话页无 TabBar，返回键是回到传统壳层的唯一常驻入口（模式不切换） -->
+      <button class="nav-btn" aria-label="返回" @click="router.push('/home')"><ChevronLeft :size="22" stroke-width="2.5" /></button>
       <span class="title">我们的 AI 助手</span>
       <NavActions :show-bell="false" />
     </header>
@@ -458,7 +463,7 @@ onBeforeUnmount(() => {
 .nav-btn {
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   padding: 4px;
   display: flex;

@@ -416,11 +416,13 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 122, 255, 0.1);
-  color: var(--ios-blue);
+  /* 着色点（非交互）→ 暖粉，与 REQUIREMENTS:285「暖粉只用于着色点/FAB/选中」一致；
+     操作类文字/图标控件才用 --tint（蓝） */
+  background: rgba(255, 143, 171, 0.18);
+  color: var(--primary-deep);
 }
 :root[data-theme='dark'] .u-ic {
-  background: rgba(10, 132, 255, 0.16);
+  background: rgba(255, 143, 171, 0.26);
 }
 .u-name {
   font-size: 15px;

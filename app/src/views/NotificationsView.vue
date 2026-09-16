@@ -28,7 +28,7 @@ const eventIcon: Record<string, { icon: typeof Heart; color: string }> = {
   post_created: { icon: Bell, color: 'var(--primary-deep)' },
   post_liked: { icon: Heart, color: 'var(--primary)' },
   post_favorited: { icon: Star, color: 'var(--sem-gold)' },
-  post_commented: { icon: MessageCircle, color: 'var(--ios-blue)' },
+  post_commented: { icon: MessageCircle, color: 'var(--sem-blue)' },
   post_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   comment_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   album_created: { icon: Images, color: 'var(--sem-blue)' },
@@ -68,7 +68,8 @@ function text(n: NotifItem): string {
     /* 快照缺失时退回事件类型 */
   }
   const fn = eventText[n.event_type]
-  return fn ? fn(snap) : n.event_type
+  // 未知事件类型（如 mock/旧数据的 system）不直出英文类型名
+  return fn ? fn(snap) : '系统通知'
 }
 
 async function load() {
@@ -205,7 +206,7 @@ onMounted(load)
 .nav-btn {
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -214,7 +215,7 @@ onMounted(load)
   font-size: 14px;
 }
 .nav-btn.action {
-  color: var(--ios-blue);
+  color: var(--tint);
   width: auto;
 }
 

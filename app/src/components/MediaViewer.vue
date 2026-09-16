@@ -578,7 +578,7 @@ const transformStyle = computed(() => ({
   padding: 12px 20px;
   font-size: 15px;
   font-weight: 600;
-  color: var(--ios-blue);
+  color: var(--tint);
   background: rgba(255, 255, 255, 0.18);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);

@@ -312,7 +312,7 @@ onMounted(load)
 .nav-btn {
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -530,7 +530,7 @@ onMounted(load)
 .btn-ghost {
   flex: 0 0 96px;
   background: var(--surface);
-  color: var(--ios-blue);
+  color: var(--tint);
 }
 .btn-go {
   flex: 1;

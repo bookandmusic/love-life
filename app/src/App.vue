@@ -70,8 +70,11 @@ onUnmounted(() => {
   --muted-ink: #6c6c70; /* iOS secondaryLabel 等效：白底 5.23:1（AA），原 #8e8e93 仅 3.26:1 */
   --primary: #ff8fab;
   --primary-deep: #f06292;
+  /* 操作色（REQUIREMENTS:285/293）：文字/图标型可点控件的 tint（导航栏按钮、保存/发布、文字动作）。
+     与 --primary 分工——暖粉只管着色点/FAB/选中（填充型按钮），操作类用系统蓝保证白底对比度 4.0:1 */
+  --tint: #007aff;
+  --tint-wash: rgba(0, 122, 255, 0.1);
   --danger: #ff3b30;
-  --ios-blue: #007aff;
   --rule: rgba(60, 60, 67, 0.18);
   --on-primary: #ffffff;
   --ai-bg: #f2f2f7;
@@ -98,8 +101,9 @@ onUnmounted(() => {
   --muted-ink: #98989f;
   --primary: #ff8fab;
   --primary-deep: #ffb4c2;
+  --tint: #0a84ff;
+  --tint-wash: rgba(10, 132, 255, 0.16);
   --danger: #ff453a;
-  --ios-blue: #0a84ff;
   --rule: rgba(84, 84, 88, 0.65);
   --on-primary: #ffffff;
   --ai-bg: #000000;
@@ -299,6 +303,80 @@ body {
 }
 .group .row + .row {
   border-top: 0.5px solid var(--rule);
+}
+
+/* 表单页 inset grouped 行（纪念日 / 添加地点共用）：与 .group .row 同族，
+   行内为「标签 + 值/控件」，行间 0.5px 分割线；行高下限 48px（触控目标） */
+.form-rows {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+.frow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 48px;
+  padding: 10px 14px;
+  box-sizing: border-box;
+}
+.frow + .frow {
+  border-top: 0.5px solid var(--rule);
+}
+/* 可点整行（点开 sheet/选择器） */
+.frow-tap {
+  border: none;
+  background: none;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  width: 100%;
+}
+.frow-tap:active {
+  background: rgba(120, 120, 128, 0.08);
+}
+.rlabel {
+  font-size: 15px;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+/* 行值：iOS 惯例用中性色（属性值不着色），动作/可点控件才用 --tint */
+.rvalue {
+  margin-left: auto;
+  font-size: 15px;
+  color: var(--muted-ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row-select {
+  border: none;
+  background: none;
+  padding: 4px 0;
+  font-size: 15px;
+  font-family: inherit;
+  color: var(--muted-ink);
+  text-align: right;
+  cursor: pointer;
+  margin-left: auto;
+  max-width: 170px;
+}
+/* 行内文本输入（无边框，占满余量） */
+.cell-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 15px;
+  color: var(--ink);
+  font-family: inherit;
+}
+.cell-input:focus {
+  outline: none;
+}
+.cell-input::placeholder {
+  color: var(--muted-ink);
 }
 
 button,

@@ -235,7 +235,7 @@ onMounted(() => {
 .nav-btn {
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -270,7 +270,6 @@ onMounted(() => {
   align-items: center;
   gap: 12px;
   padding: 13px 16px;
-  width: 100%;
   border: none;
   background: none;
   font-size: 15px;
@@ -320,7 +319,7 @@ onMounted(() => {
   position: relative;
 }
 .accent-dot.on {
-  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--ios-blue);
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--tint);
 }
 .accent-dot:active {
   transform: scale(0.94);

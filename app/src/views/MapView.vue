@@ -227,9 +227,15 @@ async function confirmDeletePoint() {
         <button class="np-save" :disabled="!npName.trim() || npLat == null || npLng == null || saving" @click="saveNewPointForm">{{ saving ? '保存中…' : '保存' }}</button>
       </header>
       <div class="np-body">
-        <div class="np-search">
-          <input v-model="npName" class="s-input np-name" placeholder="地点名称（必填，如：厦门·鼓浪屿）" maxlength="30" @keyup.enter="searchGeoForm" />
-          <button class="np-go" :disabled="npSearching || !npName.trim()" aria-label="搜索" @click="searchGeoForm"><Search :size="16" stroke-width="2" /></button>
+        <div class="group form-rows">
+          <div class="frow np-search">
+            <input v-model="npName" class="cell-input" placeholder="地点名称（必填，如：厦门·鼓浪屿）" maxlength="30" @keyup.enter="searchGeoForm" />
+            <button class="np-go" :disabled="npSearching || !npName.trim()" aria-label="搜索" @click="searchGeoForm"><Search :size="16" stroke-width="2" /></button>
+          </div>
+          <div class="frow np-ll">
+            <label>经度<input v-model.number="npLng" type="number" step="any" placeholder="经度" /></label>
+            <label>纬度<input v-model.number="npLat" type="number" step="any" placeholder="纬度" /></label>
+          </div>
         </div>
         <div v-if="npCandidates.length" class="np-cands">
           <button v-for="c in npCandidates" :key="c.name" class="np-cand" @click="pickCandidateForm(c)">
@@ -238,11 +244,6 @@ async function confirmDeletePoint() {
           </button>
         </div>
         <p v-else-if="!npSearching && npName.trim()" class="np-empty">未匹配到，可直接在地图上点选</p>
-
-        <div class="np-ll">
-          <label>经度<input v-model.number="npLng" type="number" step="any" placeholder="经度" /></label>
-          <label>纬度<input v-model.number="npLat" type="number" step="any" placeholder="纬度" /></label>
-        </div>
 
         <p class="np-pick-hint">或在地图上点选（候选不满意时）</p>
         <MiniMapPicker :lat="npLat" :lng="npLng" :height="280" @pick="onFormMapPick" />
@@ -335,6 +336,15 @@ async function confirmDeletePoint() {
   z-index: 10;
 }
 .title { font-size: 17px; font-weight: 600; }
+.nav-btn {
+  border: none;
+  background: none;
+  color: var(--tint);
+  cursor: pointer;
+  padding: 4px;
+  display: flex;
+  align-items: center;
+}
 
 /* 视图切换 */
 .seg {
@@ -369,24 +379,25 @@ async function confirmDeletePoint() {
 
 /* 地图区 */
 
-/* 添加地点完整表单 */
+/* 添加地点完整表单：字段并入 iOS 分组卡 */
 .np-body {
   flex: 1;
   overflow-y: auto;
   padding: 12px 16px 32px;
 }
+/* 行结构样式（.form-rows/.frow/.rlabel/.rvalue/.cell-input）已提升到 App.vue 全局，
+   与 .group .row 同族复用；此处只放本页专有的 .np-* */
 .np-search {
-  display: flex;
   gap: 6px;
-  margin-bottom: 8px;
 }
-.np-name { flex: 1; }
 .np-go {
-  width: 42px;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
   border: none;
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--primary);
-  color: #fff;
+  color: var(--on-primary);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -399,7 +410,7 @@ async function confirmDeletePoint() {
   gap: 6px;
   max-height: 180px;
   overflow-y: auto;
-  margin-bottom: 8px;
+  margin: 10px 0 8px;
 }
 .np-cand {
   display: flex;
@@ -417,12 +428,12 @@ async function confirmDeletePoint() {
 }
 .np-cand-txt { display: flex; flex-direction: column; }
 .np-cand-txt small { font-size: 12px; color: var(--muted-ink); }
-.np-empty { font-size: 13px; color: var(--muted-ink); text-align: center; margin: 6px 0; }
+.np-empty { font-size: 13px; color: var(--muted-ink); text-align: center; margin: 10px 0 6px; }
+/* 经纬度两列：border-box + width:100%，栅格不再被 padding 撑溢出 */
 .np-ll {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin: 8px 0;
+  gap: 12px;
 }
 .np-ll label {
   display: flex;
@@ -430,33 +441,36 @@ async function confirmDeletePoint() {
   gap: 3px;
   font-size: 12px;
   color: var(--muted-ink);
+  min-width: 0;
 }
 .np-ll input {
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  padding: 9px 10px;
-  font-size: 14px;
-  background: var(--surface);
+  box-sizing: border-box;
+  width: 100%;
+  border: none;
+  padding: 2px 0 0;
+  font-size: 15px;
+  background: none;
   color: var(--ink);
   outline: none;
+  font-family: inherit;
 }
-.np-pick-hint { font-size: 13px; color: var(--muted-ink); margin: 8px 0 6px; }
+.np-pick-hint { font-size: 13px; color: var(--muted-ink); margin: 14px 0 6px; }
 .np-picked {
   font-size: 12px;
   color: var(--primary-deep);
   text-align: center;
   margin-top: 6px;
 }
+/* 导航栏动作 = tint 色文字按钮（iOS HIG） */
 .np-save {
   border: none;
-  background: var(--primary);
-  color: #fff;
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 14px;
-  font-weight: 600;
+  background: none;
+  color: var(--tint);
+  font-size: 17px;
+  cursor: pointer;
+  padding: 4px;
 }
-.np-save:disabled { opacity: 0.45; }
+.np-save:disabled { opacity: 0.4; }
 
 /* pin */
 

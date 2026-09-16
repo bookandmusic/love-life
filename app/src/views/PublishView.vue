@@ -156,7 +156,7 @@ async function submit() {
       <button class="nav-btn" aria-label="返回" @click="router.back()">
         <ChevronLeft :size="22" stroke-width="2.5" />
       </button>
-      <span class="nav-title">记动态</span>
+      <span class="title">记动态</span>
       <div class="nav-right">
         <button class="primary" :disabled="!canSubmit" @click="submit">
           <Send :size="15" stroke-width="1.8" />{{ uploading ? '发布中…' : '发布' }}
@@ -269,10 +269,6 @@ async function submit() {
   flex-shrink: 0;
   z-index: 10;
 }
-.nav-title {
-  font-size: 17px;
-  font-weight: 600;
-}
 .nav-right {
   display: flex;
   align-items: center;
@@ -282,7 +278,7 @@ async function submit() {
 .nav-btn {
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   padding: 4px;
   display: flex;
@@ -431,20 +427,19 @@ async function submit() {
 .pv-audio {
   font-size: 22px;
 }
+/* 导航栏动作 = tint 色文字按钮（iOS HIG） */
 .primary {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: var(--primary);
-  color: #fff;
+  background: none;
+  color: var(--tint);
   border: none;
-  border-radius: 999px;
-  padding: 7px 14px;
-  font-size: 14px;
-  font-weight: 600;
+  padding: 4px;
+  font-size: 17px;
 }
 .primary:disabled {
-  opacity: 0.45;
+  opacity: 0.4;
 }
 .primary:active {
   transform: scale(0.97);

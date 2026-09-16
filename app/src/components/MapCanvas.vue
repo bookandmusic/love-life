@@ -126,7 +126,14 @@ function pointPos(p: MapPoint) {
 
 function pointStyle(p: MapPoint) {
   const pos = pointPos(p)
-  return { left: pos.x + 'px', top: pos.y + 'px' }
+  // 坐标保持真实（不夹取，避免位置误导）；只在「名牌」越出容器边缘时向内偏移，
+  // 抵消 translate(-50%) 造成的一半宽度在圆角处被 overflow:hidden 裁掉
+  const M = 28 // 名牌半宽裕量（≈ 标签宽度一半）
+  const w = containerW.value
+  let dx = 0
+  if (pos.x < M) dx = M - pos.x
+  else if (pos.x > w - M) dx = w - M - pos.x
+  return { left: pos.x + 'px', top: pos.y + 'px', '--name-dx': dx + 'px' }
 }
 
 function pointVisible(p: MapPoint) {
@@ -435,6 +442,8 @@ defineExpose({ focus, attachMap, layout })
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
   white-space: nowrap;
   color: var(--ink);
+  /* 贴边时由 pointStyle 下发的水平内偏移（0 表示无需偏移） */
+  transform: translateX(var(--name-dx, 0px));
 }
 .pin-enter-active, .pin-leave-active { transition: opacity .2s ease, transform .2s ease; }
 .pin-enter-from, .pin-leave-to { opacity: 0; }
@@ -460,12 +469,12 @@ defineExpose({ focus, attachMap, layout })
   height: 34px;
   border: none;
   background: none;
-  color: var(--ios-blue);
+  color: var(--tint);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .controls button + button { border-top: 0.5px solid var(--rule); }
-.controls button:active { background: rgba(0, 122, 255, 0.1); }
+.controls button:active { background: var(--tint-wash); }
 </style>
