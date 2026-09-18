@@ -564,6 +564,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 ### 11.1 部署形态与产物
 
 - 官方发布产物：**服务端单静态二进制**（内嵌 Web 后台静态资源）、**Android APK**、**Docker 镜像**；APK 直接分发手动安装，服务端不内置托管入口（原「Web 前台 APP 下载直链」随 Web 前台取消）
+- Android release 签名密钥由仓库维护者生成并离线保管（`scripts/gen-android-keystore.sh`）：Android 要求同一 App 的更新沿用同一密钥，密钥丢失或更换会导致已安装的旧包无法覆盖安装/更新；密钥不入版本库，CI 经仓库 secrets 取用
 - 运行方式由部署者自选：裸机直跑（systemd 等）或 Docker / 容器编排均可，本文档不指定特定方案
 - 最低运行要求：一个监听端口 + 一个可写数据目录；全部运行状态（SQLite、向量库、媒体文件、配置）自包含于该数据目录，便于用任意工具做快照与迁移
 - 向量库（`<数据目录>/vectors/` 与同级的 `.dim` 维度标记）是**派生数据**：可从动态正文重建，不纳入备份必要项——缺失只影响语义检索，由 janitor 回填
@@ -739,9 +740,14 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 
 ### 14.6 真机待验清单（当前开发环境无法验证）
 
-本仓库开发环境没有 Rust 工具链、没有 Android SDK，也无法安装 crates / npm 包：以下**只写了代码，未在设备上跑过**。
+本仓库开发环境默认没有 Rust 工具链与 Android SDK（工具链装在容器内，容器重建即丢失）：以下**真机侧行为一律未在设备上跑过**。
+工具链重建脚本：`~/.toolchains/setup-android-env.sh`（JDK 17 + rustup + 四份 android target + platform-36 / build-tools 36 / NDK 27.3）。
 
-- [ ] Android 打包：`pnpm -C app tauri android init`（仓库当前无 `src-tauri/gen/`）→ 构建 APK。
+- [x] Android 打包：CI 全流程（`tauri android init` → 写入 `keystore.properties` → `tauri android build`）已在本机复刻并出包——
+      通用 APK（四种 ABI，`usesCleartextTraffic=true`、图标为应用自有图标）+ AAB，签名校验与 `zipalign -c -P 16` 均通过。
+      签名用密钥由 `scripts/gen-android-keystore.sh` 生成、经 `.env` 录入 GitHub secrets；已实测该密钥可直接完成 CI 签名。
+      Android 原生工程（`app/src-tauri/gen/android`）已纳入版本管理，签名与明文配置就在其中的 `app/build.gradle.kts`。
+      **仍未做：真机安装/启动冒烟**。
 - [ ] `dialog.save()` 在 Android 上返回的路径形态，以及 `fs` 能否直接写 `content://` URI。
       **首要待验项**：若不支持，改为先写应用目录再用系统「打开 / 分享」交给用户，或引入社区 MediaStore 插件。
 - [ ] SAF 选择器里是否出现相册 / 下载目录；`fs:scope` 现给 `**`，真机若拒绝则按需收窄。

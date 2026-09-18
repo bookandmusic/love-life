@@ -1,0 +1,112 @@
+name: build-android-apk
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 校验 tag 与包内版本一致
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          APP_VERSION=$(python3 -c "import json;print(json.load(open('app/src-tauri/tauri.conf.json'))['version'])")
+          if [ "$TAG" != "$APP_VERSION" ]; then
+            echo "tag v${TAG} 与 app/src-tauri/tauri.conf.json 的 version（${APP_VERSION}）不一致" >&2
+            exit 1
+          fi
+
+      - name: 安装 Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: 启用 pnpm（corepack）
+        run: corepack enable && corepack prepare pnpm@11 --activate
+
+      - name: 安装 Rust 工具链与 Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android,i686-linux-android
+
+      - name: 缓存 cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: app/src-tauri
+
+      - name: 设置 JDK 17（temurin）
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 设置 Android SDK（平台/构建工具/NDK）
+        uses: android-actions/setup-android@v4
+        with:
+          # NDK 固定在 27.3.13750724：已实测可出包，且产物通过 zipalign 16KB 页对齐校验。
+          # tauri-cli 自身默认装 29.0.13846066，CLI 取"已安装的最高版本"，故两者皆可。
+          packages: 'tools platform-tools platforms;android-36 build-tools;36.0.0 ndk;27.3.13750724'
+
+      - name: 安装前端依赖
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: 初始化 Tauri Android 工程
+        working-directory: app
+        run: pnpm tauri android init
+
+      - name: 写入签名密钥
+        working-directory: app
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "缺少 ANDROID_KEYSTORE_BASE64 secret，无法签名构建" >&2
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          cd src-tauri/gen/android
+          {
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'password=%s\n' "$KEY_PASSWORD"
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/keystore.jks"
+          } > keystore.properties
+
+      - name: 构建 Android APK + AAB（release）
+        working-directory: app
+        run: pnpm tauri android build
+
+      - name: 收集并重命名产物
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          VERSION="${GITHUB_REF_NAME#v}"
+          find app/src-tauri/gen/android -type f \( -name "*.apk" -o -name "*.aab" \) -print0 |
+            while IFS= read -r -d '' f; do
+              cp "$f" "artifacts/love-life-${VERSION}-$(basename "$f")"
+            done
+          ls -la artifacts
+
+      - name: 上传 workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: love-life-android-${{ github.ref_name }}
+          path: artifacts/*
+
+      - name: 上传到 GitHub Release（草稿）
+        uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*
+          draft: true
+          generate_release_notes: true
