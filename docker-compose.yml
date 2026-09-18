@@ -1,0 +1,21 @@
+# 情侣生活记录 · Docker Compose
+# 用法：`docker compose up -d`
+# 首次启动必须提供 ADMIN_USER / ADMIN_PASS（用于创建管理员账号），其后可删除。
+# 数据持久化在宿主机 ./data 目录（DESIGN 单一数据目录）。
+# 公网部署请前置 HTTPS 反代（Caddy / Nginx / 云 LB），服务端本身只监听 HTTP。
+services:
+  love-life:
+    image: ghcr.io/bookandmusic/love-life:latest
+    container_name: love-life
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      # 首次启动用，创建后可注释掉这两行
+      ADMIN_USER: admin
+      ADMIN_PASS: change-me-please
+      # 可选：单媒体文件软限（默认 500MB）
+      # MEDIA_MAX_MB: "500"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

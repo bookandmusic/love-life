@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# 构建产物
+bin/
+**/node_modules/
+admin/dist/
+app/dist/
+app/src-tauri/gen/
+app/src-tauri/target/
+server/internal/webui/dist/
+
+# 本地密钥与运行时
+.env
+server/data/
+**/*.log
+
+# 编辑器/系统
+.DS_Store
+.vscode/
+.idea/
+
+# 临时与本地工具目录
+.verify/
+demo/
+.pnpm-store/
+.impeccable/
+.dsh/
+.gocache/
+.zcode/
+
+# 临时台账与计划文档（不入版本控制）
+docs/TODO.md
+docs/dev/
+
+# CI 自身（无需进入 build context）
+.github/
+
+# 已存在的二进制
+server/server
