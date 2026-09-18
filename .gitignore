@@ -2,14 +2,18 @@ node_modules/
 dist/
 !server/internal/webui/dist/
 server/internal/webui/dist/*
-!server/internal/webui/dist/index.html
+!server/internal/webui/dist/.gitkeep
 server/server
 server/data/
+bin/
 app/src-tauri/target/
-app/src-tauri/gen/
+# Android 工程（gen/android）纳入版本管理：只忽略 init 生成的 schema 缓存，
+# 其余交由其自带的 gen/android/.gitignore 与 app/.gitignore 排除构建产物与密钥。
+app/src-tauri/gen/schemas/
 *.log
 .DS_Store
 *.tsbuildinfo
+.env
 .env.local
 .verify/
 demo/
