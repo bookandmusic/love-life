@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Bell, ChevronLeft, ChevronRight, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
@@ -16,6 +16,8 @@ import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice }
 import { useAuth } from '../stores/auth'
 import { nextLunarOccurrence, lunarDayText } from '../utils/lunar'
 import { daysUntilDate, nextSolarDate, ymdOf } from '../utils/dates'
+
+defineOptions({ name: 'AnniversariesView' })
 
 interface Anniv {
   id: number
@@ -133,13 +135,18 @@ const lunarRefDate = computed(() => {
 })
 
 async function load() {
-  loading.value = true
-  error.value = ''
+  // 静默刷新：仅冷启动（无数据）时亮骨架屏；已有数据时后台重取、失败不打扰旧内容
+  const cold = items.value.length === 0
+  if (cold) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     const res = await api<{ items: Anniv[] }>('/api/v1/anniversaries')
     items.value = res.items
+    error.value = ''
   } catch (e) {
-    error.value = errText(e, '加载失败')
+    if (cold) error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -222,7 +229,7 @@ async function save() {
 watch(
   () => route.query.new,
   (v) => {
-    if (v === '1') {
+    if (v === '1' && route.path === '/anniversaries') {
       resetForm()
       newForm.value = true
     }
@@ -288,8 +295,10 @@ interface AnnivRowMeta {
 }
 
 
-onMounted(async () => {
+onActivated(async () => {
   await load()
+  // 以 query 为真源回写表单开合（修复：经 TabBar 而非 closeForm 离开时，回来不应停在表单态）
+  newForm.value = route.query.new === '1'
   // 长按是隐形手势：首次进入提示一次（本地记住）
   if (onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按纪念日可移入回收站'
 })

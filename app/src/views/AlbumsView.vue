@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { api, errText } from '../api/client'
 import AppToast from '../components/AppToast.vue'
@@ -16,6 +16,8 @@ import TimelineGrid from '../components/albums/TimelineGrid.vue'
 import AlbumCollection from '../components/albums/AlbumCollection.vue'
 import AlbumSheets from '../components/albums/AlbumSheets.vue'
 import type { AlbumItem, TimelineItem } from '../types/albums'
+
+defineOptions({ name: 'AlbumsView' })
 
 const router = useRouter()
 const route = useRoute()
@@ -131,24 +133,31 @@ async function confirmDeleteAlbum() {
   }
 }
 
-// FAB「相册」带 ?new=1 时自动弹创建 sheet（watch 支持停留本页时重复触发）
-onMounted(() => {
-  loadAlbums()
-  loadTimeline()
-  if (route.query.new === '1') showCreate.value = true
-  // 长按是隐形手势：首次进入提示一次（本地记住）
-  else if (onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按相册可移入回收站'
+// FAB「相册」带 ?new=1 时自动弹创建 sheet（onActivated 覆盖跨 tab 抵达；watch 覆盖同页重复触发）
+onActivated(() => {
+  void loadAlbums()
+  // 时间轴：冷启动或停在第一页时刷新（新增即时可见）；已翻页则保留浏览位置
+  if (timeline.value.length === 0 || tlPage.value === 1) void loadTimeline()
+  // 以 query 为真源回写 sheet 开合（修复：经 TabBar 而非关闭离开时，回来不应停在 sheet 态）
+  showCreate.value = route.query.new === '1'
+  if (!showCreate.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按相册可移入回收站'
 })
 watch(
   () => route.query.new,
   (v) => {
-    if (v === '1') {
+    if (v === '1' && route.path === '/albums') {
       createName.value = ''
       createDesc.value = ''
       showCreate.value = true
     }
   },
 )
+
+// KeepAlive 下 onMounted 不再每次触发；关闭创建 sheet 时清掉 ?new=1，
+// 保证再次点 FAB（push /albums?new=1）能被上面的 watch 识别为「变化」而重新弹出。
+watch(showCreate, (v) => {
+  if (!v && route.query.new === '1') router.replace('/albums')
+})
 
 async function doCreate() {
   const name = createName.value.trim()
@@ -175,8 +184,9 @@ async function loadAlbums() {
   try {
     const res = await api<{ items: AlbumItem[] }>('/api/v1/albums')
     albums.value = res.items
+    error.value = ''
   } catch (e) {
-    error.value = errText(e, '加载失败')
+    if (albums.value.length === 0) error.value = errText(e, '加载失败')
   }
 }
 
@@ -189,8 +199,11 @@ const tlLoadingMore = ref(false)
 const TL_SIZE = 40
 
 async function loadTimeline() {
-  tlLoading.value = true
-  error.value = ''
+  const cold = timeline.value.length === 0
+  if (cold) {
+    tlLoading.value = true
+    error.value = ''
+  }
   try {
     const res = await api<{ items: TimelineItem[]; total: number; has_more: boolean }>(
       `/api/v1/media/timeline?page=1&size=${TL_SIZE}`,
@@ -199,8 +212,9 @@ async function loadTimeline() {
     tlTotal.value = res.total ?? res.items.length
     tlHasMore.value = res.has_more ?? false
     tlPage.value = 1
+    error.value = ''
   } catch (e) {
-    error.value = errText(e, '加载失败')
+    if (cold) error.value = errText(e, '加载失败')
   } finally {
     tlLoading.value = false
   }

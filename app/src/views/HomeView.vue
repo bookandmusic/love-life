@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onActivated, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Cake, ChevronRight, RefreshCw, CalendarDays, Heart, Images, MapPin, Sparkles } from 'lucide-vue-next'
 import { api, errText, fullUrl } from '../api/client'
@@ -8,6 +8,8 @@ import NavActions from '../components/NavActions.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import { useSpace } from '../stores/space'
+
+defineOptions({ name: 'HomeView' })
 
 const router = useRouter()
 const spaceStore = useSpace()
@@ -103,8 +105,12 @@ const totallyEmpty = computed(() => {
 })
 
 async function load() {
-  loading.value = true
-  error.value = ''
+  // 静默刷新：仅冷启动（无数据）时亮骨架屏；已有数据时后台重取、失败不打扰旧内容
+  const cold = posts.value.length === 0
+  if (cold) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     const [, p, m] = await Promise.all([
       spaceStore.load(true),
@@ -114,13 +120,17 @@ async function load() {
     posts.value = p.items
     memories.value = m.items
   } catch (e) {
-    error.value = errText(e, '加载失败')
+    if (cold) error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
 }
 
-onMounted(load)
+// 每次进入首页：重抽一批回忆（满足 REQUIREMENTS:109「每次进入可刷新」）+ 静默刷新数据
+onActivated(() => {
+  refreshMemories()
+  void load()
+})
 </script>
 
 <template>

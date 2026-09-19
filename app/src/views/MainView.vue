@@ -7,6 +7,11 @@ const router = useRouter()
 const route = useRoute()
 const fabOpen = ref(false)
 
+// 一级 tab 用 KeepAlive 缓存（切页不重挂 → 不闪骨架屏、保留各 tab 滚动/状态）；
+// 表单/详情页（PublishView / AlbumDetailView）不在列表内 → 不缓存，每次新建。
+// 组件名靠 <script setup> 按文件名自动推断（各 view 另加 defineOptions 兜底）。
+const tabViews = ['HomeView', 'PostsView', 'AlbumsView', 'AnniversariesView', 'MapView']
+
 // 整页表单（记动态/动态详情/相册详情）隐藏全部外壳；?new=1 的添加表单同理（iOS 模态不露 TabBar/FAB）
 const chromeHidden = computed(() =>
   route.path.startsWith('/publish') || /\/posts\/\d+/.test(route.path) || /\/albums\/\d+/.test(route.path) ||
@@ -31,7 +36,11 @@ function addClick(fn: () => void) {
 
 <template>
   <div class="main">
-    <router-view />
+    <router-view v-slot="{ Component }">
+      <KeepAlive :include="tabViews">
+        <component :is="Component" />
+      </KeepAlive>
+    </router-view>
 
     <template v-if="!chromeHidden">
       <div v-if="fabOpen" class="fab-backdrop" @click="fabOpen = false" />

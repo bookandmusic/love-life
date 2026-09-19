@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { Heart, Music, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
 import { api, errText, fmtDateTime } from '../api/client'
@@ -16,6 +16,8 @@ import { usePostInteractions } from '../composables/postInteractions'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
 import { RECYCLE_CONFIRM, RECYCLE_TITLE, RECYCLE_TOAST, peerNotice, recycleMsg } from '../utils/deleteCopy'
+
+defineOptions({ name: 'PostsView' })
 
 const route = useRoute()
 
@@ -68,8 +70,12 @@ const PAGE_SIZE = 20
 
 // 按 author_id 映射真实 role（girl/boy），替代昵称长度猜色
 async function load() {
-  loading.value = true
-  error.value = ''
+  // 静默刷新：仅冷启动（无数据）时亮骨架屏；已有数据时后台重取、失败不打扰旧内容
+  const cold = posts.value.length === 0
+  if (cold) {
+    loading.value = true
+    error.value = ''
+  }
   try {
     const res = await api<{ items: PostItem[]; total: number }>(listPath(1))
     posts.value = res.items
@@ -77,7 +83,7 @@ async function load() {
     page.value = 1
     await spaceStore.load()
   } catch (e) {
-    error.value = errText(e, '加载失败')
+    if (cold) error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
@@ -199,15 +205,23 @@ async function applyFocus() {
   }, 2400)
 }
 
-onMounted(async () => {
-  await load()
-  await applyFocus()
-  // 长按是隐形手势：首次进入提示一次（本地记住后不再打扰）
-  if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按动态或评论可移入回收站'
+onActivated(async () => {
+  if (posts.value.length === 0) {
+    await load()
+    await applyFocus()
+    // 长按是隐形手势：首次进入提示一次（本地记住后不再打扰）
+    if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按动态或评论可移入回收站'
+  } else if (page.value === 1) {
+    // 停在顶部：静默重取第一页（发布新动态即时可见），不亮骨架屏、不扰动已翻页的用户
+    void load()
+  }
 })
 // 同一页面内切换过滤条件（首页「那年今日」入口）需重载，否则仍是上一份列表
 watch(memoriesOnly, () => void load())
-watch(() => route.query.focus, () => void applyFocus())
+watch(() => route.query.focus, () => {
+  // KeepAlive 下失活组件 watcher 仍响应全局路由：限定本页路径，避免他 tab 的 ?focus 泄漏
+  if (route.path === '/posts') void applyFocus()
+})
 </script>
 
 <template>

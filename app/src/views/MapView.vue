@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ChevronLeft, ChevronRight, List, Map as MapIcon, MapPin, Search,
@@ -14,6 +14,8 @@ import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
 import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
 import { useAuth } from '../stores/auth'
+
+defineOptions({ name: 'MapView' })
 
 interface PointItem {
   id: number
@@ -123,13 +125,14 @@ const toast = ref('')
 // 视图切回地图时重挂画布（v-if 会销毁重建容器，MapCanvas 自带 teardown，重复调用安全）
 watch(view, () => nextTick(() => mapRef.value?.attachMap()))
 
-onMounted(async () => {
+onActivated(async () => {
   await loadPoints()
-  // FAB「添加地点」→ 打开完整表单页
-  if (route.query.new === '1') {
-    newForm.value = true
-  }
+  // FAB「添加地点」→ 打开完整表单页；以 query 为真源回写（修复：经 TabBar 而非 closeForm 离开时，回来不应停在表单态）
+  newForm.value = route.query.new === '1'
   void applyFocus()
+  // KeepAlive 重挂后重测容器尺寸，避免切走再切回地图空白/错位
+  await nextTick()
+  mapRef.value?.attachMap()
   // 长按是隐形手势：首次进入提示一次（本地记住）
   if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按足迹可移入回收站'
 })
@@ -146,13 +149,16 @@ async function applyFocus() {
   mapRef.value?.focus(id)
 }
 
-watch(() => route.query.focus, () => void applyFocus())
+watch(() => route.query.focus, () => {
+  // KeepAlive 下失活组件的 watcher 仍会响应全局路由变化：加路径守卫，避免他 tab 的 ?focus 泄漏到本页
+  if (route.path === '/map') void applyFocus()
+})
 
 // ?new=1 → 打开完整表单页（FAB「地点」入口；watch 支持停留本页时重复触发）
 watch(
   () => route.query.new,
   (v) => {
-    if (v === '1') {
+    if (v === '1' && route.path === '/map') {
       npName.value = ''
       npLat.value = null
       npLng.value = null
@@ -164,13 +170,17 @@ watch(
 )
 
 async function loadPoints() {
-  loadingPoints.value = true
-  loadError.value = ''
+  // 静默刷新：仅冷启动（无数据）时置 loading；已有数据时后台重取、失败不打扰旧内容
+  const cold = points.value.length === 0
+  if (cold) {
+    loadingPoints.value = true
+    loadError.value = ''
+  }
   try {
     const res = await api<{ items: PointItem[] }>('/api/v1/map/points')
     points.value = res.items
   } catch (e) {
-    loadError.value = errText(e, '加载失败')
+    if (cold) loadError.value = errText(e, '加载失败')
   } finally {
     loadingPoints.value = false
   }
