@@ -182,6 +182,7 @@ flowchart TB
 | 定位与选点 | 添加地点 = 表单（名称 + geocode 候选回填 / 地图选点取得经纬度 / 手动输经纬度）；不使用 GPS 定位、无第三方 POI 搜索（与 REQUIREMENTS §4.4 三态一致） |
 | 转发请求头 | 两类源均设 `Accept: image/png,image/*;q=0.8,*/*;q=0.5`；public 源 UA=`love-life-server/0.1 (…; self-hosted)`（避免 OSM 等按 Go 默认 UA 黑名单 403）；天地图源 UA=浏览器 UA（实测其 WAF 对非浏览器 UA 一律 418「疑似攻击」，即使 Referer 在 key 白名单内）。**Referer 统一透传入站页面真实值**：天地图浏览器端 tk 在控制台绑定域名白名单，仅白名单内页面的 Referer 放行（不在白名单 418、完全无 Referer 403 code 301012）；缺时回退 public→项目仓库页、天地图→`https://map.tianditu.gov.cn/`（实测 2026-09，实现见 `api/mapconfig.go applyUpstreamHeaders`） |
 | 瓦片鉴权 | 短时签名（与媒体同口径）：`GET /api/v1/map/config` 下发 `exp+sig`，`GET /api/v1/map/tile?z=&x=&y=&exp=&sig=` 由 handler 校验（失败 401）——img 标签无法携带 header，签名即凭证。签名只绑 `exp`（HMAC-SHA256，密钥取 TokenManager 密钥），**一次覆盖全部坐标**：瓦片由 APP 按视口实时算出、数量随拖动变化，逐张签名会不断触发重签；TTL 30 分钟，APP 每 10 分钟静默换签（`mapTiles.startTileGrantRefresh`）。取舍：签名在有效期内可被持有者复用（同媒体 15 分钟签名），撤销依赖短 TTL 到期而非登出；长期 JWT 不再进反代访问日志/Referer |
+| 未配源提示 | `GET /api/v1/map/config` 无启用源时下发 `provider:""`（服务端与 mock 同源）；APP `utils/mapTiles.ts` 记住 `provider`，为空（已加载但无启用源）时 `MapCanvas` 与 `MiniMapPicker` 覆盖「未配置地图服务」提示（`MapNoSource.vue`）且不再发无源瓦片请求；区分于「有源但个别瓦片/上游抓取失败」（保留瓦片 `@error` 降透明度降级）。`GET /map/tile` 未配源返回 **503**（服务不可用、需 admin 配置），区别于此 handler 中上游抓取失败的 **502** |
 
 ### 4.8 媒体上传管线
 

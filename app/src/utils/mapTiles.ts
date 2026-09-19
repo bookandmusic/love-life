@@ -1,7 +1,7 @@
 // 地图瓦片共用工具（MapView / MiniMapPicker 单一实现）：WebMercator 投影 + 瓦片 URL。
 // 鉴权：APP 统一走后端代理 /api/v1/map/tile，签名经 query 传（img 标签无法带 header）。
 // 签名由 /api/v1/map/config 下发，只绑过期时间、一次覆盖全部瓦片坐标，故无需逐张签名。
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api, getBase } from '../api/client'
 
 // 签名 TTL 30 分钟（服务端 tileGrantTTL），每 10 分钟换一次，留足失败重试窗口
@@ -12,17 +12,24 @@ let grant: { exp: number; sig: string } | null = null
 // 后续换签不必重渲染——旧签名在 exp 前仍有效，新瓦片请求直接读最新 grant。
 const version = ref(0)
 
+// provider：/map/config 下发的「使用中」瓦片源类型。null=未加载/未知（不误判为未配源），
+// ''=已加载但无启用源，非空=源类型（public/tianditu）。地图组件据此显示「未配置」提示。
+const provider = ref<string | null>(null)
+// noTileSource：明确「无启用瓦片源」（已加载且 provider 为空）时 true，供组件 v-if 覆盖提示。
+export const noTileSource = computed(() => provider.value === '')
+
 // refreshTileGrant 换一份瓦片签名（失败静默：保留旧签名，下轮再试）
 export async function refreshTileGrant(): Promise<void> {
   try {
-    const res = await api<{ exp?: number; sig?: string }>('/api/v1/map/config')
+    const res = await api<{ exp?: number; sig?: string; provider?: string }>('/api/v1/map/config')
+    provider.value = res.provider ?? ''
     if (res.exp && res.sig) {
       const hadGrant = grant !== null
       grant = { exp: res.exp, sig: res.sig }
       if (!hadGrant) version.value++
     }
   } catch {
-    // 未登录/离线/瞬断：签名未过期前无感
+    // 未登录/离线/瞬断：签名未过期前无感；provider 保持旧值，不把网络抖动误判为「未配源」
   }
 }
 

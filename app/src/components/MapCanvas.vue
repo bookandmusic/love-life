@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { MapPin, Minus, Plus, RefreshCw } from 'lucide-vue-next'
-import { ensureTileGrant, latLonToTile, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
+import MapNoSource from './MapNoSource.vue'
+import { ensureTileGrant, latLonToTile, noTileSource, tileInWorld, tileToLatLon, tileUrl, tileGrid, TILE } from '../utils/mapTiles'
 
 // ============ 瓦片引擎（统一实现见 utils/mapTiles.ts：APP 统一请求后端 /api/v1/map/tile，密钥不下发） ============
 const MAX_ZOOM = 12
@@ -356,7 +357,7 @@ defineExpose({ focus, attachMap, layout })
           class="tile"
           :style="{ left: t.px + 'px', top: t.py + 'px' }"
         >
-          <img v-if="t.url" :src="t.url" alt="" loading="lazy" @error="(e: Event) => ((e.target as HTMLImageElement).style.opacity = '0.3')" />
+          <img v-if="!noTileSource && t.url" :src="t.url" alt="" loading="lazy" @error="(e: Event) => ((e.target as HTMLImageElement).style.opacity = '0.3')" />
         </div>
 
         <TransitionGroup name="pin">
@@ -382,6 +383,7 @@ defineExpose({ focus, attachMap, layout })
         <button @click="zoomMap(-1)" aria-label="缩小"><Minus :size="17" stroke-width="2" /></button>
         <button @click="resetMap" aria-label="重置"><RefreshCw :size="15" stroke-width="2" /></button>
       </div>
+      <MapNoSource v-if="noTileSource" />
     </div>
   </div>
 </template>

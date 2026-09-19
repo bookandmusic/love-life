@@ -267,7 +267,7 @@ func TestMapTileBadCoords(t *testing.T) {
 	}
 }
 
-// 测试瓦片代理：无启用源 / 未配置完整 → 502
+// 测试瓦片代理：无启用源 → 503；已启用但未配置完整（模板/密钥缺失）→ 502（与上游失败同口径）
 func TestMapTileNoUpstream(t *testing.T) {
 	api, db := newTestMapAPI(t)
 	ctx := t.Context()
@@ -276,8 +276,8 @@ func TestMapTileNoUpstream(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?"+tileQuery(api, "z=4&x=13&y=5"), nil)
 	w := httptest.NewRecorder()
 	api.tile(w, req)
-	if w.Code != http.StatusBadGateway {
-		t.Errorf("no source status = %d, want 502", w.Code)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("no source status = %d, want 503", w.Code)
 	}
 
 	// public 但 URL 模板为空（直接落库启用，绕过 enable 校验）

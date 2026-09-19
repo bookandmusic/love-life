@@ -298,7 +298,8 @@ func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
 	}
 	s, err := a.db.GetEnabledSource(r.Context())
 	if errors.Is(err, store.ErrNotFound) {
-		writeError(w, http.StatusBadGateway, "未启用任何瓦片源，请管理员在后台配置")
+		// 未配源与上游抓取失败必须区分：前者是服务不可用（需 admin 配置），后者才是 502 网关失败
+		writeError(w, http.StatusServiceUnavailable, "未启用任何瓦片源，请管理员在后台配置")
 		return
 	}
 	if err != nil {
