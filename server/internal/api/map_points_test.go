@@ -12,7 +12,7 @@ import (
 // 地图点位全链路：创建（含城市判定）/同名复用/软删/城市列表/geocode/动态同步。
 func TestMapPoints(t *testing.T) {
 	ts := newTestServer(t)
-	token, code := loginToken(t, ts.URL, "admin", "admin-pw", "app")
+	token, code := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
 	if code != http.StatusOK {
 		t.Fatalf("login: %d", code)
 	}
@@ -150,7 +150,7 @@ func TestMapPoints(t *testing.T) {
 // geocode：包含匹配命中、未匹配空列表。
 func TestGeocode(t *testing.T) {
 	ts := newTestServer(t)
-	token, _ := loginToken(t, ts.URL, "admin", "admin-pw", "app")
+	token, _ := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
 
 	res := doJSON(t, "GET", ts.URL+"/api/v1/geocode?q=鼓浪屿", token, nil)
 	var got struct {
@@ -178,7 +178,7 @@ func TestGeocode(t *testing.T) {
 // 动态带地点 → 自动同步点位（source=post）；纯文本地名走 geocode 回填坐标。
 func TestPostLocationSync(t *testing.T) {
 	ts := newTestServer(t)
-	token, _ := loginToken(t, ts.URL, "admin", "admin-pw", "app")
+	token, _ := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
 
 	// 带坐标的 location 对象
 	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", token, map[string]any{

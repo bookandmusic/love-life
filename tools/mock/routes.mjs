@@ -31,6 +31,7 @@ const created = (data) => ({ _s: 201, d: data })
 const noContent = () => ({ _s: 204, d: null })
 const badRequest = (msg) => ({ _s: 400, d: { error: msg } })
 const unauthorized = (msg) => ({ _s: 401, d: { error: msg } })
+const forbidden = (msg) => ({ _s: 403, d: { error: msg } })
 const notFound = (msg) => ({ _s: 404, d: { error: msg } })
 const conflict = (msg) => ({ _s: 409, d: { error: msg } }) // 用户名冲突等「已存在」类（对齐服务端 409）
 
@@ -214,6 +215,8 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/auth\/login$/, handler: (url
   const { username, password, client } = JSON.parse(body || '{}')
   const user = USERS.find((u) => u.username === username && u.password === password)
   if (!user) return unauthorized('用户名或密码错误')
+  if (client === 'admin' && user.role !== 'admin') return forbidden('仅 admin 角色可登录后台')
+  if (client === 'app' && user.role === 'admin') return forbidden('管理员账号请登录后台，不支持在 APP 使用')
   const { access, refresh } = newToken(user.id)
   return ok({ token: access, refresh_token: refresh, user: userById(user.id) })
 }})

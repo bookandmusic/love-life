@@ -93,6 +93,10 @@ func (s *Service) Login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusForbidden, "仅 admin 角色可登录后台")
 		return
 	}
+	if req.Client == "app" && user.Role == "admin" {
+		writeError(w, http.StatusForbidden, "管理员账号请登录后台，不支持在 APP 使用")
+		return
+	}
 	s.limiter.Reset(key)
 
 	refresh, hash, err := NewRefreshToken()

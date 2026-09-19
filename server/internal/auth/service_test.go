@@ -193,6 +193,25 @@ func TestNonAdminCannotLoginAdminClient(t *testing.T) {
 	}
 }
 
+// 与 TestNonAdminCannotLoginAdminClient 对称：admin 不得登录 APP，只能走后台口径。
+func TestAdminCannotLoginAppClient(t *testing.T) {
+	_, ts := newTestService(t)
+	defer ts.Close()
+
+	res := post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "app"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("admin login app client: want 403, got %d", res.StatusCode)
+	}
+
+	// 后台口径正常
+	res = post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "admin"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("admin login admin client: want 200, got %d", res.StatusCode)
+	}
+}
+
 func TestSecretPersistsAcrossRestarts(t *testing.T) {
 	dir := t.TempDir()
 	tm1, err := LoadOrCreateSecret(dir)

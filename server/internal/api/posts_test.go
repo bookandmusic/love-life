@@ -58,7 +58,7 @@ func uploadMedia(t *testing.T, baseURL, token, filename string, content []byte) 
 func newPostTestEnv(t *testing.T) (*testEnv, string, string) {
 	t.Helper()
 	ts := newTestServer(t)
-	adminToken, code := loginToken(t, ts.URL, "admin", "admin-pw", "app")
+	adminToken, code := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
 	if code != http.StatusOK {
 		t.Fatalf("admin login: %d", code)
 	}
