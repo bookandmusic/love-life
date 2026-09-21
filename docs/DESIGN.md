@@ -679,8 +679,8 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | 纪念日（卡片） | 长按卡片 | 移入回收站 | — |
 | 足迹（列表行） | 长按列表行 | 移入回收站 | 动态里的地点名仍保留为快照。 |
 
-- 统一收尾：`把「{名称}」移入回收站？{后果}恢复需管理员在后台操作。`；删除**对方发布**的内容再补一句
-  「对方会收到站内通知。」（REQUIREMENTS §4.8，自删静默）。
+- 统一收尾：`把「{名称}」移入回收站？{后果}想恢复的话，到后台回收站里找回。`；删除**对方发布**的内容再补一句
+  「对方会收到一条通知。」（REQUIREMENTS §4.8，自删静默）。
 - 成功提示：`已移入回收站` / `已移出相册`；删除后就地移除该条，不整表重载（避免闪烁与滚动位置丢失）。
 - 文案单一来源 `app/src/utils/deleteCopy.ts`；手势 `app/src/composables/useLongPress.ts`（500ms、位移 >8px 取消、
   抬起 / 离开 / 取消均撤销）。短按语义不变：卡片进详情、足迹行居中该点位。
@@ -769,6 +769,37 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 
 > 需求侧口径见 [REQUIREMENTS.md](REQUIREMENTS.md) §6.7；本章只讲实现契约，避免「每个浮层各写一套定位」。
 
+### 15.0 页面外壳 `PageLayout`（`app/src/components/PageLayout.vue`）
+
+所有页面（含一级 tab、二级详情/表单、独立整页）的**页面内层结构**统一走本组件：navbar（glass、标题居中、可选返回/右上操作）+ 内容区（列宽/内边距/滚动/安全区）。外层桌面浮窗（`MainView .main` / `App .page-col`）仍由外壳负责，本组件只管内层。
+
+| props | 默认 | 含义 |
+|:---|:---|:---|
+| `title` | 必填 | navbar 标题 |
+| `back` | `false` | 显示返回键（动作由页面通过 `@back` 决定：列表/详情 `router.back()`、表单 `closeForm()`） |
+| `actions` | `false` | 显示 `NavActions`（通知+设置；AI 页用 `#nav-right` 自行放 `NavActions :show-bell="false"`） |
+| `scroll` | `true` | `false` 时内容区 `overflow: hidden` + flex 列（地图/对话等「填充不滚动」页）；可为动态绑定，如地图页 `:scroll="view === 'list'"`（地图视图填充、列表视图滚动） |
+| `standalone` | `false` | 独立整页（通知/设置/对话）：套 `.page-col` 浮动卡片框架 |
+
+插槽：默认（内容区）、`subheader`（navbar 下、内容区外的固定条，如相册/地图的 seg 切换）、`nav-right`（navbar 右侧，与 `actions` 可叠加）、`footer`（内容区外底部固定条，如对话输入栏）。
+
+**整页底色钩子 `--page-bg`**：页面经 class 向 PageLayout 根注入（如 ChatView 注入 `var(--ai-bg)`）；未注入时移动/平板档 transparent（全局 body 底色不变）、桌面档卡片回落 `var(--surface)`（scoped 三类名追平全局 `.page-col.page-col.page-col` 的 0,3,0）。
+
+**统一空态 `EmptyState`**（`app/src/components/EmptyState.vue`，口径见 REQUIREMENTS §6.4）：图标 + 短标题 + 可选副文案 + 可选 CTA。页面级空态直接用（52vh 最小高度垂直居中）；小容器（Sheet、地图覆盖层等）传 `compact`（去最小高度、收紧留白、图标 26px），由父容器负责定位。各页不得再手写空态。
+
+约定：
+
+- **横向 padding 只归 PageLayout**：`--side-pad` 由 `.page-body` 消费，页面内部的容器**不得再写横向 padding**（否则与外壳叠加，手机档被挤窄）；页面自有内容用 `padding: Npx 0`。
+- **`box-sizing`**：`.page-body` 同时有 `width: 100%` 与 `padding-inline`，必须 `border-box`（见 §15.3 坑 1）。
+- **`.navbar` 布局只在 PageLayout 定义且是 `scoped`**：页面内若自建 navbar（如覆盖层），要么复用 `PageLayout`，要么在文件内补回布局，**不能只写 `class="navbar glass"`** 就指望全局样式——`App.vue` 只有 `.navbar .title` 居中规则，没有 flex/padding。
+- **标题居中靠全局 `.navbar .title`**（`App.vue`，绝对定位 + `translateX(-50%)`）：这条规则是承重的，删除会让所有页面标题贴左。
+- **KeepAlive 滚动约定**：内容区在 `onActivated` 内**同步**写回离开前的 `scrollTop`（不要 `nextTick`），同帧写回可避免「先按 0 绘制、下一帧跳回」的两帧跳动。
+- **TabBar / FAB 可见性**：一级 tab（首页/动态/相册/纪念日/地图）有 TabBar + FAB，由 `MainView` 提供；整页表单/详情（`chromeHidden`：`/publish`、`/posts/:id`、`/albums/:id`、`/map?new=1`、`/anniversaries?new=1`）隐藏；独立整页（`/login`、`/notifications`、`/chat`、`/settings`）在 `MainView` 之外，天然无底栏。
+- **唯一例外 `LoginView`**（实测核对，勿照抄「无安全区语义」这类想当然的理由——它自己处理了 safe-area）：登录页无 navbar（`PageLayout` 目前 `title` 必填且恒定渲染 navbar），且需要「可滚动 + 内容垂直居中」（`.form-wrap { margin: auto }`），而 `PageLayout` 的 `scroll=false` 是 `overflow: hidden`，做不到「内容高于视口时可滚、不裁顶」。因此它自持 `.login-page.page-col` + `.content`（滚动 + safe-area + 横向 padding）。
+  已知偏离（当前均**不可见**，因 `.form-wrap` 上限 420px 远窄于任一档可用宽度）：`.content` 不受 `--col-max` 约束、顶部 padding 16px vs `.page-body` 的 12px。
+  横向 padding **必须走 `--side-pad`**（曾经的硬编码 `16px` 已改）：例外只豁免外壳结构，不豁免令牌——否则令牌调整时本页会掉队。
+  桌面档卡片仍与其它独立整页一致（832×868 / 外距 16），满足 REQUIREMENTS §6.7「登录前后同一个框」。
+
 ### 15.1 框架令牌（`app/src/App.vue` 唯一定义）
 
 | 令牌 | 手机 <768px | 平板 768–1279px | 桌面 ≥1280px | 用途 |
@@ -795,6 +826,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 ### 15.3 三个坑（都真实踩过，改浮层前先看这里）
 
 1. **`box-sizing`**：`.sheet-card` 原来只写 `width`，默认 `content-box` → 加上 16px 内边距后弹窗比屏幕 / 面板**宽出 32px**（手机贴边溢出、桌面探出面板）。容器类元素设宽度时一并写 `box-sizing: border-box`。
+   **同类坑复发过一次**：`PageLayout .page-body` 同时写 `width: 100%` 与 `padding-inline` 而漏了 `box-sizing`，手机档整页比视口宽 32px（平板 48px），表现为内容右移、右侧被裁，10 个页面全中；桌面档因 `--side-pad: 0px` 反而看不出来。**凡「width + padding」同时出现，必须显式 `border-box`。**
 2. **scoped 样式优先级**：各页 scoped 的 `height: 100%`（`.settings-page[data-v-x]` = 0,2,0）会压过全局 `.page-col`（0,1,0）→ 桌面档卡片被撑到贴住视口下边缘、只剩上外距（登录页「底部没有间距」）。桌面档规则用 `.page-col.page-col.page-col`（0,3,0）压过去。
 3. **元素 `opacity` 会连带子元素**：弹层「取消」按钮原来写 `background: var(--muted-ink); opacity: .12` → 文字跟着一起变淡，读起来像禁用态。压背景请用 `var(--sk)`（半透明灰），不要用 `opacity`；`ConfirmSheet` 的后果说明文字同理改成正文色（muted 灰会被读成「不可用」）。
 

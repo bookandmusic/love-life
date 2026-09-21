@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronLeft, MapPin, Send, ImagePlus, Music, Play, X, Search, Loader2 } from 'lucide-vue-next'
+import { MapPin, Send, ImagePlus, Music, Play, X, Search, Loader2 } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
 import AppToast from '../components/AppToast.vue'
+import PageLayout from '../components/PageLayout.vue'
 import Sheet from '../components/Sheet.vue'
 import MiniMapPicker from '../components/MiniMapPicker.vue'
 
@@ -151,19 +152,12 @@ async function submit() {
 </script>
 
 <template>
-  <section class="publish">
-    <header class="navbar glass">
-      <button class="nav-btn" aria-label="返回" @click="router.back()">
-        <ChevronLeft :size="22" stroke-width="2.5" />
+  <PageLayout title="记动态" back @back="router.back()">
+    <template #nav-right>
+      <button class="primary" :disabled="!canSubmit" @click="submit">
+        <Send :size="15" stroke-width="1.8" />{{ uploading ? '发布中…' : '发布' }}
       </button>
-      <span class="title">记动态</span>
-      <div class="nav-right">
-        <button class="primary" :disabled="!canSubmit" @click="submit">
-          <Send :size="15" stroke-width="1.8" />{{ uploading ? '发布中…' : '发布' }}
-        </button>
-      </div>
-    </header>
-
+    </template>
     <div class="body">
       <textarea v-model="content" placeholder="记录这一刻…（可留空，直接传照片也行）" rows="6" class="field area" />
 
@@ -236,9 +230,9 @@ async function submit() {
           </div>
         </button>
       </div>
-      <p v-else-if="!searching && locSearch.trim()" class="loc-empty">未匹配到，可直接在地图上点选</p>
+      <p v-else-if="!searching && locSearch.trim()" class="loc-empty">没找到这个地名，在地图上点一下就行</p>
 
-      <p class="loc-label">或在地图上点选（候选都不满意时）</p>
+      <p class="loc-label">找不到的话，也可以在地图上点选</p>
       <MiniMapPicker
         :lat="mapPicked?.lat ?? null"
         :lng="mapPicked?.lng ?? null"
@@ -251,43 +245,12 @@ async function submit() {
     </Sheet>
 
     <AppToast :text="toast" bottom="calc(30px + env(safe-area-inset-bottom))" @done="toast = ''" />
-  </section>
+  </PageLayout>
 </template>
 
 <style scoped>
-.publish {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.nav-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
-.nav-btn {
-  border: none;
-  background: none;
-  color: var(--tint);
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-}
 .body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px 32px;
+  padding: 12px 0 32px;
 }
 .field {
   width: 100%;

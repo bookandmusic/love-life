@@ -286,7 +286,11 @@ async function submit() {
   -webkit-overflow-scrolling: touch;
   display: flex;
   flex-direction: column;
-  padding: calc(16px + env(safe-area-inset-top)) 16px calc(28px + env(safe-area-inset-bottom));
+  /* 横向 padding 走 --side-pad 令牌，与 PageLayout 的 .page-body 同源（手机 16 / 平板 24 / 桌面 0）。
+     本页是 PageLayout 的唯一例外（无 navbar + 内容需可滚动地垂直居中），
+     但横向内距不该自行硬编码——否则令牌调整时本页会掉队。
+     桌面档令牌为 0：.form-wrap 自带 max-width 420 + margin auto，仍居中不贴边。 */
+  padding: calc(16px + env(safe-area-inset-top)) var(--side-pad) calc(28px + env(safe-area-inset-bottom));
 }
 
 /* margin:auto 而非 justify-content:center：内容高于视口时（小屏 + 软键盘）不裁顶 */

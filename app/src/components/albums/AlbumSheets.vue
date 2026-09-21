@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { FolderPlus, Images } from 'lucide-vue-next'
 import Sheet from '../Sheet.vue'
+import EmptyState from '../EmptyState.vue'
 import type { AlbumItem } from '../../types/albums'
 
 defineProps<{
@@ -73,7 +74,7 @@ const emit = defineEmits<{
         <b class="pk-add">加入</b>
       </button>
     </div>
-    <p v-else class="pk-empty">还没有手动相册，先新建一个</p>
+    <EmptyState v-else compact :icon="Images" title="先建一个相册吧" sub="建好就能把这批照片装进去。" />
 
     <div class="pk-new">
       <input
@@ -147,7 +148,6 @@ const emit = defineEmits<{
 .pk-ic { color: var(--primary-deep); display: flex; }
 .pk-name { flex: 1; }
 .pk-add { color: var(--primary-deep); font-weight: 600; font-size: 13px; }
-.pk-empty { font-size: 13px; color: var(--muted-ink); text-align: center; padding: 8px 0; }
 .pk-new { display: flex; gap: 6px; margin-top: 4px; }
 .pk-new-go:disabled { opacity: 0.4; }
 .pk-err { color: var(--danger); font-size: 13px; }

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onActivated, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Cake, ChevronRight, RefreshCw, CalendarDays, Heart, Images, MapPin, Sparkles } from 'lucide-vue-next'
+import { Cake, ChevronRight, RefreshCw, CalendarDays, Heart, MapPin, Sparkles } from 'lucide-vue-next'
 import { api, errText, fullUrl } from '../api/client'
 import { mediaSrc, type Post } from '../types'
-import NavActions from '../components/NavActions.vue'
+import PageLayout from '../components/PageLayout.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import ErrorState from '../components/ErrorState.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { useSpace } from '../stores/space'
 
 defineOptions({ name: 'HomeView' })
@@ -96,9 +97,11 @@ const upcoming = computed(() => {
   ]
 })
 
-// 全新部署空态（REQUIREMENTS:111）：无动态 + 无纪念日 + 无相册。
+// 全新部署空态（REQUIREMENTS §4.1）：无动态 + 无纪念日 + 无相册，三者皆空才算首启。
 // 用计数而不是 next_anniversary.name：纪念日存在但日期全部无效时名称也是空，
-// 旧判定会把有数据的空间误显示成空态（S5）
+// 旧判定会把有数据的空间误显示成空态。
+// 不可放宽为 posts.length === 0：否则「有相册/纪念日但没发过动态」的空间会被空态整页遮挡，
+// 回忆精选（常驻兜底卡）与那年今日全不渲染，违反「首页永不空态」。
 const totallyEmpty = computed(() => {
   const sp = spaceStore.space
   return sp !== null && posts.value.length === 0 && sp.anniversary_count === 0 && sp.album_count === 0
@@ -134,14 +137,7 @@ onActivated(() => {
 </script>
 
 <template>
-  <div class="home">
-    <!-- 毛玻璃导航栏：标题 + 通知/设置 -->
-    <header class="navbar glass">
-      <span class="title">{{ space?.name || '我们的空间' }}</span>
-      <NavActions />
-    </header>
-
-    <div class="content">
+  <PageLayout :title="space?.name || '我们的空间'" actions>
       <SkeletonState v-if="loading" variant="hero" />
       <ErrorState v-else-if="error" :error="error" :retry="load" />
       <template v-else>
@@ -160,14 +156,17 @@ onActivated(() => {
             </div>
             <div class="hero-names">{{ coupleNames }}</div>
           </div>
-          <div class="hero-days">
-            <span class="num">{{ space?.days_together ?? '—' }}</span>
-            <span class="unit">天</span>
-          </div>
-          <div class="hero-sub">
-            在一起
-            <span v-if="space?.love_start_date"> · {{ space.love_start_date.replace(/-/g, '.') }} 开始</span>
-          </div>
+          <template v-if="space?.love_start_date">
+            <div class="hero-days">
+              <span class="num">{{ space.days_together }}</span>
+              <span class="unit">天</span>
+            </div>
+            <div class="hero-sub">
+              在一起 · {{ space.love_start_date.replace(/-/g, '.') }} 开始
+            </div>
+          </template>
+          <!-- 未设恋爱日期（§4.7：空间信息由后台维护，文案不指 APP 内入口） -->
+          <div v-else class="hero-days-unset">在一起的日子，从定下的那天开始数</div>
           <div v-if="nextAnniv" class="hero-next" @click="router.push('/anniversaries')">
             <Cake :size="14" stroke-width="2" />
             <span>下一个纪念日：{{ nextAnniv.name }}</span>
@@ -192,16 +191,8 @@ onActivated(() => {
           </div>
         </div>
 
-        <!-- 空态（D9：插画风空态——暖色渐变卡片 + Lucide 组合，不引入图片资产） -->
-        <div v-if="totallyEmpty" class="empty">
-          <div class="empty-art" aria-hidden="true">
-            <span class="ea-blob"><Images :size="28" stroke-width="1.6" /></span>
-            <span class="ea-spark"><Sparkles :size="16" stroke-width="2" /></span>
-            <span class="ea-heart"><Heart :size="14" stroke-width="2" /></span>
-          </div>
-          <p>这里还没有回忆</p>
-          <p class="empty-sub">点右下角 +，记录第一条吧</p>
-        </div>
+        <!-- 空态：仅全新部署（无动态+无纪念日+无相册）显示；与其余页统一走 EmptyState -->
+        <EmptyState v-if="totallyEmpty" :icon="Heart" title="回忆从今天开始" sub="写下第一条，往后每个今天都值得回看。" action="写第一条" @action="router.push('/publish')" />
 
         <template v-else>
           <!-- 3. 回忆精选：杂志主图 + 紧凑文字回忆 -->
@@ -244,41 +235,10 @@ onActivated(() => {
           </div>
         </template>
       </template>
-    </div>
-  </div>
+  </PageLayout>
 </template>
 
 <style scoped>
-.home {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-
-/* 毛玻璃导航栏 */
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
-
-/* 内容滚动区 */
-.content {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 12px 16px 24px;
-}
-
 /* 1. 关系头卡：柔和渐变底 + 叠头像 + 超大天数 */
 .hero {
   position: relative;
@@ -371,6 +331,11 @@ onActivated(() => {
   font-size: 13px;
   color: var(--muted-ink);
   margin-top: 6px;
+}
+.hero-days-unset {
+  font-size: 14px;
+  color: var(--muted-ink);
+  margin-top: 10px;
 }
 .hero-next {
   display: inline-flex;
@@ -468,55 +433,6 @@ onActivated(() => {
   display: inline-flex;
   align-items: center;
   gap: 1px;
-}
-
-/* 空态：暖色渐变底 + 三枚图标叠出的「插画」感（不引入图片资产） */
-.empty {
-  text-align: center;
-  margin: 20px 0 8px;
-  padding: 34px 20px 30px;
-  border-radius: 22px;
-  border: 1px solid var(--rule);
-  background: linear-gradient(160deg, rgba(255, 143, 171, 0.2), rgba(255, 209, 102, 0.16) 55%, rgba(90, 167, 212, 0.14));
-  color: var(--muted-ink);
-}
-.empty-art {
-  position: relative;
-  width: 92px;
-  height: 88px;
-  margin: 0 auto 14px;
-}
-.ea-blob {
-  position: absolute;
-  inset: 10px 14px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--surface);
-  color: var(--primary-deep);
-  box-shadow: 0 10px 24px rgba(240, 98, 146, 0.18);
-}
-.ea-spark {
-  position: absolute;
-  top: 0;
-  right: 4px;
-  color: var(--sem-gold);
-}
-.ea-heart {
-  position: absolute;
-  bottom: 6px;
-  left: 0;
-  color: var(--primary);
-}
-.empty p {
-  font-size: 16px;
-  color: var(--ink);
-}
-.empty-sub {
-  margin-top: 6px;
-  font-size: 14px;
-  color: var(--muted-ink) !important;
 }
 
 

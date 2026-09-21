@@ -1,7 +1,11 @@
 <script setup lang="ts">
-import { Images } from 'lucide-vue-next'
+import { FolderOpen, Images } from 'lucide-vue-next'
+import { useRouter } from 'vue-router'
 import { fullUrl } from '../../api/client'
+import EmptyState from '../EmptyState.vue'
 import type { AlbumItem } from '../../types/albums'
+
+const router = useRouter()
 
 defineProps<{
   albums: AlbumItem[]
@@ -24,7 +28,9 @@ function longPressDelete(a: AlbumItem, ev: PointerEvent) {
 
 <template>
   <div class="album-collection">
-    <p v-if="albums.length === 0" class="empty">还没有相册</p>
+    <div v-if="albums.length === 0" class="ac-empty-wrap">
+      <EmptyState :icon="FolderOpen" title="相册集合还空着" sub="按旅行、日常或家人建一个，把照片归归类。" action="新建相册" @action="router.push('/albums?new=1')" />
+    </div>
     <div
       v-for="a in albums"
       :key="a.id"
@@ -117,10 +123,7 @@ function longPressDelete(a: AlbumItem, ev: PointerEvent) {
 :root[data-theme='dark'] .ac-ph {
   background: rgba(255, 143, 171, 0.22);
 }
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  padding: 40px 0;
+.ac-empty-wrap {
   grid-column: 1 / -1;
 }
 </style>

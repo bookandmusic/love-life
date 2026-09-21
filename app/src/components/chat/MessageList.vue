@@ -4,12 +4,16 @@ import type { Bubble, SearchItem, PostDetailItem } from '../../types/chat'
 import { Sparkles, Search } from 'lucide-vue-next'
 import { mediaSrc } from '../../types'
 import { isImage, isVideo } from '../../utils/mediaMime'
+import EmptyState from '../EmptyState.vue'
 
 defineProps<{
   bubbles: Bubble[]
   error: string
   resultLoadingId: number | null
   resultDetail: PostDetailItem | null
+  // AI 不可用原因（后台未配置模型等）：非空时主区域空态改显示未配置提示，
+  // 并作为副文案直接展示（服务端 reason 含可执行指引，如「到后台配置模型服务」）
+  unavailableReason?: string
 }>()
 
 const emit = defineEmits<{
@@ -29,7 +33,8 @@ defineExpose({ scrollBottom })
 
 <template>
   <div ref="streamEl" class="stream">
-    <p v-if="bubbles.length === 0" class="empty"><Sparkles :size="30" stroke-width="1.2" class="spark" /><br />和我聊聊你们的日常吧</p>
+    <EmptyState v-if="bubbles.length === 0 && unavailableReason" :icon="Sparkles" title="AI 助手还没准备好" :sub="unavailableReason" />
+    <EmptyState v-else-if="bubbles.length === 0" :icon="Sparkles" title="想聊点什么" sub="试试问：帮我写纪念日祝福、安排周末或记录日常。" />
     <template v-for="(b, i) in bubbles" :key="i">
       <div v-if="b.content || b.result" class="row" :class="b.role">
         <span v-if="b.role === 'assistant'" class="ai-avatar" title="AI 助手">
@@ -78,18 +83,6 @@ defineExpose({ scrollBottom })
   padding: 0.75rem 1rem;
   background: var(--ai-bg, var(--bg));
   min-height: 50vh;
-}
-
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  margin-top: 3rem;
-}
-
-.spark {
-  color: var(--primary-deep);
-  opacity: 0.6;
-  margin-bottom: 0.6rem;
 }
 
 .row {

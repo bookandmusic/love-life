@@ -1,17 +1,22 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import type { PickedMedia } from '../../types/chat'
 import { ImagePlus, Music, Send, Square, X } from 'lucide-vue-next'
 import { isImage, isVideo } from '../../utils/mediaMime'
 
 
-defineProps<{
+const props = defineProps<{
   input: string
   pickedMedia: PickedMedia[]
   busy: boolean
   streaming: boolean
   maxMedia: number
+  // AI 不可用原因（后台未配置模型等）：非空时禁用输入/发送并展示提示
+  unavailableReason?: string
 }>()
+
+// 忙或 AI 不可用时锁定输入区（发送按钮在 busy 时本就不渲染该分支，模板里单列）
+const locked = computed(() => props.busy || !!props.unavailableReason)
 
 const emit = defineEmits<{
   (e: 'update:input', v: string): void
@@ -50,18 +55,18 @@ function onInput(e: Event) {
       </div>
     </div>
     <div class="compose">
-      <button class="media-btn" aria-label="选择图片/视频/音频" :disabled="busy || pickedMedia.length >= maxMedia" @click="openMediaPicker()">
+      <button class="media-btn" aria-label="选择图片/视频/音频" :disabled="locked || pickedMedia.length >= maxMedia" @click="openMediaPicker()">
         <ImagePlus :size="20" stroke-width="1.8" />
       </button>
       <input ref="mediaInput" class="file-input" type="file" accept="image/*,video/*,audio/*" multiple @change="emit('pick', $event)" />
-      <input ref="inputRef" :value="input" placeholder="说点什么…" :disabled="busy" @input="onInput" @keyup.enter="emit('send')" />
+      <input ref="inputRef" :value="input" placeholder="说点什么…" :disabled="locked" @input="onInput" @keyup.enter="emit('send')" />
       <button v-if="streaming" class="send stop" aria-label="停止生成" @click="emit('stop')">
         <Square :size="14" stroke-width="2" fill="currentColor" />
       </button>
       <button v-else-if="busy" class="send running" aria-label="进行中" disabled>
         <span class="dot" />进行中
       </button>
-      <button v-else class="send" :disabled="!input.trim() && pickedMedia.length === 0" @click="emit('send')">
+      <button v-else class="send" :disabled="!!unavailableReason || (!input.trim() && pickedMedia.length === 0)" @click="emit('send')">
         <Send :size="16" stroke-width="1.8" />
       </button>
     </div>

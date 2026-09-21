@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronLeft } from 'lucide-vue-next'
 import { ApiError, api, errText, getBase, getToken } from '../api/client'
 import AppToast from '../components/AppToast.vue'
+import PageLayout from '../components/PageLayout.vue'
 import { useAuth } from '../stores/auth'
 import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
+import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
 import NavActions from '../components/NavActions.vue'
 import MessageList from '../components/chat/MessageList.vue'
 import CardActions from '../components/chat/CardActions.vue'
@@ -237,6 +238,7 @@ async function toggleResult(it: SearchItem) {
 let streamBubble: Bubble | null = null
 
 async function send(text?: string) {
+  if (aiUnavailableReason.value) return
   const content = (text ?? input.value).trim()
   const media = pickedMedia.value.map((m) => ({ name: m.name, type: m.type, size: m.size, data_url: m.data_url }))
   if ((!content && media.length === 0) || busy.value) return
@@ -374,8 +376,21 @@ async function confirmCard(id: number, confirmed: boolean) {
   }
 }
 
+// AI 可用性（后台未配置模型时禁用输入/发送并提示原因；与设置页模式置灰同源 /api/v1/chat/status）
+// reason 的加工统一走 utils/aiStatus，保证与设置页文案一致
+const aiUnavailableReason = ref('')
+async function loadAIStatus() {
+  try {
+    const s = await api<AIStatus>('/api/v1/chat/status')
+    aiUnavailableReason.value = s.available ? '' : aiReasonText(s)
+  } catch {
+    aiUnavailableReason.value = AI_STATUS_OFFLINE
+  }
+}
+
 onMounted(() => {
   void loadHistory()
+  void loadAIStatus()
   expiryTimer = window.setInterval(() => (now.value = Date.now()), 30000)
 })
 
@@ -387,13 +402,12 @@ const router = useRouter()
 </script>
 
 <template>
-  <section class="chat page-col">
-    <header class="navbar glass">
-      <!-- AI 对话页无 TabBar，返回键是回到传统壳层的唯一常驻入口（模式不切换） -->
-      <button class="nav-btn" aria-label="返回" @click="router.push('/home')"><ChevronLeft :size="22" stroke-width="2.5" /></button>
-      <span class="title">我们的 AI 助手</span>
+  <!-- chat-page 向 PageLayout 注入整页底色（重构前由 .chat 根承担），
+       保证暗色档卡片与消息流同色，不与 --surface 撞色 -->
+  <PageLayout class="chat-page" title="我们的 AI 助手" back standalone :scroll="false" @back="router.push('/home')">
+    <template #nav-right>
       <NavActions :show-bell="false" />
-    </header>
+    </template>
 
     <MessageList
       ref="streamRef"
@@ -401,6 +415,7 @@ const router = useRouter()
       :error="error"
       :result-loading-id="resultLoadingId"
       :result-detail="resultDetail"
+      :unavailable-reason="aiUnavailableReason"
       @toggle-result="toggleResult"
     >
       <template #card="{ bubble }">
@@ -415,10 +430,13 @@ const router = useRouter()
         />
       </template>
     </MessageList>
-    <div v-if="bubbles.length === 0" class="chips">
+    <div v-if="bubbles.length === 0 && !aiUnavailableReason" class="chips">
       <button v-for="c in chips" :key="c" @click="fillChip(c)">{{ c }}</button>
     </div>
+    <!-- 有历史对话时 MessageList 的空态不渲染，此处补一条提示，避免只看到禁用输入框却不知原因 -->
+    <p v-if="bubbles.length > 0 && aiUnavailableReason" class="ai-offline">{{ aiUnavailableReason }}</p>
 
+    <template #footer>
     <InputBar
       ref="inputBarRef"
       :input="input"
@@ -426,48 +444,22 @@ const router = useRouter()
       :busy="busy"
       :streaming="streaming"
       :max-media="MAX_MEDIA"
+      :unavailable-reason="aiUnavailableReason"
       @update:input="input = $event"
       @pick="pickMedia"
       @remove="pickedMedia.splice($event, 1)"
       @send="send()"
       @stop="stopStream()"
     />
+    </template>
     <AppToast :text="toast" bottom="5rem" pill @done="toast = ''" />
-  </section>
+  </PageLayout>
 </template>
 
 <style scoped>
-.chat {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  background: var(--ai-bg, var(--bg));
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 10;
-}
-.title {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 17px;
-  font-weight: 600;
-  white-space: nowrap;
-}
-.nav-btn {
-  border: none;
-  background: none;
-  color: var(--tint);
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
+/* 注入 PageLayout 的 --page-bg 钩子：AI 对话页整页底色（含桌面档卡片） */
+.chat-page {
+  --page-bg: var(--ai-bg, var(--bg));
 }
 /* D1 AI 专属头像标识（REQUIREMENTS:238）：助手气泡左侧固定标识，用户气泡不加 */
 /* D2 搜索结果卡片（内联，无跳转） */
@@ -486,6 +478,15 @@ const router = useRouter()
   padding: 0.35rem 0.9rem;
   font-size: 0.8125rem;
   color: var(--primary-deep);
+}
+
+/* AI 不可用提示（有历史对话时补位，替代 MessageList 的空态）；底色由 --page-bg 钩子承担 */
+.ai-offline {
+  margin: 0;
+  padding: 0.5rem 1rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--muted-ink);
+  text-align: center;
 }
 
 .error {

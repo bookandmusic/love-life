@@ -1,12 +1,14 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronLeft, LogOut, ExternalLink } from 'lucide-vue-next'
+import { LogOut, ExternalLink } from 'lucide-vue-next'
 import { api, errText, getBase } from '../api/client'
+import PageLayout from '../components/PageLayout.vue'
 import { useAuth } from '../stores/auth'
 import { useMode, type AppMode } from '../stores/mode'
 import { KEYS } from '../utils/storage'
 import { ACCENTS, ACCENT_IDS } from '../utils/accents'
+import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
 
 const PROJECT_HOME = 'https://github.com/bookandmusic/love-life'
 
@@ -74,7 +76,7 @@ onUnmounted(() => {
 })
 
 // AI 可用性（阶段4.4 B6-②：后台未配置模型 Key 时 AI 模式置灰并提示原因）
-const aiStatus = ref<{ available: boolean; reason: string } | null>(null)
+const aiStatus = ref<AIStatus | null>(null)
 const aiStatusLoading = ref(false)
 
 function applyTheme() {
@@ -90,9 +92,11 @@ const aiDisabled = computed(() => aiStatus.value !== null && !aiStatus.value.ava
 async function loadAIStatus() {
   aiStatusLoading.value = true
   try {
-    aiStatus.value = await api<{ available: boolean; reason: string }>('/api/v1/chat/status')
+    const s = await api<AIStatus>('/api/v1/chat/status')
+    // reason 加工统一走 utils/aiStatus（与 AI 对话页同一套文案口径）
+    aiStatus.value = { available: s.available, reason: aiReasonText(s) }
   } catch {
-    aiStatus.value = { available: false, reason: '无法连接服务端，AI 模式暂不可用' }
+    aiStatus.value = { available: false, reason: AI_STATUS_OFFLINE }
   } finally {
     aiStatusLoading.value = false
   }
@@ -119,15 +123,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="settings-page page-col">
-    <!-- 毛玻璃导航栏（demo subpage 风格） -->
-    <header class="navbar glass">
-      <button class="nav-btn" aria-label="返回" @click="router.back()" style="margin-right: auto">
-        <ChevronLeft :size="22" stroke-width="2.5" />
-     </button>
-      <span class="title">设置</span>
-   </header>
-
+  <PageLayout title="设置" back standalone @back="router.back()">
     <div class="content">
       <!-- APP 模式（传统 / AI）：切换后立即生效；AI 未配置时置灰并提示原因 -->
       <div class="group">
@@ -138,7 +134,7 @@ onMounted(() => {
             <button :class="{ on: modeStore.mode === 'ai', off: aiDisabled }" :disabled="aiDisabled" @click="applyMode('ai')">AI 模式</button>
           </div>
           <p class="mode-hint">
-            {{ aiStatusLoading ? '正在检查 AI 可用性…' : aiStatus?.reason || '切换后立即生效' }}
+            {{ aiStatusLoading ? '正在看 AI 能不能用…' : aiStatus?.reason || '切换后立即生效' }}
           </p>
         </div>
       </div>
@@ -212,40 +208,10 @@ onMounted(() => {
         </button>
       </div>
     </div>
- </div>
+  </PageLayout>
 </template>
 <style scoped>
-.settings-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
-.nav-btn {
-  border: none;
-  background: none;
-  color: var(--tint);
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-}
 .content {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 12px 16px 24px;
   display: flex;
   flex-direction: column;
   gap: 14px;

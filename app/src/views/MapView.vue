@@ -2,14 +2,15 @@
 import { computed, nextTick, onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
-  ChevronLeft, ChevronRight, List, Map as MapIcon, MapPin, Search,
+  ChevronRight, List, Map as MapIcon, MapPin, Search,
 } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
 import AppToast from '../components/AppToast.vue'
-import NavActions from '../components/NavActions.vue'
+import PageLayout from '../components/PageLayout.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MiniMapPicker from '../components/MiniMapPicker.vue'
 import MapCanvas from '../components/MapCanvas.vue'
+import EmptyState from '../components/EmptyState.vue'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
 import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
@@ -228,15 +229,11 @@ async function confirmDeletePoint() {
 </script>
 
 <template>
-  <div class="map-page">
-    <!-- 完整表单：添加地点（名称+经纬度+geocode 候选+地图选点） -->
-    <template v-if="newForm">
-      <header class="navbar glass">
-        <button class="nav-btn" aria-label="返回" @click="closeNewForm"><ChevronLeft :size="22" stroke-width="2.5" /></button>
-        <span class="title">添加地点</span>
-        <button class="np-save" :disabled="!npName.trim() || npLat == null || npLng == null || saving" @click="saveNewPointForm">{{ saving ? '保存中…' : '保存' }}</button>
-      </header>
-      <div class="np-body">
+  <!-- 完整表单：添加地点（名称+经纬度+geocode 候选+地图选点） -->
+  <PageLayout v-if="newForm" title="添加地点" back @back="closeNewForm">
+    <template #nav-right>
+      <button class="np-save" :disabled="!npName.trim() || npLat == null || npLng == null || saving" @click="saveNewPointForm">{{ saving ? '保存中…' : '保存' }}</button>
+    </template>
         <div class="group form-rows">
           <div class="frow np-search">
             <input v-model="npName" class="cell-input" placeholder="地点名称（必填，如：厦门·鼓浪屿）" maxlength="30" @keyup.enter="searchGeoForm" />
@@ -253,30 +250,26 @@ async function confirmDeletePoint() {
             <div class="np-cand-txt"><span>{{ c.name }}</span><small>{{ c.display }} · {{ c.lat.toFixed(3) }},{{ c.lng.toFixed(3) }}</small></div>
           </button>
         </div>
-        <p v-else-if="!npSearching && npName.trim()" class="np-empty">未匹配到，可直接在地图上点选</p>
+        <p v-else-if="!npSearching && npName.trim()" class="np-empty">没找到这个地名，在地图上点一下就行</p>
 
-        <p class="np-pick-hint">或在地图上点选（候选不满意时）</p>
+        <p class="np-pick-hint">找不到的话，也可以在地图上点选</p>
         <MiniMapPicker :lat="npLat" :lng="npLng" :height="280" @pick="onFormMapPick" />
         <div v-if="npLat != null && npLng != null" class="np-picked">已选：{{ npLat.toFixed(5) }}, {{ npLng.toFixed(5) }}</div>
         <p v-if="npErr" class="s-err">{{ npErr }}</p>
-      </div>
-    </template>
+  </PageLayout>
 
-    <template v-else>
-    <header class="navbar glass">
-      <span class="title">地图</span>
-      <NavActions />
-    </header>
-
-    <!-- 视图切换 -->
-    <div class="seg">
+  <PageLayout v-else title="地图" actions :scroll="view === 'list'">
+    <template #subheader>
+      <!-- 视图切换 -->
+      <div class="seg">
       <button :class="{ on: view === 'map' }" @click="view = 'map'">
         <MapIcon :size="14" stroke-width="2" /> 地图
       </button>
       <button :class="{ on: view === 'list' }" @click="view = 'list'">
         <List :size="14" stroke-width="2" /> 列表
       </button>
-    </div>
+      </div>
+    </template>
 
     <MapCanvas
       v-if="view === 'map'"
@@ -288,9 +281,7 @@ async function confirmDeletePoint() {
     <!-- 列表视图 -->
     <div v-else class="list-view">
       <p v-if="loadError" class="error">{{ loadError }}</p>
-      <p v-else-if="!loadingPoints && points.length === 0" class="empty">
-        还没有足迹，从右下角 + 开始记录吧
-      </p>
+      <EmptyState v-else-if="!loadingPoints && points.length === 0" :icon="MapPin" title="足迹还空着" sub="标记第一个地点，慢慢攒成你们的足迹。" action="标记地点" @action="router.push('/map?new=1')" />
       <div v-else>
         <div
           v-for="p in points"
@@ -327,35 +318,10 @@ async function confirmDeletePoint() {
     />
 
     <AppToast :text="toast" @done="toast = ''" />
-    </template>
-  </div>
+  </PageLayout>
 </template>
 
 <style scoped>
-.map-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title { font-size: 17px; font-weight: 600; }
-.nav-btn {
-  border: none;
-  background: none;
-  color: var(--tint);
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-}
-
 /* 视图切换 */
 .seg {
   display: flex;
@@ -390,11 +356,6 @@ async function confirmDeletePoint() {
 /* 地图区 */
 
 /* 添加地点完整表单：字段并入 iOS 分组卡 */
-.np-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px 32px;
-}
 /* 行结构样式（.form-rows/.frow/.rlabel/.rvalue/.cell-input）已提升到 App.vue 全局，
    与 .group .row 同族复用；此处只放本页专有的 .np-* */
 .np-search {
@@ -487,12 +448,6 @@ async function confirmDeletePoint() {
 /* 缩放控件 */
 
 /* 列表视图 */
-.list-view {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 0 16px 24px;
-}
 .point-row {
   display: flex;
   align-items: center;
@@ -558,12 +513,6 @@ async function confirmDeletePoint() {
 .s-err { font-size: 13px; color: var(--danger); margin: 0; }
 
 /* 空态 */
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  padding: 56px 16px;
-  font-size: 14px;
-}
 .error {
   text-align: center;
   color: var(--danger);

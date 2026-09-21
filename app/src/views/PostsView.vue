@@ -1,14 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { Heart, Music, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
 import { api, errText, fmtDateTime } from '../api/client'
 import AppToast from '../components/AppToast.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
 import { mediaSrc, type Post } from '../types'
-import NavActions from '../components/NavActions.vue'
+import PageLayout from '../components/PageLayout.vue'
 import SkeletonState from '../components/SkeletonState.vue'
+import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import { useSpace } from '../stores/space'
 import { useAuth } from '../stores/auth'
@@ -20,6 +21,7 @@ import { RECYCLE_CONFIRM, RECYCLE_TITLE, RECYCLE_TOAST, peerNotice, recycleMsg }
 defineOptions({ name: 'PostsView' })
 
 const route = useRoute()
+const router = useRouter()
 
 // D8 那年今日（REQUIREMENTS:110）：?memories=1 只列同月同日回忆（服务端过滤后再分页）
 const memoriesOnly = computed(() => route.query.memories === '1')
@@ -225,21 +227,10 @@ watch(() => route.query.focus, () => {
 </script>
 
 <template>
-  <div class="posts-page">
-    <!-- 毛玻璃导航栏 -->
-    <header class="navbar glass">
-      <span class="title">{{ memoriesOnly ? '那年今日' : '动态' }}</span>
-      <NavActions />
-    </header>
-
-    <div class="scroll-area" @scroll.passive="onScroll">
+  <PageLayout :title="memoriesOnly ? '那年今日' : '动态'" actions @scroll="onScroll">
       <SkeletonState v-if="loading" variant="list" :rows="3" />
       <ErrorState v-else-if="error" :error="error" :retry="load" />
-      <div v-else-if="posts.length === 0" class="empty">
-        <PenLine :size="32" stroke-width="1.2" class="empty-ic" />
-        <p v-if="memoriesOnly">今天还没有同月同日的回忆</p>
-        <p v-else>还没有动态，点右下角 + 记录第一条吧</p>
-      </div>
+      <EmptyState v-else-if="posts.length === 0" :icon="PenLine" :title="memoriesOnly ? '往年今日待记录' : '动态圈还空着'" :sub="memoriesOnly ? '从今天开始记录，明年今日就能在这里重逢。' : '发一条动态，记录此刻的心情和日常。'" :action="memoriesOnly ? '去发动态' : '发动态'" @action="router.push('/publish')" />
 
       <article
         v-for="p in posts"
@@ -317,7 +308,7 @@ watch(() => route.query.focus, () => {
             <b>{{ c.author }}</b>
             <span>{{ c.content }}</span>
           </div>
-          <p v-if="(comments[p.id] ?? []).length === 0" class="no-comment">还没有评论</p>
+          <p v-if="(comments[p.id] ?? []).length === 0" class="no-comment">来说第一句吧。</p>
           <div class="comment-input" @pointerdown.stop>
             <input v-model="commentText" placeholder="说点什么…" @keyup.enter="submitComment(p)" />
             <button @click="submitComment(p)">发送</button>
@@ -327,7 +318,6 @@ watch(() => route.query.focus, () => {
 
       <p v-if="loadingMore" class="load-more">加载中…</p>
       <p v-else-if="noMore && posts.length >= PAGE_SIZE" class="load-more">没有更多了</p>
-    </div>
     <!-- 移入回收站：卡片 / 评论行长按触发 -->
     <ConfirmSheet
       v-if="deletingPost"
@@ -356,34 +346,10 @@ watch(() => route.query.focus, () => {
       @close="viewer = null"
     />
     <AppToast :text="toast" @done="toast = ''" />
-  </div>
+  </PageLayout>
 </template>
 
 <style scoped>
-.posts-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
-.scroll-area {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 12px 16px 24px;
-}
-
 .load-more {
   text-align: center;
   color: var(--muted-ink);
@@ -560,22 +526,5 @@ watch(() => route.query.focus, () => {
   border-radius: 999px;
   padding: 0 16px;
   font-weight: 600;
-}
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  padding: 56px 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-.empty p {
-  font-size: 14px;
-  color: var(--ink);
-}
-.empty-ic {
-  color: var(--primary);
-  opacity: 0.55;
-  margin-bottom: 10px;
 }
 </style>

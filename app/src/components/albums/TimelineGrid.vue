@@ -1,11 +1,15 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { Check, Images, Music, Play } from 'lucide-vue-next'
 import { fullUrl } from '../../api/client'
 import { mediaUrl } from '../../utils/mediaUrls'
 import { groupByMonth } from '../../utils/dates'
 import SkeletonState from '../SkeletonState.vue'
+import EmptyState from '../EmptyState.vue'
 import type { MonthGroup, TimelineItem } from '../../types/albums'
+
+const router = useRouter()
 
 const props = defineProps<{
   items: TimelineItem[]
@@ -46,10 +50,9 @@ function isSelected(id: number) {
 <template>
   <div class="timeline-wrap">
     <SkeletonState v-if="loading" variant="lines" :rows="4" />
-    <p v-else-if="items.length === 0" class="empty">
-      <Images :size="32" stroke-width="1.2" class="empty-ic" />
-      <span>还没有照片</span>
-    </p>
+    <div v-else-if="items.length === 0" class="tl-empty-wrap">
+      <EmptyState :icon="Images" title="相册还空着" sub="发动态时带上照片，就会自动收进这里。" action="去发动态" @action="router.push('/publish')" />
+    </div>
     <template v-else>
       <div v-if="!selectMode" class="tl-toolbar">
         <span class="tl-count">共 {{ total || items.length }} 个媒体</span>
@@ -196,17 +199,7 @@ function isSelected(id: number) {
 .tl-sel.go:disabled { opacity: 0.4; }
 .ph-wrap.selected .ph { outline: 2px solid var(--primary); }
 .pick-mark.on { background: var(--primary); color: #fff; }
-.empty {
-  text-align: center;
-  color: var(--muted-ink);
-  padding: 40px 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+.tl-empty-wrap {
   grid-column: 1 / -1;
-}
-.empty-ic {
-  opacity: 0.6;
-  margin-bottom: 10px;
 }
 </style>

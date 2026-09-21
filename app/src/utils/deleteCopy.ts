@@ -7,12 +7,12 @@ export const RECYCLE_TOAST = '已移入回收站'
 
 /** extra：按类型的后果说明（媒体评论一并、地点名保留快照…），空则省略 */
 export function recycleMsg(name: string, extra?: string): string {
-  return `把「${name}」移入回收站？${extra ?? ''}恢复需管理员在后台操作。`
+  return `把「${name}」移入回收站？${extra ?? ''}想恢复的话，到后台回收站里找回。`
 }
 
 /** 删除对方发布的内容会通知对方；删自己的静默 */
 export function peerNotice(selfId?: number, ownerId?: number): string {
-  return selfId && ownerId && selfId !== ownerId ? '对方会收到站内通知。' : ''
+  return selfId && ownerId && selfId !== ownerId ? '对方会收到一条通知。' : ''
 }
 
 // 「移出相册」是非破坏性动作：不进回收站，也不该用危险确认样式

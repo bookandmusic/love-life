@@ -1,9 +1,13 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ChevronLeft, CheckCheck, Bell, Heart, MessageCircle, Star, Trash2, Images, Cake, MapPin } from 'lucide-vue-next'
+import { CheckCheck, Bell, Heart, MessageCircle, Star, Trash2, Images, Cake, MapPin } from 'lucide-vue-next'
 import { api, errText, fmtDateTime } from '../api/client'
 import AppToast from '../components/AppToast.vue'
+import PageLayout from '../components/PageLayout.vue'
+import EmptyState from '../components/EmptyState.vue'
+import ErrorState from '../components/ErrorState.vue'
+import SkeletonState from '../components/SkeletonState.vue'
 import { useUnread } from '../stores/notifications'
 
 interface NotifItem {
@@ -139,24 +143,13 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="notif-page page-col">
-    <!-- 毛玻璃导航栏（demo subpage 风格） -->
-    <header class="navbar glass">
-      <button class="nav-btn" aria-label="返回" @click="router.back()" style="margin-right: auto">
-        <ChevronLeft :size="22" stroke-width="2.5" />
-      </button>
-      <span class="title">通知</span>
-      <div class="nav-right">
-        <button class="nav-btn action" @click="readAll"><CheckCheck :size="18" stroke-width="2" />全部已读</button>
-      </div>
-    </header>
-
-    <div class="content">
+  <PageLayout title="通知" back standalone @back="router.back()">
+    <template #nav-right>
+      <button class="nav-btn action" @click="readAll"><CheckCheck :size="18" stroke-width="2" />全部已读</button>
+    </template>
       <SkeletonState v-if="loading" variant="list" :rows="5" />
       <ErrorState v-else-if="error" :error="error" :retry="load" />
-      <p v-else-if="items.length === 0" class="empty">
-        <Bell :size="34" stroke-width="1.2" class="bell" /><br />暂无通知
-      </p>
+      <EmptyState v-else-if="items.length === 0" :icon="Bell" title="暂时没有通知" sub="对方点赞、评论，或到纪念日时，会在这里告诉你。" />
 
       <div v-else class="group">
         <div
@@ -173,36 +166,12 @@ onMounted(load)
           <span class="value num">{{ fmtDateTime(n.created_at) }}</span>
         </div>
       </div>
-    </div>
 
     <AppToast :text="toast" @done="toast = ''" />
-  </div>
+  </PageLayout>
 </template>
 
 <style scoped>
-.notif-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
-.nav-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
 .nav-btn {
   border: none;
   background: none;
@@ -219,12 +188,6 @@ onMounted(load)
   width: auto;
 }
 
-.content {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 12px 16px 24px;
-}
 
 .row {
   display: flex;
@@ -267,17 +230,5 @@ onMounted(load)
 }
 .row.tappable:active {
   opacity: 0.6;
-}
-
-.empty,
-.error {
-  text-align: center;
-  color: var(--muted-ink);
-  padding: 60px 0;
-}
-.bell {
-  color: var(--primary-deep);
-  opacity: 0.5;
-  margin-bottom: 8px;
 }
 </style>

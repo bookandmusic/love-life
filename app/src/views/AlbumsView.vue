@@ -10,7 +10,7 @@ import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice }
 import { useAuth } from '../stores/auth'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
-import NavActions from '../components/NavActions.vue'
+import PageLayout from '../components/PageLayout.vue'
 import ErrorState from '../components/ErrorState.vue'
 import TimelineGrid from '../components/albums/TimelineGrid.vue'
 import AlbumCollection from '../components/albums/AlbumCollection.vue'
@@ -116,7 +116,7 @@ function onAlbumClick(a: AlbumItem, e: MouseEvent) {
 }
 function albumDeleteMsg(a: AlbumItem) {
   // 空相册没有内容可看，删除后果只有相册本身
-  const extra = a.item_count > 0 ? '照片本身不受影响（回到未归属状态）。' : ''
+  const extra = a.item_count > 0 ? '照片会保留，只是不再属于任何相册。' : ''
   return recycleMsg(a.name, extra + peerNotice(auth.user?.id, a.created_by))
 }
 async function confirmDeleteAlbum() {
@@ -250,18 +250,13 @@ function onTimelineScroll(e: Event) {
 </script>
 
 <template>
-  <div class="albums-page">
-    <header class="navbar glass">
-      <span class="title">相册</span>
-      <NavActions />
-    </header>
-
-    <div class="seg">
-      <button :class="{ on: view === 'timeline' }" @click="view = 'timeline'">时间轴</button>
-      <button :class="{ on: view === 'collection' }" @click="view = 'collection'">集合</button>
-    </div>
-
-    <div class="scroll-area" @scroll.passive="onTimelineScroll">
+  <PageLayout title="相册" actions @scroll="onTimelineScroll">
+    <template #subheader>
+      <div class="seg">
+        <button :class="{ on: view === 'timeline' }" @click="view = 'timeline'">时间轴</button>
+        <button :class="{ on: view === 'collection' }" @click="view = 'collection'">集合</button>
+      </div>
+    </template>
       <!-- 阶段5.1：错误可重试 -->
       <ErrorState v-if="error" :error="error" :retry="doReload" />
       <TimelineGrid
@@ -288,7 +283,6 @@ function onTimelineScroll(e: Event) {
         @open="onAlbumClick"
         @request-delete="askDeleteAlbum"
       />
-    </div>
     <!-- 全屏媒体查看器（iOS） -->
     <MediaViewer
       v-if="viewer"
@@ -323,28 +317,10 @@ function onTimelineScroll(e: Event) {
       @confirm="confirmDeleteAlbum"
     />
     <AppToast :text="toast" bottom="calc(120px + env(safe-area-inset-bottom))" pill @done="toast = ''" />
-  </div>
+  </PageLayout>
 </template>
 
 <style scoped>
-.albums-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
 .seg {
   display: flex;
   background: rgba(120, 120, 128, 0.16);
@@ -368,12 +344,6 @@ function onTimelineScroll(e: Event) {
   background: var(--surface);
   box-shadow: var(--shadow);
   font-weight: 600;
-}
-.scroll-area {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 0 16px 24px;
 }
 /* F2 时间轴多选工具栏 */
 /* F2 加入相册 sheet */

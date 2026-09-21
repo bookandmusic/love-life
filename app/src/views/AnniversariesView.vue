@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { computed, onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Bell, ChevronLeft, ChevronRight, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
+import { Bell, ChevronRight, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
-import NavActions from '../components/NavActions.vue'
+import PageLayout from '../components/PageLayout.vue'
 import SkeletonState from '../components/SkeletonState.vue'
+import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import AppToast from '../components/AppToast.vue'
@@ -305,15 +306,11 @@ onActivated(async () => {
 </script>
 
 <template>
-  <div class="anniv-page">
-    <!-- 完整表单：添加纪念日 -->
-    <template v-if="newForm">
-      <header class="navbar glass">
-        <button class="nav-btn" aria-label="返回" @click="closeForm"><ChevronLeft :size="22" stroke-width="2.5" /></button>
-        <span class="title">添加纪念日</span>
-        <button class="np-save" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
-      </header>
-      <div class="af-body">
+  <!-- 完整表单：添加纪念日 -->
+  <PageLayout v-if="newForm" title="添加纪念日" back @back="closeForm">
+    <template #nav-right>
+      <button class="np-save" :disabled="!canSave" @click="save">{{ saving ? '保存中…' : '保存' }}</button>
+    </template>
         <div class="group form-rows">
           <label class="frow">
             <input v-model="fName" class="cell-input" placeholder="名字（如：中秋）" maxlength="30" />
@@ -352,25 +349,16 @@ onActivated(async () => {
           :month="fType === 'solar' ? fSolarM : fLunarMonth"
           :day="fType === 'solar' ? fSolarD : fLunarDay"
           :leap="fType === 'lunar' && fLunarLeap"
-          @confirm="applyPickedDate"
-        />
-      </div>
-    </template>
+        @confirm="applyPickedDate"
+      />
+  </PageLayout>
 
-    <!-- 正常列表页 -->
-    <template v-else>
-      <header class="navbar glass">
-        <span class="title">纪念日</span>
-        <NavActions />
-      </header>
-
-      <div class="scroll-area">
+  <!-- 正常列表页 -->
+  <PageLayout v-else title="纪念日" actions>
         <SkeletonState v-if="loading" variant="list" :rows="3" />
         <ErrorState v-else-if="error" :error="error" :retry="load" />
-        <div v-else-if="items.length === 0" class="empty">
-          <Cake :size="34" stroke-width="1.2" class="empty-ic" />
-          <p>还没有纪念日，点右下角 + 添加第一个吧</p>
-        </div>
+        <!-- 空态带引导 CTA（与全站空态口径一致，§6.4），与 FAB 同一个创建入口 -->
+        <EmptyState v-else-if="items.length === 0" :icon="Cake" title="记下重要日子" sub="生日、初见、在一起的日子，都会准时提醒你们。" action="记下第一个纪念日" @action="router.push('/anniversaries?new=1')" />
 
         <div
           v-for="a in rows"
@@ -406,7 +394,6 @@ onActivated(async () => {
             <span v-else class="days-num num" :class="{ far: !a.meta.hot }"><b>{{ a.meta.days }}</b><small>天</small></span>
           </div>
         </div>
-      </div>
 
       <!-- D6 提醒设置 sheet -->
       <Sheet
@@ -434,36 +421,10 @@ onActivated(async () => {
         @confirm="confirmRemove"
       />
       <AppToast :text="toast" @done="toast = ''" />
-    </template>
-  </div>
+  </PageLayout>
 </template>
 
 <style scoped>
-.anniv-page {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 16px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
-.nav-btn {
-  border: none;
-  background: none;
-  color: var(--tint);
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-}
 /* 导航栏动作 = tint 色文字按钮（iOS HIG），不用填充 pill */
 .np-save {
   border: none;
@@ -475,11 +436,6 @@ onActivated(async () => {
 }
 .np-save:disabled {
   opacity: 0.4;
-}
-.af-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 16px 32px;
 }
 /* 行结构样式（.form-rows/.frow/.rlabel/.rvalue/.cell-input/.row-select）已提升到
    App.vue 全局，与 .group .row 同族复用；此处只放本页专有项 */
@@ -527,12 +483,6 @@ onActivated(async () => {
 }
 .foot-hint.warn {
   color: var(--danger);
-}
-.scroll-area {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 12px 16px 24px;
 }
 .row {
   display: flex;
@@ -697,19 +647,6 @@ onActivated(async () => {
 .days-invalid {
   font-size: 12px;
   color: var(--muted-ink);
-}
-.empty {
-  text-align: center;
-  padding: 56px 0;
-}
-.empty-ic {
-  color: var(--primary);
-  opacity: 0.55;
-  margin-bottom: 12px;
-}
-.empty p {
-  font-size: 15px;
-  color: var(--ink);
 }
 .error {
   text-align: center;

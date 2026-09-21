@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronLeft, Music, Play, Plus } from 'lucide-vue-next'
+import { Images, Music, Play, Plus } from 'lucide-vue-next'
 import { api, errText, fullUrl } from '../api/client'
 import AppToast from '../components/AppToast.vue'
 import { mediaUrl } from '../utils/mediaUrls'
@@ -11,7 +11,9 @@ import ConfirmSheet from '../components/ConfirmSheet.vue'
 import { useLongPress } from '../composables/useLongPress'
 import { REMOVE_CONFIRM, REMOVE_TITLE, REMOVE_TOAST, removeMsg } from '../utils/deleteCopy'
 import MediaViewer from '../components/MediaViewer.vue'
+import PageLayout from '../components/PageLayout.vue'
 import SkeletonState from '../components/SkeletonState.vue'
+import EmptyState from '../components/EmptyState.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -175,18 +177,11 @@ onMounted(load)
 </script>
 
 <template>
-  <section class="detail">
-    <header class="navbar glass">
-      <button class="nav-btn" aria-label="返回" @click="router.back()">
-        <ChevronLeft :size="22" stroke-width="2.5" />
-      </button>
-      <span class="title">{{ album?.name ?? '…' }}</span>
-    </header>
-
+  <PageLayout :title="album?.name ?? '…'" back @back="router.back()">
     <div class="body">
       <SkeletonState v-if="loading" variant="grid" :rows="6" />
       <div v-else class="grid">
-        <p v-if="media.length === 0" class="empty">相册还是空的</p>
+        <EmptyState v-if="media.length === 0" class="ade-empty" :icon="Images" title="这个相册还空着" sub="添加几张照片，让它慢慢丰富起来。" :action="album?.type === 'manual' ? '添加照片' : undefined" @action="openPick()" />
         <template v-for="(m, index) in media" :key="m.id">
           <div class="thumb-cell pressable"
             :class="{ pressing: pressing === m.id }"
@@ -207,8 +202,8 @@ onMounted(load)
             <img v-else :src="fullUrl(mediaUrl(m).thumb)" class="thumb" loading="lazy" alt="" />
           </div>
         </template>
-        <!-- 添加入口：做成最后一个图片图标（仅手动相册） -->
-        <button v-if="album?.type === 'manual'" class="add-cell" aria-label="从时间轴添加照片" @click="openPick">
+        <!-- 添加入口：做成最后一个图片图标（仅手动相册）；空相册时由 EmptyState 的 CTA 承担，避免重复入口 -->
+        <button v-if="album?.type === 'manual' && media.length > 0" class="add-cell" aria-label="从时间轴添加照片" @click="openPick">
           <Plus :size="26" stroke-width="1.8" />
         </button>
       </div>
@@ -236,16 +231,15 @@ onMounted(load)
     <AppToast :text="actionError" :duration="0" @done="actionError = ''" />
     <AppToast :text="toast" @done="toast = ''" />
 
-    <!-- 选择页：与相册时间轴 tab 视觉一致（按月分组） -->
+    <!-- 选择页：复用 PageLayout 外壳（navbar 布局/滚动/列宽与其余页面同源），
+         外层 .pick-overlay 只负责全屏/桌面档卡片定位 -->
     <div v-if="showPick" class="pick-overlay">
-      <header class="pick-header">
-        <button class="nav-btn" @click="closePick">取消</button>
-        <span class="pick-title">从时间轴添加</span>
-        <span class="pick-count">已选 {{ picked.length }}</span>
-      </header>
-      <div class="pick-scroll">
-        <p v-if="pickLoading" class="empty">加载中…</p>
-        <p v-else-if="allTimeline.length === 0" class="empty">时间轴里还没有媒体</p>
+      <PageLayout title="从时间轴添加" back @back="closePick">
+        <template #nav-right>
+          <button class="pick-save" :disabled="picked.length === 0" @click="confirmAdd">加入相册{{ picked.length ? `（${picked.length}）` : '' }}</button>
+        </template>
+        <p v-if="pickLoading" class="pick-hint">加载中…</p>
+        <EmptyState v-else-if="allTimeline.length === 0" :icon="Images" title="先去动态里晒点照片吧" sub="发一条带照片的动态，回来就能挑。" action="去发动态" @action="router.push('/publish')" />
         <template v-else>
           <div v-for="g in pickGroups" :key="g.key" class="month-block">
             <div class="month-label">{{ g.label }}</div>
@@ -254,7 +248,7 @@ onMounted(load)
                 v-for="m in g.items"
                 :key="m.id"
                 class="ph-wrap"
-                :title="isLocked(m) ? (m.album_id === albumIdNum ? '已在本相册' : (m.album_name ? '已归属「' + m.album_name + '」' : '已归属其他相册')) : ''"
+                :title="isLocked(m) ? (m.album_id === albumIdNum ? '已在本相册' : (m.album_name ? '已在「' + m.album_name + '」里' : '已在别的相册里')) : ''"
               >
                 <img
                   :src="fullUrl(mediaUrl(m).thumb)"
@@ -267,61 +261,20 @@ onMounted(load)
                 <span v-if="m.kind === 'video'" class="video-mark"><Play :size="9" fill="currentColor" /></span>
                 <span v-else-if="m.kind === 'audio'" class="audio-mark"><Music :size="9" stroke-width="2.5" /></span>
                 <span v-if="isLocked(m)" class="owned-tag pick-tag">
-                  {{ m.album_id === albumIdNum ? '已在本相册' : (m.album_name || '已入其他相册') }}
+                  {{ m.album_id === albumIdNum ? '已在本相册' : (m.album_name || '已在别的相册') }}
                 </span>
               </div>
             </div>
           </div>
         </template>
-      </div>
-      <div class="pick-bar">
-        <button class="btn-ghost" @click="closePick">取消</button>
-        <button class="btn-go" :disabled="picked.length === 0" @click="confirmAdd">
-          加入相册{{ picked.length ? `（${picked.length}）` : '' }}
-        </button>
-      </div>
+      </PageLayout>
     </div>
-  </section>
+  </PageLayout>
 </template>
 
 <style scoped>
-.detail {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-.navbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
-  flex-shrink: 0;
-  z-index: 10;
-}
-.title {
-  font-size: 17px;
-  font-weight: 600;
-}
-.nav-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: auto;
-}
-.nav-btn {
-  border: none;
-  background: none;
-  color: var(--tint);
-  cursor: pointer;
-  padding: 4px;
-  display: flex;
-  align-items: center;
-}
 .body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 8px 16px 32px;
+  padding: 8px 0 32px;
 }
 .grid {
   display: grid;
@@ -424,11 +377,13 @@ onMounted(load)
   background: rgba(90, 167, 212, 0.75);
 }
 
-.empty {
-  grid-column: 1 / -1;
+.pick-hint {
   text-align: center;
   color: var(--muted-ink);
   padding: 40px 0;
+}
+.ade-empty {
+  grid-column: 1 / -1;
 }
 /* C3 长按移出：仅手动相册有交互 */
 .thumb-cell {
@@ -471,29 +426,17 @@ onMounted(load)
     overflow: hidden;
   }
 }
-.pick-header {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
-  border-bottom: 1px solid var(--rule);
-}
-.pick-title {
-  font-size: 16px;
+.pick-save {
+  border: none;
+  background: none;
+  color: var(--tint);
+  font-size: 15px;
   font-weight: 600;
+  cursor: pointer;
+  padding: 4px;
 }
-.pick-count {
-  color: var(--muted-ink);
-  font-size: 13px;
-  min-width: 56px;
-  text-align: right;
-}
-.pick-scroll {
-  flex: 1;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-  padding: 8px 16px 16px;
+.pick-save:disabled {
+  opacity: 0.4;
 }
 .month-block + .month-block {
   margin-top: 6px;
@@ -511,33 +454,5 @@ onMounted(load)
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
   gap: 3px;
-}
-.pick-bar {
-  flex-shrink: 0;
-  display: flex;
-  gap: 10px;
-  padding: 10px 16px calc(14px + env(safe-area-inset-bottom));
-  border-top: 1px solid var(--rule);
-  background: var(--bg);
-}
-.btn-ghost, .btn-go {
-  border: none;
-  border-radius: 12px;
-  padding: 12px 0;
-  font-weight: 600;
-  cursor: pointer;
-}
-.btn-ghost {
-  flex: 0 0 96px;
-  background: var(--surface);
-  color: var(--tint);
-}
-.btn-go {
-  flex: 1;
-  background: var(--primary);
-  color: var(--on-primary);
-}
-.btn-go:disabled {
-  opacity: 0.45;
 }
 </style>
