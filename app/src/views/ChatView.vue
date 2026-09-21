@@ -388,6 +388,18 @@ async function loadAIStatus() {
   }
 }
 
+// 锁定时低频轮询状态：停留期间 admin 配好模型即自动解锁，无需退出重进；
+// 解锁即停（发送按钮在锁定态是禁用的，无法靠「发送时重拉」触发，只能主动轮询）
+let aiPollTimer: number | undefined
+watch(aiUnavailableReason, (reason) => {
+  if (reason && !aiPollTimer) {
+    aiPollTimer = window.setInterval(() => void loadAIStatus(), 15 * 1000)
+  } else if (!reason && aiPollTimer) {
+    window.clearInterval(aiPollTimer)
+    aiPollTimer = undefined
+  }
+})
+
 onMounted(() => {
   void loadHistory()
   void loadAIStatus()
@@ -397,6 +409,7 @@ onMounted(() => {
 let expiryTimer: number | undefined
 onBeforeUnmount(() => {
   if (expiryTimer) window.clearInterval(expiryTimer)
+  if (aiPollTimer) window.clearInterval(aiPollTimer)
 })
 const router = useRouter()
 </script>
