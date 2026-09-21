@@ -269,7 +269,10 @@ body {
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
   border-bottom: 0.5px solid var(--glass-edge);
-  box-shadow: 0 1px 12px rgba(0, 0, 0, 0.05), inset 0 1px 0 var(--glass-inset);
+  /* 不设外投阴影：该阴影恰好画在下方滚动容器顶部，跨合成层混合，
+     KeepAlive 切换重建滚动层时闪烁（「内容区顶部黑影晃动」）。
+     仅保留 inset 高光与边线，静态视觉几乎无差。 */
+  box-shadow: inset 0 1px 0 var(--glass-inset);
   overflow: hidden;
 }
 .glass::after {
