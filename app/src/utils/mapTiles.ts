@@ -34,8 +34,10 @@ export async function refreshTileGrant(): Promise<void> {
 }
 
 // ensureTileGrant 进入地图前确保手上有未过期签名（无/临期则等一次换签）。
+// 「无启用源」（provider===''）时不走捷径：后端无源也照常下发签名，若只看签名有效期，
+// admin 启用源后要等定时换签（最长 10 分钟）或重启 APP 才生效——进地图重拉一次即可热加载。
 export async function ensureTileGrant(): Promise<void> {
-  if (grant && grant.exp * 1000 - Date.now() > 60 * 1000) return
+  if (provider.value !== '' && grant && grant.exp * 1000 - Date.now() > 60 * 1000) return
   await refreshTileGrant()
 }
 

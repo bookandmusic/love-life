@@ -12,6 +12,7 @@ import MiniMapPicker from '../components/MiniMapPicker.vue'
 import MapCanvas from '../components/MapCanvas.vue'
 import EmptyState from '../components/EmptyState.vue'
 import { useLongPress } from '../composables/useLongPress'
+import { ensureTileGrant } from '../utils/mapTiles'
 import { KEYS, onceHint } from '../utils/storage'
 import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
 import { useAuth } from '../stores/auth'
@@ -127,6 +128,9 @@ const toast = ref('')
 watch(view, () => nextTick(() => mapRef.value?.attachMap()))
 
 onActivated(async () => {
+  // KeepAlive 下 MapCanvas.onMounted 只跑一次，切回 tab 由此触发换签；
+  // 「无启用源」时 ensureTileGrant 会重拉配置，admin 启用源后切页即生效（源已配置则零成本早退）
+  void ensureTileGrant()
   await loadPoints()
   // FAB「添加地点」→ 打开完整表单页；以 query 为真源回写（修复：经 TabBar 而非 closeForm 离开时，回来不应停在表单态）
   newForm.value = route.query.new === '1'
