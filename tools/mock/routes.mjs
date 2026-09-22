@@ -822,6 +822,16 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/status$/, handler: () =
 
 // A8 history 补字段：{id, role, content, card_id?, created_at}
 // 阶段4/4.1：追加 card 快照 {action_id, tool, params, status, expires_in}，APP 重进对话可恢复确认卡片（未过期可继续确认，过期/重启置 expired）
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/withdraw-last$/, handler: () => {
+  // 停止生成即撤回（与后端同契约）：仅当最后一条是 user（尚无回复）时删除
+  const last = chatHistory[chatHistory.length - 1]
+  if (last && last.role === 'user') {
+    chatHistory.pop()
+    return ok({ withdrawn: true })
+  }
+  return ok({ withdrawn: false })
+}})
+
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/history$/, handler: () => {
   const items = chatHistory.map((h) => {
     const base = { id: h.id, role: h.role, content: h.content, card_id: h.card_id ?? 0, created_at: h.created_at, media: h.media ?? [] }
@@ -844,7 +854,7 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/history$/, handler: () 
         expiresIn = Math.max(1, Math.ceil((act.created_at + ACTION_TTL_MS - Date.now()) / 1000))
       }
     }
-    return { ...base, card: { action_id: cardId, tool, params, status, expires_in: expiresIn } }
+    return { ...base, card: { action_id: cardId, tool, params, status, expires_in: expiresIn, result: act?.result } }
   })
   return ok({ items })
 }})
@@ -995,6 +1005,9 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
     return ok({ status: 'cancelled' })
   }
 
+  // execOk：把执行结果记在 action 上，供 /chat/history 的 card.result 回显（与后端 2026-09-21 口径对齐）
+  const execOk = (result) => { action.result = result; return ok({ status: 'executed', result }) }
+
   action.resolved = 'executed'
   // 媒体随「确认执行」此刻才上传落库（token→湿库），与「传统模式·发动态」一致：取消/过期零垃圾数据
   const tokens = Array.isArray(b.media_tokens) ? b.media_tokens.map((t) => String(t)) : []
@@ -1012,7 +1025,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
     posts.unshift(newPost)
     // 通知另一方 post_created（按 F7 任意操作均通知另一方；这里与 REQUIREMENTS 一致——新动态通知对方）
     for (const r of partnerIds(action.user_id)) addNotification(r, 'post_created', 'post', id, { operator: operatorName(action.user_id), content: (newPost.content || '').slice(0, 50) })
-    return ok({ status: 'executed', result: `动态 #${id} 已发布${media.length ? `（含 ${media.length} 张媒体）` : ''}` })
+    return execOk(`动态 #${id} 已发布${media.length ? `（含 ${media.length} 张媒体）` : ''}`)
   }
 
   if (action.tool === 'create_anniversary') {
@@ -1020,7 +1033,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
     // type/is_leap 与表单契约对齐（DESIGN §6 create_anniversary）：lunar 时透传闰月标记
     const a = { id, name: action.params.name || '新纪念日', date: action.params.date || '2024-01-01', type: action.params.type === 'lunar' ? 'lunar' : 'solar', is_leap: action.params.type === 'lunar' && action.params.is_leap === true ? true : undefined, remind_days_before: action.params.remind_days_before ?? 1, created_by: action.user_id }
     anniversaries.push(a)
-    return ok({ status: 'executed', result: `纪念日「${a.name}」已创建` })
+    return execOk(`纪念日「${a.name}」已创建`)
   }
 
   if (action.tool === 'create_album') {
@@ -1029,7 +1042,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
     albums.push(al)
     // AI 建相册同样通知另一方（对齐手动 POST /albums 与服务端口径：operator 真实发起人 + via 标记来源）
     for (const r of partnerIds(action.user_id)) addNotification(r, 'album_created', 'album', id, { operator: operatorName(action.user_id), name: al.name, via: 'ai' })
-    return ok({ status: 'executed', result: `相册「${al.name}」已创建` })
+    return execOk(`相册「${al.name}」已创建`)
   }
 
   if (action.tool === 'add_photos_to_album') {
@@ -1051,7 +1064,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (u
       al.item_count += added
       al.cover_url = `/api/v1/media/file/${lastId}`
     }
-    return ok({ status: 'executed', result: `已加入相册「${al.name}」${added} 张` })
+    return execOk(`已加入相册「${al.name}」${added} 张`)
   }
 
   return ok({ status: 'failed', error: '未知操作类型' })
