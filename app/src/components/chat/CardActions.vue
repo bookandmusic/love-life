@@ -28,7 +28,8 @@ function confirm(confirmed: boolean) {
   <div class="card" :class="card.status">
     <p class="desc">{{ describe(card) }}</p>
     <template v-if="card.status === 'pending'">
-      <div class="btns">
+      <!-- 过期后可见不可确认（REQ:419）：只读提示，不再渲染可点按钮 -->
+      <div v-if="!isCardExpired(card)" class="btns">
         <button class="ok" @click="confirm(true)">
           <Check :size="15" stroke-width="2" />确认执行
         </button>

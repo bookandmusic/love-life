@@ -27,7 +27,7 @@ interface HistoryMsg {
   card_id?: number
   created_at?: string
   media?: import('../types/chat').ChatMedia[]
-  card?: { action_id: number; tool: string; params: Record<string, unknown>; status: CardItem['status']; expires_in: number }
+  card?: { action_id: number; tool: string; params: Record<string, unknown>; status: CardItem['status']; expires_in: number; result?: string }
 }
 
 const auth = useAuth()
@@ -93,6 +93,8 @@ function applyHistory(items: HistoryMsg[]) {
   const nextBubbles: Bubble[] = []
   const nextCards: Record<number, CardItem> = {}
   for (const m of items) {
+    // 历史遗留的惰性 marker（2026-09-21 起服务端停写）：无可交互内容的纯文字，过滤不展示
+    if (m.role === 'assistant' && !m.card_id && m.content === '已生成确认卡片，等待确认') continue
     if (m.card && m.card_id) {
       nextCards[m.card_id] = {
         action_id: m.card.action_id,
@@ -100,9 +102,12 @@ function applyHistory(items: HistoryMsg[]) {
         params: m.card.params ?? {},
         status: m.card.status,
         expires_in: m.card.expires_in,
+        result: m.card.result, // 执行结果已并入卡片快照（服务端），不再单独成泡
         received_at: Date.now(), // 服务端 expires_in 相对「本次响应」计算，收到即视为起点
       }
-      nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, cardID: m.card_id, media: m.media ?? [] })
+      // 卡片本体消息的内容是工具描述（「发布一条动态（需用户确认后生效）」），
+      // 与卡片 describe 信息重复，回显时不再单独成泡
+      nextBubbles.push({ role: m.role as Bubble['role'], content: '', cardID: m.card_id, media: m.media ?? [] })
     } else {
       nextBubbles.push({ role: m.role as Bubble['role'], content: m.content, media: m.media ?? [] })
     }
@@ -194,6 +199,24 @@ function describe(card: CardItem): string {
 function stopStream() {
   if (!streaming.value) return // 卡片待确认/确认执行中不可中止
   abortCtrl?.abort()
+  void withdrawOrphanUserMessage()
+}
+
+// 停止即撤回（2026-09-21 定，REQ §5.1）：服务端删掉刚落库且尚无回复的用户消息，
+// 撤回成功才把本轮气泡连同其后的流式残片一并移除；失败/已有回复则保留原状。
+// 按气泡引用定位（而非文本匹配）：停止可发生在气泡 push 之前的任意时刻，重复文本/纯媒体空文本会误删旧气泡。
+let sentBubble: Bubble | null = null
+async function withdrawOrphanUserMessage() {
+  try {
+    const res = await api<{ withdrawn: boolean }>('/api/v1/chat/withdraw-last', { method: 'POST' })
+    if (!res.withdrawn || !sentBubble) return
+    const i = bubbles.value.indexOf(sentBubble)
+    if (i >= 0) bubbles.value.splice(i) // 本轮用户气泡及其后的流式残片一起撤掉
+  } catch {
+    /* 撤回失败保留原状 */
+  } finally {
+    sentBubble = null
+  }
 }
 
 // ---------- D4：确认卡片 15 分钟有效期（客户端侧） ----------
@@ -268,7 +291,8 @@ async function send(text?: string) {
       throw new Error((msg as { error?: string }).error ?? '发送失败')
     }
 
-    bubbles.value.push({ role: 'user', content, media })
+    sentBubble = { role: 'user', content, media }
+    bubbles.value.push(sentBubble)
     scrollBottom()
 
     const reader = res.body.getReader()
@@ -360,9 +384,7 @@ async function confirmCard(id: number, confirmed: boolean) {
     })
     card.status = confirmed ? (res.status === 'executed' ? 'executed' : 'failed') : 'cancelled'
     card.result = res.result ?? res.error
-    if (confirmed && card.status === 'executed') {
-      bubbles.value.push({ role: 'tool', content: `已执行：${card.result}` })
-    }
+    // 结果只呈现在卡片内（与刷新后回显一致），不再另推「已执行：…」气泡
     scrollBottom()
   } catch (e) {
     // 409=已处理 / 410=已过期（服务端判定，见 D4）；其余才是真失败，别一律标成「已过期」
@@ -415,8 +437,6 @@ const router = useRouter()
 </script>
 
 <template>
-  <!-- chat-page 向 PageLayout 注入整页底色（重构前由 .chat 根承担），
-       保证暗色档卡片与消息流同色，不与 --surface 撞色 -->
   <PageLayout class="chat-page" title="我们的 AI 助手" back standalone :scroll="false" @back="router.push('/home')">
     <template #nav-right>
       <NavActions :show-bell="false" />
@@ -470,7 +490,10 @@ const router = useRouter()
 </template>
 
 <style scoped>
-/* 注入 PageLayout 的 --page-bg 钩子：AI 对话页整页底色（含桌面档卡片） */
+/* 注入 PageLayout 的 --page-bg 钩子：AI 对话页整页底色（含桌面档卡片），
+   保证暗色档卡片与消息流同色，不与 --surface 撞色（重构前由 .chat 根承担）。
+   注意：本组件模板必须保持单一根——根部上方的 HTML 注释在 dev 构建中会保留为注释节点，
+   使组件变成多根片段，卡死 App.vue 顶层 out-in 过渡（离开本页即全站白屏）。 */
 .chat-page {
   --page-bg: var(--ai-bg, var(--bg));
 }
