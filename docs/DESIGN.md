@@ -380,9 +380,11 @@ sequenceDiagram
     C->>S: POST /api/v1/chat/confirm {action_id, confirmed}
     S->>S: 执行实际操作
     S-->>C: 返回结果，更新对话流
+    Note over U,C: 流式「停止生成」→ C->>S: POST /api/v1/chat/withdraw-last（撤回最后一条尚无回复的用户消息）
 ```
 
 > 全程客户端**不接触任何模型凭证**，不直接调用第三方 API。
+> 卡片载体消息的存储与回显（2026-09-21）：写工具生成确认卡片时，服务端只落一条带 `card_id` 的助手消息（内容=工具描述），**不再另写惰性 marker**；`POST /api/v1/chat/confirm` 失败时把动作回写为 `failed` 并落一条 `tool_result`（错误原因），供历史回显「失败+原因」。`POST /api/v1/chat/withdraw-last` 仅当该用户最后一条消息是 user（尚无回复）时删除，返回 `{withdrawn:bool}`。
 
 ---
 
@@ -480,7 +482,8 @@ sequenceDiagram
   - **提示词与风格（/ai/prompts）**
     - System Prompt 模板管理：全局模板编辑（人设/行为边界主干）；空间级模板覆盖（可选）
     - 输出风格库：内置风格（完全固化，不可删改）+ 自定义风格（后台增删改，名称 + 提示词语气片段）；设全局默认风格
-    - 拼装规则：最终 System Prompt = 全局模板主干 + 当前生效风格提示词片段（切风格只换语气，不动主干）；APP 未选风格时用全局默认
+    - 拼装规则：最终 System Prompt = 全局模板主干 + 当前生效风格提示词片段（切风格只换语气，不动主干）+ **工具使用约定**（`toolProtocol()` 固定追加：写工具必须出卡、附件 media_tokens 由系统在确认时填充、相对时间换算 date_range、附当前日期；不可被后台自定义模板覆盖）；APP 未选风格时用全局默认
+    - 模型历史过滤：**卡片载体消息（带 card_id）与已停写的 marker「已生成确认卡片，等待确认」不进模型历史**——否则模型会模仿成「文字复述代替调工具」（2026-09-21 实测根因）
     - 接口：GET/PUT /admin/system-prompt、GET/POST /admin/styles、PUT/DELETE /admin/styles/{id}、PUT /admin/styles/default、GET /api/v1/styles（APP 端并集 + 默认标记）（仅 admin，/styles 只读除外）
   - **MCP 工具（/ai/tools）**
     - 内置工具列表：名称 / 描述 / 参数 Schema；启用 / 停用开关
@@ -634,8 +637,8 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 |:---|:---|:---|
 | Notification | id, recipient_id, event_type, target_type?, target_id?, snapshot_json?, is_read, read_at, created_at | 事件类型 12+1 类（见需求 §4.8：内容删除按内容类型细分为 `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`，`+1` 为兼容期保留的 `media_deleted`）；内容删除事件带文案快照（`name` + `deleted_by`）、无跳转、**仅站内**（不走外部推送 Dispatcher）；目标已被删时点击提示「内容已删除」 |
 | RestoreLog | id, operator, summary, created_at | 回收站操作日志（不可删除、永久保留）：恢复记录谁在何时恢复了什么；系统超期永久删除记 operator=系统定时任务 + 类型与条数汇总。后台回收站页展示 |
-| ChatMessage | id, user_id, role(user/assistant/tool_result), content, card_id?, media, created_at | media=消息携带的客户端媒体引用 JSON（[{name,type,size,data_url}]，仅本会话展示+历史回显，不落媒体资源，零垃圾）；实际媒体仅在确认执行时经 media_token 落库为 Post 媒体。按用户保留时长定时清理（预设 7/30/90 天/永久，默认 30 天）。`role='tool_result'` 为确认执行回执（confirm 成功后写入，记录工具执行结果文案）；`GET /chat/history` 对带 `card_id` 的消息附带 `card` 快照对象（`{action_id, tool, params, status, expires_in}`，自 ConfirmAction 表即时查取、不落 ChatMessage），支撑 REQ §5.1「重进对话恢复确认卡片」 |
-| ConfirmAction | id, user_id, tool_name, params_json, status(pending/confirmed/cancelled/expired), expires_at, resolved_at, created_at | 确认卡片：单次有效（确认/取消即失效）；expires_at = 生成时间 + 15 分钟，超时置 expired，对话流内显示「已过期」不可再确认 |
+| ChatMessage | id, user_id, role(user/assistant/tool_result), content, card_id?, media, created_at | media=消息携带的客户端媒体引用 JSON（[{name,type,size,data_url}]，仅本会话展示+历史回显，不落媒体资源，零垃圾）；实际媒体仅在确认执行时经 media_token 落库为 Post 媒体。按用户保留时长定时清理（预设 7/30/90 天/永久，默认 30 天）。`role='tool_result'` 为确认执行回执（成功记结果文案、失败记错误原因）；`GET /chat/history` 对带 `card_id` 的消息附带 `card` 快照对象（`{action_id, tool, params, status, expires_in, result?}`，自 ConfirmAction 表即时查取、不落 ChatMessage；`result` 取自同 card_id 的 tool_result），**并把该 tool_result 从返回列表剔除**（结果已并入卡片，不再单独成泡）；状态归一：`confirmed→executed`、已过期的 `pending→expired`、`failed` 原样下发。支撑 REQ §5.1「重进对话恢复确认卡片」 |
+| ConfirmAction | id, user_id, tool_name, params_json, status(pending/confirmed/cancelled/expired/failed), expires_at, resolved_at, created_at | 确认卡片：单次有效（确认/取消即失效）；expires_at = 生成时间 + 15 分钟，超时置 expired，对话流内显示「已过期」不可再确认；确认后执行失败回写 `failed`（连同错误原因落 tool_result），避免历史回显误判为已执行 |
 | AuditLog | id, actor_type(user/ai/pat), actor_id, action, params_digest, params, result, latency_ms, created_at | 永久保留；覆盖全部 MCP 工具调用（回收站恢复与系统超期永久删除写 RestoreLog）。`result` 仅记状态 `success` / `failed[: 原因]`（与 mock 契约 fixtures.mjs 一致，后台按 `result == 'success'` 展示成败）；入参人类可读摘要放 `params`（`key: value` 逗号分隔、单值超 60 字截断；`params_digest` 保留原始 JSON 供检索），`latency_ms` 仅 ai/pat 有值、user 为 null。一次工具调用只记一条审计（由调用方记账，工具内部不重复写） |
 
 ### 12.4 令牌
