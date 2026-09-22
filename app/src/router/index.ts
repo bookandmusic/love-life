@@ -6,8 +6,9 @@ import { KEYS } from '../utils/storage'
 // D5 一级 tab（只记这五个；详情页/发布页不记，避免冷启动落到需要参数或不适合停留的页面）
 const TABS = ['/home', '/posts', '/albums', '/anniversaries', '/map']
 
-/** '/' 的落地页：AI 模式→对话页；传统模式→上次一级 tab（REQUIREMENTS:83），无记录则首页 */
-function startRoute(): string {
+/** 落地页（'/' redirect 与登录成功后共用，2026-09-21：此前登录页硬编码 /home，与 AI 模式存储打架）：
+    AI 模式→对话页；传统模式→上次一级 tab（REQUIREMENTS:83），无记录则首页 */
+export function landingRoute(): string {
   // 直读 localStorage 而不经 Pinia：record redirect 在导航最早期执行，避免依赖 store 安装顺序
   if (localStorage.getItem(KEYS.MODE) === 'ai') return '/chat'
   const last = localStorage.getItem(KEYS.LAST_ROUTE) || ''
@@ -25,7 +26,7 @@ const router = createRouter({
       path: '/',
       component: () => import('../views/MainView.vue'),
       children: [
-        { path: '', redirect: startRoute },
+        { path: '', redirect: landingRoute },
         { path: 'home', component: () => import('../views/HomeView.vue') },
         { path: 'posts', component: () => import('../views/PostsView.vue') },
         { path: 'albums', component: () => import('../views/AlbumsView.vue') },

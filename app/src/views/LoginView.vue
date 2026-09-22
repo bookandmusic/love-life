@@ -5,6 +5,7 @@ import { Eye, EyeOff, Heart, PenLine } from 'lucide-vue-next'
 import Sheet from '../components/Sheet.vue'
 import { useAuth } from '../stores/auth'
 import { errText, getLanBase, getWanBase, setDualBase } from '../api/client'
+import { landingRoute } from '../router'
 import { probeAndSelect, type ProbeStatus } from '../utils/netProbe'
 
 const router = useRouter()
@@ -146,7 +147,8 @@ async function submit() {
   loading.value = true
   try {
     await auth.login(username.value, password.value)
-    router.replace('/home')
+    // 与冷启动同一套落地规则：AI 模式→对话页，传统模式→上次一级 tab（此前硬编码 /home 与设置页显示打架）
+    router.replace(landingRoute())
   } catch (e) {
     error.value = errText(e, '登录失败')
   } finally {
