@@ -721,7 +721,7 @@ func Registry() []*Tool {
 			Description: "发布一条动态（需用户确认后生效）",
 			Schema: map[string]string{
 				"content":       "string — 动态正文",
-				"media_tokens":  "string[] — 已上传媒体令牌（可选）",
+				"media_tokens":  "string[] — 系统填充（用户确认时自动上传），模型不要传",
 				"location_name": "string — 地点名（可选，纯文本）",
 				"mood":          "string — 心情（可选）",
 			},

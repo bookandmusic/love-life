@@ -46,6 +46,17 @@ func NewService(db *store.DB, seed []byte, deps *tools.Deps) *Service {
 // （与改造前硬编码一致，行为向后兼容）。GET /admin/system-prompt 未配置时同用此值。
 const SystemPromptTrunkFallback = "你是情侣生活记录应用的 AI 助手，帮助这对情侣记录生活、查询回忆。"
 
+// toolProtocol 工具使用约定：固定追加在 system prompt 末尾，不被后台自定义 prompt 覆盖
+//（覆盖掉它模型就会退化成「文字复述操作」或「向用户索要 media token」）。
+// 附当前日期作相对时间（今天/最近/上周）换算 date_range 的基准。
+func toolProtocol() string {
+	return "\n\n工具使用约定：\n" +
+		"1. 执行写操作（发动态/建相册/纪念日/记地点等）必须调用对应工具生成确认卡片，禁止只用文字描述操作而不调用工具。\n" +
+		"2. 用户消息标注附带媒体附件时，直接调用 create_post 只填 content 等文本参数；media_tokens 由系统在用户确认时自动上传填充，不要传该参数、更不要向用户索要。\n" +
+		"3. 「今天/昨天/最近/上周」等相对时间，先换算成具体日期区间传给 search_posts 的 date_range（YYYY-MM-DD~YYYY-MM-DD），query 用描述内容的宽泛语义词。\n" +
+		"4. 当前日期：" + time.Now().Format("2006-01-02") + "。"
+}
+
 // systemPrompt 拼装：主干（app_settings system_prompt → fallback）+ 风格片段。
 // 用户风格按名字精确匹配风格库；未设置或名字已删 → 全局默认风格；库空 → 无片段。
 // 每次调用实时读库——管理后台热切换即生效。
@@ -268,12 +279,20 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 历史 + 用户风格
+	// 历史 + 用户风格；工具使用约定固定追加在 system 末尾（不被后台自定义 prompt 覆盖，2026-09-21）
 	user, _ := s.db.GetUserByID(r.Context(), claims.UserID)
-	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(r.Context(), userStyle(user))}}
+	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(r.Context(), userStyle(user)) + toolProtocol()}}
 	history, _ := s.db.ListChatMessages(r.Context(), claims.UserID, historyWindow)
 	for _, m := range history {
 		if m.Role == "user" || m.Role == "assistant" {
+			// 卡片载体消息（带 card_id）与已停写的惰性 marker 都是 UI 状态而非对话内容：
+			// 进模型历史会被模型模仿成「文字复述代替调工具」（A5 实测根因），一律剔除
+			if m.CardID.Valid {
+				continue
+			}
+			if m.Role == "assistant" && m.Content == "已生成确认卡片，等待确认" {
+				continue
+			}
 			msgs = append(msgs, llm.Message{Role: m.Role, Content: m.Content})
 		}
 	}
@@ -299,6 +318,12 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			s.sseEvent(w, flusher, "error", map[string]string{"message": err.Error()})
 			s.sseEvent(w, flusher, "done", nil)
+			return
+		}
+		// 停止生成（客户端已断开）：撤回本轮用户消息、不落任何回复。
+		// 竞态背景：客户端撤回与「生成完成落库」可能交错，模型已答完时这里再落库会产生孤儿回复（2026-09-21 回归实测）
+		if r.Context().Err() != nil {
+			_, _ = s.db.DeleteLastUserMessageIfOrphan(context.Background(), claims.UserID)
 			return
 		}
 		chain = rest
@@ -343,7 +368,8 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 			msgs = append(msgs, llm.Message{Role: "tool", Content: result, ToolCallID: call.ID})
 		}
 		if stopForConfirm {
-			_, _ = s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "assistant", Content: "已生成确认卡片，等待确认"})
+			// 卡片本体消息（runToolCall 里已带 card_id 落库）即状态载体，
+			// 不再另写「已生成确认卡片，等待确认」惰性 marker（2026-09-21：回显时它只是无交互文字）
 			break
 		}
 	}
@@ -526,6 +552,12 @@ func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON,
 			tools.AuditFailure(err), latencyMs)
+		// 回写 failed：确认已消耗但执行失败，历史回显须是「失败+原因」而不是被 confirmed→executed 洗成已执行
+		if ferr := s.db.ResolveConfirmAction(r.Context(), req.ActionID, "failed"); ferr != nil {
+			slog.Warn("confirm action failed 回写失败", "action_id", req.ActionID, "err", ferr)
+		}
+		_, _ = s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "tool_result",
+			Content: err.Error(), CardID: sql.NullInt64{Int64: req.ActionID, Valid: req.ActionID > 0}})
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": err.Error()})
 		return
 	}
@@ -537,6 +569,18 @@ func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"status": "executed", "result": msg})
 }
 
+// WithdrawLast POST /api/v1/chat/withdraw-last：停止生成即撤回（REQ §5.1，2026-09-21）——
+// 删除最后一条尚无回复的用户消息；已有回复则不动（withdrawn=false，客户端保留气泡）。
+func (s *Service) WithdrawLast(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	ok, err := s.db.DeleteLastUserMessageIfOrphan(r.Context(), claims.UserID)
+	if err != nil {
+		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"withdrawn": ok})
+}
+
 // History GET /api/v1/chat/history。
 func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
@@ -545,11 +589,16 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
 		return
 	}
-	// 收集所有 card_id，批量查 ConfirmAction 快照（REQ §5.1 恢复确认卡片）
+	// 收集所有 card_id，批量查 ConfirmAction 快照（REQ §5.1 恢复确认卡片）；
+	// 同卡片的 tool_result 执行结果并入快照，不再单独成泡（2026-09-21 回显治理）
 	cardIDs := make([]int64, 0)
+	resultByCard := make(map[int64]string)
 	for _, m := range list {
 		if m.CardID.Valid && m.CardID.Int64 > 0 {
 			cardIDs = append(cardIDs, m.CardID.Int64)
+			if m.Role == "tool_result" {
+				resultByCard[m.CardID.Int64] = m.Content // list 时间正序，后者覆盖前者
+			}
 		}
 	}
 	cards, _ := s.db.ListConfirmActionsByIDs(r.Context(), cardIDs)
@@ -560,6 +609,7 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 		Params    json.RawMessage `json:"params"`
 		Status    string          `json:"status"`
 		ExpiresIn int             `json:"expires_in"`
+		Result    string          `json:"result,omitempty"`
 	}
 	type item struct {
 		ID        int64           `json:"id"`
@@ -591,14 +641,26 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 				if expiresIn < 0 {
 					expiresIn = 0
 				}
+				status := ca.Status
+				switch {
+				case status == "confirmed":
+					status = "executed" // 对齐客户端口径（CardActions 认 executed）
+				case status == "pending" && !time.Now().Before(ca.ExpiresAt):
+					status = "expired" // 过期前置裁决：回显即只读「已过期」（REQ:419 可见不可确认）
+				}
 				card = &cardSnapshot{
 					ActionID:  ca.ID,
 					Tool:      ca.ToolName,
 					Params:    params,
-					Status:    ca.Status,
+					Status:    status,
 					ExpiresIn: expiresIn,
+					Result:    resultByCard[cardID],
 				}
 			}
+		}
+		// 执行结果已并入卡片快照的 tool_result 不再单独成泡；卡片本体不在窗口内的残留照原样展示
+		if m.Role == "tool_result" && card != nil {
+			continue
 		}
 		items = append(items, item{ID: m.ID, Role: m.Role, Content: m.Content, CardID: cardID, Card: card, CreatedAt: m.CreatedAt, Media: media})
 	}

@@ -193,7 +193,7 @@ CREATE TABLE confirm_actions (
     user_id     INTEGER NOT NULL REFERENCES users(id),
     tool_name   TEXT    NOT NULL,
     params_json TEXT    NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'cancelled', 'expired')),
+    status      TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'cancelled', 'expired', 'failed')),
     expires_at  TEXT    NOT NULL,
     resolved_at TEXT,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))

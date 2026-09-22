@@ -63,6 +63,20 @@ func (d *DB) ListChatMessages(ctx context.Context, userID int64, limit int) ([]*
 	return list, nil
 }
 
+// DeleteLastUserMessageIfOrphan 删除该用户最后一条消息，仅当它是 user 角色（即尚无回复的孤儿消息）。
+// 用于「停止生成即撤回」（REQ §5.1，2026-09-21）；已有回复时最后一条是 assistant/tool_result，不删。
+// 返回是否真正删除。
+func (d *DB) DeleteLastUserMessageIfOrphan(ctx context.Context, userID int64) (bool, error) {
+	res, err := d.ExecContext(ctx,
+		`DELETE FROM chat_messages WHERE user_id = ? AND role = 'user' AND id = (SELECT MAX(id) FROM chat_messages WHERE user_id = ?)`,
+		userID, userID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 // CleanExpiredChatMessages 按每用户保留时长清理（janitor 每小时）。
 func (d *DB) CleanExpiredChatMessages(ctx context.Context) error {
 	rows, err := d.QueryContext(ctx, `SELECT u.id, u.chat_retention_days FROM users WHERE u.chat_retention_days > 0`)
@@ -167,8 +181,9 @@ func (d *DB) ListConfirmActionsByIDs(ctx context.Context, ids []int64) (map[int6
 }
 
 // ResolveConfirmAction 单次有效：仅 pending 且未过期可流转；过期置 expired。
+// failed 用于「已确认但工具执行失败」的回写，避免失败卡片在历史里被当作已执行回显。
 func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) error {
-	allowed := map[string]bool{"confirmed": true, "cancelled": true, "expired": true}
+	allowed := map[string]bool{"confirmed": true, "cancelled": true, "expired": true, "failed": true}
 	if !allowed[to] {
 		return errors.New("invalid status")
 	}
@@ -177,6 +192,12 @@ func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) erro
 		return err
 	}
 	if a.Status != "pending" {
+		// confirmed→failed 回写（2026-09-21）：确认已消耗，仅纠正终态——执行失败的历史回显不能是「已执行」
+		if a.Status == "confirmed" && to == "failed" {
+			_, err = d.ExecContext(ctx, `UPDATE confirm_actions SET status='failed', resolved_at=? WHERE id=? AND status='confirmed'`,
+				time.Now().UTC().Format(time.RFC3339), id)
+			return err
+		}
 		return ErrConfirmResolved
 	}
 	if time.Now().After(a.ExpiresAt) && to != "expired" {

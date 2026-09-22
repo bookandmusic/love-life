@@ -134,6 +134,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	chatMux.HandleFunc("GET /api/v1/chat/status", chatSvc.Status)
 	chatMux.HandleFunc("POST /api/v1/chat/message", chatSvc.Message)
 	chatMux.HandleFunc("POST /api/v1/chat/confirm", chatSvc.Confirm)
+	chatMux.HandleFunc("POST /api/v1/chat/withdraw-last", chatSvc.WithdrawLast)
 	chatMux.HandleFunc("GET /api/v1/chat/history", chatSvc.History)
 	mux.Handle("/api/v1/chat/", authSvc.RequireAuth(chatMux))
 

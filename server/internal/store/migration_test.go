@@ -237,4 +237,12 @@ func TestFullSchema(t *testing.T) {
 	if _, err := db.Exec(`SELECT avatar_media_id FROM users LIMIT 0`); err == nil {
 		t.Fatal("avatar_media_id column must not exist")
 	}
+
+	// 不变式 11：confirm_actions 状态机含 failed（确认后执行失败的终态回写，2026-09-21 评审修复）
+	if _, err := db.Exec(`INSERT INTO confirm_actions (user_id, tool_name, params_json, expires_at, status) VALUES (1, 'create_post', '{}', '2026-09-30T00:00:00Z', 'failed')`); err != nil {
+		t.Fatalf("failed status must be accepted: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO confirm_actions (user_id, tool_name, params_json, expires_at, status) VALUES (1, 'create_post', '{}', '2026-09-30T00:00:00Z', 'bogus')`); err == nil {
+		t.Fatal("invalid confirm status must be rejected")
+	}
 }
