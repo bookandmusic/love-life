@@ -803,7 +803,24 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 
 		msgs = append(msgs, llm.Message{Role: "assistant", Content: choice.Message.Content, ToolCalls: calls})
 		stopForProposal := false
-		for _, call := range calls {
+		// 读工具并行、写工具串行（AI模式设计「预算与并行」）。
+		// 只并行「首个写工具之前」那一段：出提案会中止其后所有 call（一轮一卡），
+		// 若把提案之后的读工具也并发跑掉，就等于执行了本不该执行的调用。
+		readN := len(calls)
+		for i, c := range calls {
+			if t, ok := s.reg[c.Function.Name]; ok && t.IsWrite {
+				readN = i
+				break
+			}
+		}
+		serialFrom := 0 // 串行段起点：并行只吃掉了前面的读工具段
+		if readN > 1 {  // 单个读工具并发无收益，整批仍走下面的串行路径
+			tp, tm := s.runReadToolsParallel(w, flusher, toolCtx, claims.UserID, sessionID, turnID, calls[:readN], mediaRefs)
+			turnParts = append(turnParts, tp...)
+			msgs = append(msgs, tm...)
+			serialFrom = readN
+		}
+		for _, call := range calls[serialFrom:] {
 			// 工具状态条：label 由注册表提供（人话），不含工具名与参数（ 零带内信令）
 			label := s.progressLabel(call.Function.Name)
 			s.sseEvent(w, flusher, "tool.start", map[string]any{"call_id": call.ID, "label": label})
@@ -941,6 +958,91 @@ func (s *Service) appendToolPair(ctx context.Context, userID, sessionID int64, t
 		"tool", toolContent, "", call.ID, toolNameOf(call), store.ApproxTokens(toolContent), "read_result", false)
 }
 
+// readToolOutcome 并行读工具的结果槽位（按发起顺序归位，不由完成顺序决定）。
+type readToolOutcome struct {
+	out *tools.ToolResult
+	err error
+}
+
+// runReadToolsParallel 并行执行一组**读工具**调用（AI模式设计「预算与并行」）。
+//
+// 三条不变式（改动前先读）：
+//  1. **只并行读工具**：调用方只把「首个写工具之前」那段传进来——出提案会中止其后所有
+//     call，把提案之后的读工具也跑掉就是执行了本不该执行的调用。
+//  2. **parts / 上下文 / msgs 按发起顺序写**：结果先落到按 index 预分配的槽位，
+//     `Wait()` 之后在**主 goroutine** 里按发起顺序消费——顺序由发起决定，不由完成决定。
+//  3. **goroutine 内只调 invokeTool**：不发事件、不写 parts、不写上下文。
+//     这条是硬约束：`sseEvent` 直接写 http.ResponseWriter（不可并发使用），
+//     本函数的所有事件都由主 goroutine 发（start 先按序发完，end 在 Wait 后按序发），
+//     所以不需要给 sseEvent 加锁。若将来某个工具自身要发事件，必须先把事件队列化回主
+//     goroutine，或改成每轮一个写入器——不要直接在工作 goroutine 里发。
+//
+// 返回值交给调用方按序 append（保持与串行路径完全一致的顺序语义）。
+func (s *Service) runReadToolsParallel(w http.ResponseWriter, flusher http.Flusher, ctx context.Context,
+	userID, sessionID int64, turnID string, calls []llm.ToolCall, mediaRefs []any) ([]map[string]any, []llm.Message) {
+	outcomes := make([]readToolOutcome, len(calls))
+	// 状态条按发起顺序先发（此时还没启动任何工具，顺序确定）。
+	for _, call := range calls {
+		s.sseEvent(w, flusher, "tool.start", map[string]any{"call_id": call.ID, "label": s.progressLabel(call.Function.Name)})
+	}
+	var wg sync.WaitGroup
+	for i := range calls {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			out, err := s.invokeTool(ctx, userID, sessionID, turnID, calls[i], mediaRefs)
+			outcomes[i] = readToolOutcome{out: out, err: err}
+		}(i)
+	}
+	wg.Wait()
+
+	toolParts := make([]map[string]any, 0, len(calls))
+	toolMsgs := make([]llm.Message, 0, len(calls))
+	for i, call := range calls {
+		label := s.progressLabel(call.Function.Name)
+		oc := outcomes[i]
+		if oc.err != nil {
+			// 与串行路径同款：把原因回填给模型，本轮继续（模型可修正重试）；用户不见卡。
+			errText := "工具调用失败: " + oc.err.Error()
+			s.sseEvent(w, flusher, "tool.end", map[string]any{"call_id": call.ID, "status": "failed", "text": oc.err.Error()})
+			toolParts = append(toolParts, map[string]any{
+				"type": "tool", "call_id": call.ID, "label": label, "status": "failed", "text": "没成功",
+			})
+			toolMsgs = append(toolMsgs, llm.Message{Role: "tool", Content: errText, ToolCallID: call.ID})
+			s.appendToolPair(ctx, userID, sessionID, turnID, call, errText)
+			continue
+		}
+		out := oc.out
+		// 只把非写工具送进并行段，理论上读工具不会产出提案；真出现即注册表分类与
+		// 工具行为不一致——此时**不能静默当读结果处理**（会丢掉确认卡），
+		// 按失败步骤回填给模型并留日志，让不一致显形。
+		if out.Proposal != nil {
+			slog.Warn("读工具返回了提案：注册表 IsWrite 分类与工具行为不一致",
+				"tool", call.Function.Name, "call_id", call.ID)
+			errText := "工具调用失败: 该工具误配为读工具却要出确认卡"
+			s.sseEvent(w, flusher, "tool.end", map[string]any{"call_id": call.ID, "status": "failed", "text": errText})
+			toolParts = append(toolParts, map[string]any{
+				"type": "tool", "call_id": call.ID, "label": label, "status": "failed", "text": "没成功",
+			})
+			toolMsgs = append(toolMsgs, llm.Message{Role: "tool", Content: errText, ToolCallID: call.ID})
+			s.appendToolPair(ctx, userID, sessionID, turnID, call, errText)
+			continue
+		}
+		s.sseEvent(w, flusher, "tool.end", map[string]any{"call_id": call.ID, "status": "ok",
+			"text": out.UserText, "ui": out.UI})
+		tp := map[string]any{
+			"type": "tool", "call_id": call.ID, "label": label, "status": "ok", "text": out.UserText,
+		}
+		if out.UI != nil {
+			tp["ui"] = out.UI
+		}
+		toolParts = append(toolParts, tp)
+		s.appendToolPair(ctx, userID, sessionID, turnID, call, out.ModelText)
+		toolMsgs = append(toolMsgs, llm.Message{Role: "tool", Content: out.ModelText, ToolCallID: call.ID})
+	}
+	return toolParts, toolMsgs
+}
+
 // progressLabel 工具状态条人话标签（注册表 ProgressLabel）；未知工具回退通用文案。
 func (s *Service) progressLabel(toolName string) string {
 	if t, ok := s.reg[toolName]; ok && t.ProgressLabel != "" {
@@ -1001,7 +1103,14 @@ func (s *Service) invokeTool(ctx context.Context, userID, sessionID int64, turnI
 	}
 	if tool.IsWrite {
 		// 出卡审计：result=pending（「AI 提议了什么但未被确认」也可追溯）
-		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditPending, latencyMs)
+		// 摘要取自**出卡归一化后**的参数：source 句柄在这里已展开成具体 ids，
+		// 审计才能记到「kind + 条数 + 前 3 个 id」；digest 仍是模型原始入参。
+		// 提案可能为 nil（写工具异常返回），此时传 nil 由审计退回原始入参摘要，不解引用。
+		var proposalParams map[string]any
+		if out.Proposal != nil {
+			proposalParams = out.Proposal.Params
+		}
+		s.deps.AuditWithLatencyParams(ctx, userID, tool.Name, call.Function.Arguments, proposalParams, tools.AuditPending, latencyMs)
 	} else {
 		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditSuccess, latencyMs)
 	}

@@ -223,7 +223,7 @@ sequenceDiagram
 - `turn.end.stop_reason` 取 `answer` / `proposal` / `budget` / `error`（用户点停止走请求取消，不发 `turn.end`，见「停止与断连」）
 - `thinking.delta` 与 `answer.delta` 都是**真增量**（逐字/逐块），客户端累加渲染
 - 增量只走 SSE，**轮末才落一条完整消息**（落库与流式解耦，中途断连不产生半截行）
-- 并行读工具的 `tool.start` / `tool.end` 会交错，客户端靠 `call_id` 归位
+- 并行读工具的 `tool.start` / `tool.end` 会交错，客户端靠 `call_id` 归位。**服务端侧的口径**：并行批次的事件**只由主 goroutine 发出**——先按发起顺序发完该批全部 `tool.start`，`Wait()` 之后再按完成顺序发各自的 `tool.end`；工作 goroutine 内只执行工具、不写 SSE（`http.ResponseWriter` 不可并发使用）。因此 `tool.end` 之间会乱序，客户端务必按 `call_id` 归位
 - **零带内信令**：不用 emoji 前缀、不用特殊标记在正文字符串里传状态，一切状态走事件与字段
 
 ### 3.2 接口清单
@@ -301,7 +301,7 @@ UI 块载荷（缩略图 URL、网格结构）**永不进模型上下文**——
 |:---|:---|
 | 调度单位 | 一轮（turn）= 一次用户消息触发的完整往返，可含多次模型调用与多次工具执行；`turn_id` 贯穿事件、落库与回滚 |
 | 预算三维 | 轮次上限 8、工具调用总数上限 16、整轮墙钟 90s。任一触顶即进入收尾，**不静默结束**。（**初始值**：无实测依据，上线后按观测调整） |
-| 读工具并行 | 同一次模型响应里的多个 tool_calls：读工具（`!IsWrite`）用 errgroup 并行执行；写工具（提案）串行，且一旦产出提案即停止本轮（一轮只出一张卡，媒体也只归首张卡） |
+| 读工具并行 | 同一次模型响应里的多个 tool_calls：读工具（`!IsWrite`）**并行执行**（用标准库 `sync.WaitGroup`，不为此新增第三方依赖）；写工具（提案）串行，且一旦产出提案即停止本轮（一轮只出一张卡，媒体也只归首张卡）。并行只覆盖「首个写工具之前」的那段读工具——出提案会中止其后所有 call，把提案之后的读工具也跑掉就是执行了不该执行的调用 |
 | 收尾义务 | 预算耗尽必须再补一次**不带工具**的调用，让模型基于已获得的信息作答并说明哪些没完成；该调用也失败才回退固定文案。`stop_reason=budget` |
 | tool_calls 增量累积 | 流式下工具参数分片到达，形状各协议不同：openai-chat `delta.tool_calls[i]` 带 index、arguments 按 index 拼字符串；openai-responses `response.function_call_arguments.delta`；anthropic `content_block_delta.input_json_delta.partial_json`（按 content_block 序号归组）；gemini `parts[].functionCall` 分片。**累积在 adapter 内部完成，Agent 层只看到完整的 tool_call**（协议差异不外泄） |
 | 分片跨帧 | arguments 的 JSON 片段可能跨 SSE 帧截断：累积器只拼字符串、不中途解析，到 `finish_reason` / `content_block_stop` 才 `json.Unmarshal` |

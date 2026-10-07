@@ -551,19 +551,21 @@ type ContextRow struct {
 }
 
 // AppendContext 追加一行上下文（seq 取当前最大+1）。
+//
+// seq 用**单条 INSERT … SELECT** 就地算：SELECT 再 INSERT 是两条语句，
+// 并发写入会各自读到同一个 MAX(seq) 从而写入**重复 seq**（索引非 UNIQUE，不报错），
+// 而回放按 `ORDER BY seq` —— seq 相同则顺序不定，会打乱「assistant 配对行先于 tool 行」。
+// 单语句在 SQLite 内天然原子。
 func (d *DB) AppendContext(ctx context.Context, userID, sessionID int64, turnID, role, content, toolCalls, toolCallID, toolName string, tokens int, kind string, pinned bool) error {
 	var pinnedInt int
 	if pinned {
 		pinnedInt = 1
 	}
-	var seq int64
-	if err := d.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM chat_context WHERE session_id = ?`, sessionID).Scan(&seq); err != nil {
-		return err
-	}
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO chat_context (user_id, session_id, turn_id, seq, role, content, tool_calls_json, tool_call_id, tool_name, tokens, kind, pinned)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		userID, sessionID, turnID, seq, role, content, toolCalls, toolCallID, toolName, tokens, kind, pinnedInt)
+		 SELECT ?, ?, ?, COALESCE(MAX(seq), 0) + 1, ?, ?, ?, ?, ?, ?, ?, ?
+		 FROM chat_context WHERE session_id = ?`,
+		userID, sessionID, turnID, role, content, toolCalls, toolCallID, toolName, tokens, kind, pinnedInt, sessionID)
 	return err
 }
 
