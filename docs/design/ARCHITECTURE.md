@@ -110,6 +110,7 @@ flowchart TB
 | 音频时长 | 上传时解析容器头取 duration（mp3/m4a/wav 自实现，不引入 ffmpeg）；解析失败不阻塞上传、duration 留空 |
 | 视频时长 | 上传时解析容器头取 duration（mp4/mov 读 `moov/mvhd`，与 m4a 同一个 box；webm 读 `Segment/Info` 的 `Duration` × `TimecodeScale`）；**同样零 ffmpeg**，解析失败不阻塞上传、duration 留空，缩略图上的时长角标随之不显示。解析按容器的声明长度逐 box / 逐元素步进，不全文搜特征字节——媒体数据区里出现同名四字节会把随机数据读成时长 |
 | 格式与大小 | 照片 jpg/png/webp；视频 mp4/mov/webm；音频 mp3/m4a/wav；HEIC 首版不支持（上传时明确拒绝并提示）；单文件默认软限 500MB（`MEDIA_MAX_MB` 可配） |
+| 数量上限的单一数据源 | 「单条最多几个媒体」由服务端与 APP **共用同一份** `server/internal/limits/media.json`（Go `go:embed`、APP 直接 import）——服务端校验与发布页/聊天的选择器提示同源，不会各写一份而漂移（历史上后端 18、前端 9，互不相认） |
 | 存储布局 | 数据目录内 `media/{yyyy}/{mm}/{uuid}.{ext}` 主文件 + `thumbs/` 平行缩略图 + `avatars/` 头像（见「部署形态与产物」）。**文件本体在文件系统，数据库只存相对路径** |
 | 无主文件通道 | 头像走独立通道（`SaveAvatar` 直接写 `avatars/{yyyy}/{mm}/`，路径存 `users.avatar_path`），**不进媒体表**——头像无缩略图变体、无相册归属，且是「单用户覆盖」语义，与媒体的追加式记录不同；签名命名空间与媒体隔离（`avatar:<userID>` vs `media:<id>:<variant>`）。后台维护入口见「后台管理页面实现」空间管理 |
 | 物理删除 | 回收站永久清除时同步删除主文件与缩略图（规则见「回收站机制」）；`Delete()` 带数据目录越界保护，拒绝删除目录外的文件 |
@@ -335,7 +336,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | AlbumItem | (album_id, media_id), added_by, added_at + **UNIQUE(media_id)** | 相册是媒体池之上的组织视图；UNIQUE(media_id) 承载「一文件一相册」全相册唯一约束 |
 | MapPoint | id, name, lat, lng, city?, visit_date?, description?, source(post/manual/ai), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `city` 写时判定落库（见「地图服务」）；同名地点复用同一点位，坐标以先创建者为准；无合并链、无可见性开关。`source` 三值的判据是**发起通道**：REST 发布动态时随地点自动建点为 `post`，REST 手动建点为 `manual`，AI 通道建点（含动态带地点与口语报点）为 `ai` |
 | MapSource | id, type(public/tianditu), url_template, tianditu_key?, tianditu_layer?, enabled, created_at | 瓦片源配置（admin 域，无用户归属）：部分唯一索引保证**至多一个使用中**；`tianditu_key` 加密存储、永不下发 APP；机制见「地图服务」 |
-| Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历；lunar=农历日期（如 `1996-05-15` = 农历 1996 年五月十五）。**不存 lunar_month/lunar_day 冗余**，闰月语义由 `is_leap` 承载；倒计时/排序/下一次公历由服务端即时推算（`internal/lunar`，mock 与后端同一离线算法）；农历换算为 1900–2100 社区表驱动，不引入外部天文数据做「权威校准」，改以不变量测试与 Go/TS 双表逐项一致性护栏防漂移 |
+| Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历；lunar=农历日期（如 `1996-05-15` = 农历 1996 年五月十五）。**不存 lunar_month/lunar_day 冗余**，闰月语义由 `is_leap` 承载；倒计时/排序/下一次公历由服务端即时推算（`internal/lunar`，mock 与后端同一离线算法）；农历换算为 1900–2100 社区表驱动，不引入外部天文数据做「权威校准」；周期表是**单一数据源**（`server/internal/lunar/lunar_table.json`，Go `go:embed`、APP 直接 import 同一份），故两侧不可能漂移，不再需要「双表逐项比对」的测试，改以不变量测试与两语言各自的黄金用例护栏。**闰月只由 `is_leap` 决定**，不做「平月查不到就退到闰月」的兜底——兜底会让同一纪念日一年命中两次（先平月、再闰月），也让 `is_leap` 失去意义 |
 
 ### 8.3 通知与回收站
 

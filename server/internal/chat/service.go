@@ -24,6 +24,7 @@ import (
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/limits"
 	"github.com/bookandmusic/love-life/server/internal/llm"
 	"github.com/bookandmusic/love-life/server/internal/store"
 	"github.com/bookandmusic/love-life/server/internal/textutil"
@@ -39,7 +40,6 @@ const (
 	MaxToolCalls   = 16
 	maxToolCalls   = MaxToolCalls
 	turnWallBudget = 90 * time.Second // 整轮墙钟预算：触顶进入收尾
-	MaxChatMedia   = 9                // 单条聊天消息媒体引用上限（对齐发动态上限 9，见 api.maxPostMedia）
 	// MaxChatMediaBytes 单条消息附件的元数据体积上限：8MB（按客户端上报的 size 累加）。
 	// 附件在「确认执行」前不离开设备，服务端只收到元数据——这里防的是「一次带上几十个大文件」
 	// 这种明显不合理的批量（PRODUCT「发布动态」的整批把关在确认阶段还有一道真实校验）。
@@ -47,6 +47,9 @@ const (
 	// proposalTTL 提案有效期（秒）：单次有效 + 15 分钟过期。
 	proposalTTLSeconds = 900
 )
+
+// MaxChatMedia 单条聊天消息媒体引用上限（与发动态同源；var 因值来自运行时解析的 JSON）。
+var MaxChatMedia = limits.MaxMediaPerChatMessage
 
 type Service struct {
 	db   *store.DB

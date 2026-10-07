@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { MapPin, Send, ImagePlus, Music, Play, X, Search } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
+import MEDIA_LIMITS from '../../../server/internal/limits/media.json' with { type: 'json' }
 import AppToast from '../components/AppToast.vue'
 import PageLayout from '../components/PageLayout.vue'
 import Sheet from '../components/Sheet.vue'
@@ -17,7 +18,8 @@ const moodPresets = ['温馨', '开心', '想念', '浪漫', '平静']
 const customMood = ref('')
 
 // 媒体（可选）：方格网格预览，最后一个格子是「添加 +」；可追加选择，设有上限
-const MAX_FILES = 9
+// 上限与服务端同源（见 ARCHITECTURE「媒体上传管线」的数量上限行）
+const MAX_FILES = MEDIA_LIMITS.maxMediaPerPost
 const files = ref<File[]>([])
 const previews = ref<{ url: string; kind: string }[]>([])
 const error = ref('')

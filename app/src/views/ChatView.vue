@@ -7,6 +7,7 @@ import PageLayout from '../components/PageLayout.vue'
 import { useAuth } from '../stores/auth'
 import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
 import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
+import MEDIA_LIMITS from '../../../server/internal/limits/media.json' with { type: 'json' }
 import NavActions from '../components/NavActions.vue'
 import MessageList from '../components/chat/MessageList.vue'
 import CardActions from '../components/chat/CardActions.vue'
@@ -14,7 +15,7 @@ import InputBar from '../components/chat/InputBar.vue'
 import SessionDrawer from '../components/chat/SessionDrawer.vue'
 
 // 单次发送媒体上限（E7 保留）：防误传；与需求「连续追加」不冲突——未达上限前可继续追加选择
-const MAX_MEDIA = 9 // 与 PublishView 对齐
+const MAX_MEDIA = MEDIA_LIMITS.maxMediaPerChatMessage // 与服务端同源
 
 import type { AttachmentRef, Bubble, CardItem, ChatSession, MediaView, PickedMedia, ProposalPreview, QuoteRef, UIBlock, UIRecord } from '../types/chat'
 import MediaViewer from '../components/MediaViewer.vue'

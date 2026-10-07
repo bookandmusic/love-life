@@ -12,14 +12,15 @@ import (
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/geo"
+	"github.com/bookandmusic/love-life/server/internal/limits"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
 	"github.com/bookandmusic/love-life/server/internal/textutil"
 )
 
-// maxPostMedia 单条动态的媒体文件数上限（与 APP 发布页 MAX_FILES 同口径：3×3 方格铺满一屏）。
-const maxPostMedia = 9
+// maxPostMedia 单条动态的媒体文件数上限（与 APP 同源，见 ARCHITECTURE「媒体上传管线」）。
+var maxPostMedia = limits.MaxMediaPerPost
 
 type postsAPI struct {
 	db *store.DB

@@ -233,12 +233,11 @@ func TestListPostsMemories(t *testing.T) {
 	}
 }
 
-// TestPostMediaCapMatchesApp：单条动态媒体数上限与 APP 发布页 MAX_FILES 同口径。
-// 历史上后端是 18、前端是 9（互不相认），这条守卫把两者钉在一起——改一处必须改另一处。
-func TestPostMediaCapMatchesApp(t *testing.T) {
-	if maxPostMedia != 9 {
-		t.Fatalf("maxPostMedia = %d，APP 发布页是 9：两侧必须同口径（改上限要同时改 app/src/views/PublishView.vue 的 MAX_FILES）", maxPostMedia)
-	}
+// TestPostMediaCap 单条动态媒体数上限的**行为**：恰好上限放行、超一个拒绝。
+//
+// 上限值本身不再在此断言：它已是单一数据源（internal/limits/media.json，Go embed / APP import
+// 同一份），两侧不可能各写一份；这里只守服务端真的按它执行。
+func TestPostMediaCap(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 	toks := make([]string, 0, maxPostMedia+1)
 	for i := 0; i <= maxPostMedia; i++ {

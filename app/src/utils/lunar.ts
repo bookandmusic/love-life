@@ -1,5 +1,6 @@
 // 内置离线农历换算（无第三方依赖，社区通用 1900–2100 数据表 + 经典算法）。
-// 说明：首版表驱动实现，2026-08 起入库；后续如需更高精度再扩充该表（当前覆盖 2000–2049 常用区间）。
+// 说明：首版表驱动实现，2026-08 起入库；周期表是**单一数据源**（见下方 import），
+// 与 Go 侧同源同表，改表只需改一份。
 //
 // 周期编码（每农历年的整型 info）：
 //   低 4 位       = 闰月（1-12；0 表示无闰）
@@ -7,29 +8,11 @@
 //   0x10000>>m    = 第 m 个月为大月(30 天)（m=1..12）
 //   其余月份为小月(29 天)
 
-const LUNAR_INFO = [
-  0x04bd8, 0x04ae0, 0x0a570, 0x054d5, 0x0d260, 0x0d950, 0x16554, 0x056a0, 0x09ad0, 0x055d2, // 1900
-  0x04ae0, 0x0a5b6, 0x0a4d0, 0x0d250, 0x1d255, 0x0b540, 0x0d6a0, 0x0ada2, 0x095b0, 0x14977, // 1910
-  0x04970, 0x0a4b0, 0x0b4b5, 0x06a50, 0x06d40, 0x1ab54, 0x02b60, 0x09570, 0x052f2, 0x04970, // 1920
-  0x06566, 0x0d4a0, 0x0ea50, 0x06e95, 0x05ad0, 0x02b60, 0x186e3, 0x092e0, 0x1c8d7, 0x0c950, // 1930
-  0x0d4a0, 0x1d8a6, 0x0b550, 0x056a0, 0x1a5b4, 0x025d0, 0x092d0, 0x0d2b2, 0x0a950, 0x0b557, // 1940
-  0x06ca0, 0x0b550, 0x15355, 0x04da0, 0x0a5b0, 0x14573, 0x052b0, 0x0a9a8, 0x0e950, 0x06aa0, // 1950
-  0x0aea6, 0x0ab50, 0x04b60, 0x0aae4, 0x0a570, 0x05260, 0x0f263, 0x0d950, 0x05b57, 0x056a0, // 1960
-  0x096d0, 0x04dd5, 0x04ad0, 0x0a4d0, 0x0d4d4, 0x0d250, 0x0d558, 0x0b540, 0x0b6a0, 0x195a6, // 1970
-  0x095b0, 0x049b0, 0x0a974, 0x0a4b0, 0x0b27a, 0x06a50, 0x06d40, 0x0af46, 0x0ab60, 0x09570, // 1980
-  0x04af5, 0x04970, 0x064b0, 0x074a3, 0x0ea50, 0x06b58, 0x055c0, 0x0ab60, 0x096d5, 0x092e0, // 1990
-  0x0c960, 0x0d954, 0x0d4a0, 0x0da50, 0x07552, 0x056a0, 0x0abb7, 0x025d0, 0x092d0, 0x0c5b5, // 2000
-  0x0a950, 0x0b4a0, 0x0baa4, 0x0ad50, 0x055d9, 0x04ba0, 0x0a5b0, 0x15176, 0x052b0, 0x0a930, // 2010
-  0x07954, 0x06aa0, 0x0ad50, 0x05b52, 0x04b60, 0x0a6e6, 0x0a4e0, 0x0d260, 0x0ea65, 0x0d530, // 2020
-  0x05aa0, 0x076a3, 0x096d0, 0x04afb, 0x04ad0, 0x0a4d0, 0x1d0b6, 0x0d250, 0x0d520, 0x0dd45, // 2030
-  0x0b5a0, 0x056d0, 0x055b2, 0x049b0, 0x0a577, 0x0a4b0, 0x0aa50, 0x1b255, 0x06d20, 0x0ada0, // 2040
-  0x14b63, 0x09370, 0x049f8, 0x04970, 0x064b0, 0x168a6, 0x0ea50, 0x06b20, 0x1a6c4, 0x0aae0, // 2050
-  0x092e0, 0x0d2e3, 0x0c960, 0x0d557, 0x0d4a0, 0x0da50, 0x05d55, 0x056a0, 0x0a6d0, 0x055d4, // 2060
-  0x052d0, 0x0a9b8, 0x0a950, 0x0b4a0, 0x0b6a6, 0x0ad50, 0x055a0, 0x0aba4, 0x0a5b0, 0x052b0, // 2070
-  0x0b273, 0x06930, 0x07337, 0x06aa0, 0x0ad50, 0x14b55, 0x04b60, 0x0a570, 0x054e4, 0x0d160, // 2080
-  0x0e968, 0x0d520, 0x0daa0, 0x16aa6, 0x056d0, 0x04ae0, 0x0a9d4, 0x0a2d0, 0x0d150, 0x0f252, // 2090
-  0x0d520, // 2100
-]
+// 周期表是**单一数据源**：与 Go 侧（server/internal/lunar/lunar.go）embed 的是同一份 JSON，
+// 故两侧不可能漂移（历史上是两份拷贝 + 一个读源码比对的测试，已废弃）。
+import LUNAR_TABLE from '../../../server/internal/lunar/lunar_table.json' with { type: 'json' }
+
+const LUNAR_INFO: number[] = LUNAR_TABLE
 
 const BASE_YEAR = 1900
 
@@ -82,21 +65,22 @@ function lunarToSolar(y: number, m: number, d: number, isLeap = false): Date | n
 export function nextLunarOccurrence(m: number, d: number, isLeap = false, todayISO?: string): string | null {
   const today = todayISO ? new Date(todayISO + 'T00:00:00') : new Date()
   const startYear = today.getFullYear()
-  // isLeap=false 时平月优先、闰月兜底（老行为：mock/存量无闰标记数据按此解读）
-  const leaps = isLeap ? [true] : [false, true]
+  // 闰月**只由 isLeap 决定**，不做「平月查不到就退到闰月」的兜底：
+  //   - 兜底会让同一个纪念日在同一年内命中两次（先平月、再闰月），一年响两次；
+  //   - 也会让 isLeap 失去意义（闰月年里 leap=false 与 leap=true 返回同一天），
+  //     而用户在滚轮里选没选「闰X月」是明确的（闰月是独立选项）。
+  // 与 Go 侧 NextLunarOccurrence 同口径（ARCHITECTURE「数据模型」Anniversary：闰月语义由 is_leap 承载）。
   for (let y = startYear; y <= BASE_YEAR + LUNAR_INFO.length - 1; y++) {
-    for (const leap of leaps) {
-      if (leap && leapMonth(y) !== m) continue
-      const dt = lunarToSolar(y, m, d, leap)
-      if (!dt) continue
-      // 与“今天”比较（忽略时分）；用换算结果自身的公历年（冬月/腊月会落到次年 1 月，取农历年 y 会差一年）
-      const cmp = new Date(today.getFullYear(), today.getMonth(), today.getDate())
-      if (dt >= cmp) {
-        const Y = dt.getFullYear()
-        const M = String(dt.getMonth() + 1).padStart(2, '0')
-        const D = String(dt.getDate()).padStart(2, '0')
-        return `${Y}-${M}-${D}`
-      }
+    if (isLeap && leapMonth(y) !== m) continue
+    const dt = lunarToSolar(y, m, d, isLeap)
+    if (!dt) continue
+    // 与“今天”比较（忽略时分）；用换算结果自身的公历年（冬月/腊月会落到次年 1 月，取农历年 y 会差一年）
+    const cmp = new Date(today.getFullYear(), today.getMonth(), today.getDate())
+    if (dt >= cmp) {
+      const Y = dt.getFullYear()
+      const M = String(dt.getMonth() + 1).padStart(2, '0')
+      const D = String(dt.getDate()).padStart(2, '0')
+      return `${Y}-${M}-${D}`
     }
   }
   return null

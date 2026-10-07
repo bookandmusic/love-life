@@ -75,7 +75,7 @@ verify-server:
 	cd $(SERVER_DIR) && $(GO_ENV) go build ./... && $(GO_ENV) go test ./...
 
 verify-app:
-	cd $(APP_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0
+	cd $(APP_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0 && npm test
 
 verify-admin:
 	cd $(ADMIN_DIR) && npx vue-tsc --noEmit

@@ -8,7 +8,7 @@ const DB_VERSION = 1
 // 淘汰最旧的（不是访问时间——离线读缓存会刷新访问序，那会让常用会话永远不淘汰）。
 // PRODUCT「设置 · 本机存储与缓存」：本地缓存自动管理（容量上限 + 按使用情况自动淘汰旧内容），
 // 设置页不提供手动清理入口。
-const MAX_CACHED_SESSIONS = 30
+export const MAX_CACHED_SESSIONS = 30
 
 // 缓存条目：写入时间用于淘汰；旧版本直接存 history 本身，读取时按形状兼容。
 interface CacheEntry {
