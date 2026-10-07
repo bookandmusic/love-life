@@ -140,7 +140,7 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 			onDelta(Delta{Content: m.Content})
 		}
 		for i := range m.ToolCalls {
-			onDelta(Delta{ToolCall: &ToolCallDelta{Index: i, ID: m.ToolCalls[i].ID,
+			onDelta(Delta{ToolCall: &ToolCallDelta{ID: m.ToolCalls[i].ID,
 				Name: m.ToolCalls[i].Function.Name, Arguments: m.ToolCalls[i].Function.Arguments}})
 		}
 		u := out.Usage
@@ -150,6 +150,16 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 
 	finish := ""
 	var usage *Usage
+	// 工具参数分片在**本 adapter 内**按 index 累积（AI模式设计「预算与并行」· tool_calls 增量累积：
+	// 「累积在 adapter 内部完成，Agent 层只看到完整的 tool_call」，协议差异不外泄）。
+	// 故这里不发半截 ToolCall，扫完整个流后按 index 发起顺序各发一次完整调用。
+	type pendingCall struct {
+		id   string
+		name string
+		args strings.Builder
+	}
+	pending := map[int]*pendingCall{}
+	var pendingOrder []int
 	scanner := bufio.NewScanner(res.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -175,9 +185,20 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 		c := frame.Choices[0]
 		d := Delta{Reasoning: c.Delta.ReasoningContent, Content: c.Delta.Content}
 		for _, tc := range c.Delta.ToolCalls {
-			d.ToolCall = &ToolCallDelta{Index: tc.Index, ID: tc.ID, Name: tc.Function.Name, Arguments: tc.Function.Arguments}
-			onDelta(d)
-			d.ToolCall = nil
+			p, ok := pending[tc.Index]
+			if !ok {
+				p = &pendingCall{}
+				pending[tc.Index] = p
+				pendingOrder = append(pendingOrder, tc.Index)
+			}
+			// 首个分片可能就带 ID / 名称与前导参数片段，逐个覆盖与拼接都在这里做完
+			if tc.ID != "" {
+				p.id = tc.ID
+			}
+			if tc.Function.Name != "" {
+				p.name = tc.Function.Name
+			}
+			p.args.WriteString(tc.Function.Arguments)
 		}
 		if d.Reasoning != "" || d.Content != "" {
 			onDelta(d)
@@ -188,6 +209,11 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 	}
 	if err := scanner.Err(); err != nil {
 		return "", err
+	}
+	// 整流通了再各发一次完整 tool_call（按 index 发起顺序，上层据 Index/顺序归位）
+	for _, i := range pendingOrder {
+		p := pending[i]
+		onDelta(Delta{ToolCall: &ToolCallDelta{ID: p.id, Name: p.name, Arguments: p.args.String()}})
 	}
 	if usage != nil {
 		onDelta(Delta{Usage: usage})

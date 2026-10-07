@@ -40,12 +40,14 @@ type Delta struct {
 	Usage *Usage
 }
 
-// ToolCallDelta 流式工具调用分片：Index 用于跨帧归组（同一调用的 arguments 分片拼接）。
+// ToolCallDelta 一次平台工具调用：**各 adapter 已在内部把分片按协议归组拼好**
+// （AI模式设计「预算与并行」· tool_calls 增量累积：「累积在 adapter 内部完成，
+// Agent 层只看到完整的 tool_call」），故这里给到上层的已是完整调用，不含协议特有的
+// 分片序号——调用顺序由下发顺序表达。
 type ToolCallDelta struct {
-	Index     int
 	ID        string
 	Name      string
-	Arguments string // 增量片段（调用方按 index 累积，finish 后才解析）
+	Arguments string // 已拼全的参数 JSON（解析在上层执行）
 }
 
 // selectAdapter 按 api_type 选 adapter。所有协议 adapter 均已实现。

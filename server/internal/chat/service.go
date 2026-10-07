@@ -711,11 +711,14 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		chain = rest
-		// 流式重组：chatCallStream 只带 usage，正文/思考/工具调用从增量重组
+		// 流式重组：chatCallStream 只带 usage，正文/思考从增量重组。
+		//
+		// 工具调用**不在这里拼**——各 adapter 已把分片按协议归组拼好，只发完整调用
+		// （AI模式设计「预算与并行」· tool_calls 增量累积：「累积在 adapter 内部完成，
+		// Agent 层只看到完整的 tool_call」）。这里按增量到达顺序原样收集即可。
 		if len(res.Choices) == 0 {
 			var reasoning, content strings.Builder
-			toolCalls := map[int]*llm.ToolCall{}
-			var order []int
+			var toolCalls []llm.ToolCall
 			for _, d := range lastDeltas {
 				if d.Reasoning != "" {
 					reasoning.WriteString(d.Reasoning)
@@ -724,28 +727,13 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 					content.WriteString(d.Content)
 				}
 				if d.ToolCall != nil {
-					tc, ok := toolCalls[d.ToolCall.Index]
-					if !ok {
-						tc = &llm.ToolCall{ID: d.ToolCall.ID, Type: "function"}
-						tc.Function.Name = d.ToolCall.Name
-						tc.Function.Arguments = d.ToolCall.Arguments // 首个分片的参数不可丢
-						toolCalls[d.ToolCall.Index] = tc
-						order = append(order, d.ToolCall.Index)
-						continue
-					}
-					if d.ToolCall.ID != "" {
-						tc.ID = d.ToolCall.ID
-					}
-					if d.ToolCall.Name != "" {
-						tc.Function.Name = d.ToolCall.Name
-					}
-					tc.Function.Arguments += d.ToolCall.Arguments
+					tc := llm.ToolCall{ID: d.ToolCall.ID, Type: "function"}
+					tc.Function.Name = d.ToolCall.Name
+					tc.Function.Arguments = d.ToolCall.Arguments
+					toolCalls = append(toolCalls, tc)
 				}
 			}
-			cm := llm.ChoiceMessage{Content: content.String(), Reasoning: reasoning.String()}
-			for _, i := range order {
-				cm.ToolCalls = append(cm.ToolCalls, *toolCalls[i])
-			}
+			cm := llm.ChoiceMessage{Content: content.String(), Reasoning: reasoning.String(), ToolCalls: toolCalls}
 			res.Choices = []llm.Choice{{Message: cm, FinishReason: "stop"}}
 		}
 		choice := res.Choices[0]

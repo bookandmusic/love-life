@@ -28,7 +28,7 @@
 
 - **Tool Registry**（内置预定义，管理后台可启停，定义见「工具契约」）
 - **安全层**：用户身份校验（JWT）· 操作确认流程（发起人确认）· 操作审计日志 · 已删除内容过滤（回收站数据对 AI 不可见）
-- **与模型网关交互**：组装 System Prompt + Tools → 流式调用 → 累积并执行 tool_call → 结果回填 → 语义事件推送客户端
+- **与模型网关交互**：组装 System Prompt + Tools → 流式调用 → 接收 adapter 已归组好的完整 tool_call 并执行 → 结果回填 → 语义事件推送客户端
 
 ### 1.3 配置中心与 Prompt 拼装
 
@@ -203,7 +203,7 @@ sequenceDiagram
     M-->>S: reasoning 增量
     S-->>C: SSE thinking.delta ×N（逐字）
     M-->>S: tool_calls 增量分片
-    S->>S: 按 index 累积 arguments；读工具并行执行
+    S->>S: adapter 内按 index 累积 arguments；读工具并行执行
     S-->>C: SSE thinking.end → tool.start {call_id,label} → tool.end {call_id,status,text,ui}
     M-->>S: tool_call: propose_album（source 引用 r_M）
     S->>S: 展开 + kind 校验 + 子集不变量（不过则驳回回填，同轮重试）

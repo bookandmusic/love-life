@@ -245,7 +245,7 @@ func (self geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model
 		onDelta(Delta{Content: m.Content})
 	}
 	for i := range m.ToolCalls {
-		onDelta(Delta{ToolCall: &ToolCallDelta{Index: i, ID: m.ToolCalls[i].ID, Name: m.ToolCalls[i].Function.Name,
+		onDelta(Delta{ToolCall: &ToolCallDelta{ID: m.ToolCalls[i].ID, Name: m.ToolCalls[i].Function.Name,
 			Arguments: m.ToolCalls[i].Function.Arguments}})
 	}
 	u := out.Usage
