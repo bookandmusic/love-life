@@ -1,11 +1,13 @@
 import { http } from '../lib/http'
 
 /**
- * AI 供应商配置（协议化）。数据源由 VITE_API_BASE_URL 指向的服务决定。
- * 契约（DESIGN §4.3/§9）：
- * - 供应商 = 协议类型 + 地址 + 秘钥（只写不读）+ 模型列表 + 默认模型
- * - 列表有序：调用从第一个开始，失败依次向下（排序即故障切换链）
+ * AI 供应商与模型链（按类型分链）。数据源由 VITE_API_BASE_URL 指向的服务决定。
+ * 契约：
+ * - 供应商 = 协议类型 + 地址 + 秘钥（只写不读）
+ * - 模型条目按 kind 分两条链（chat / embedding），链内顺序 = 故障切换顺序；
+ *   用哪个模型、按什么顺序重试，全部由链序决定（供应商本身无默认模型）
  * - 模型参数（temperature/max_tokens）可选，null = 调用时不传该参数
+ * - 嵌入链只允许 openai-chat 供应商（服务端校验）
  */
 
 export type ApiProtocol = 'openai-chat' | 'openai-responses' | 'anthropic' | 'gemini'
@@ -21,8 +23,11 @@ export function protocolLabel(type: ApiProtocol): string {
   return API_PROTOCOLS.find((p) => p.value === type)?.label ?? type
 }
 
+export type ModelKind = 'chat' | 'embedding'
+
 export interface ModelEntry {
   id: string
+  kind: ModelKind
   /** null = 未设置，调用该模型时不传此参数（用供应商默认值） */
   temperature: number | null
   max_tokens: number | null
@@ -35,8 +40,6 @@ export interface AiProvider {
   base_url: string
   has_key: boolean
   models: ModelEntry[]
-  /** models 中某项的 id */
-  default_model: string
 }
 
 export interface ProviderPayload {
@@ -44,26 +47,52 @@ export interface ProviderPayload {
   name?: string
   base_url: string
   models?: ModelEntry[]
-  default_model?: string
 }
 
-/**
- * 语义检索（嵌入模型）配置（DESIGN §10.3）：复用某个 OpenAI Chat 协议供应商的地址与 Key
- * 调用 /embeddings。provider_id = 0 表示关闭语义检索（检索回落关键词）。
- */
-export interface EmbeddingConfig {
+/** 模型链上的一行（链序 = 数组顺序）。 */
+export interface ModelRow {
+  id: number
   provider_id: number
-  model: string
+  provider_name: string
+  api_type: ApiProtocol
+  kind: ModelKind
+  model_id: string
+  temperature: number | null
+  max_tokens: number | null
 }
 
-export function getEmbeddingConfig(): Promise<EmbeddingConfig> {
-  return http<EmbeddingConfig>('/api/v1/admin/embedding-config')
+export type ModelChains = { chat: ModelRow[]; embedding: ModelRow[] }
+
+export function listModels(): Promise<ModelChains> {
+  return http<ModelChains>('/api/v1/admin/models')
 }
 
-export function saveEmbeddingConfig(payload: EmbeddingConfig): Promise<EmbeddingConfig> {
-  return http<EmbeddingConfig>('/api/v1/admin/embedding-config', {
+export function createModel(payload: {
+  kind: ModelKind
+  provider_id: number
+  model_id: string
+  temperature?: number | null
+  max_tokens?: number | null
+}): Promise<ModelChains> {
+  return http<ModelChains>('/api/v1/admin/models', { method: 'POST', body: JSON.stringify(payload) })
+}
+
+export function updateModel(
+  id: number,
+  payload: { model_id?: string; temperature?: number | null; max_tokens?: number | null },
+): Promise<ModelChains> {
+  return http<ModelChains>(`/api/v1/admin/models/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
+export function deleteModel(id: number): Promise<void> {
+  return http<void>(`/api/v1/admin/models/${id}`, { method: 'DELETE' })
+}
+
+/** 链内重排：ids 必须恰好覆盖该 kind 的全部条目 */
+export function reorderModels(kind: ModelKind, ids: number[]): Promise<ModelChains> {
+  return http<ModelChains>('/api/v1/admin/models/order', {
     method: 'PUT',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({ kind, ids }),
   })
 }
 
@@ -94,14 +123,6 @@ export function setProviderKey(id: number, apiKey: string): Promise<AiProvider> 
   return http<AiProvider>(`/api/v1/admin/model-providers/${id}/key`, {
     method: 'PUT',
     body: JSON.stringify({ api_key: apiKey }),
-  })
-}
-
-/** 排序 = 故障切换链顺序；ids 必须恰好包含全部供应商 */
-export function reorderProviders(ids: number[]): Promise<AiProvider[]> {
-  return http<AiProvider[]>('/api/v1/admin/model-providers/order', {
-    method: 'PUT',
-    body: JSON.stringify({ ids }),
   })
 }
 

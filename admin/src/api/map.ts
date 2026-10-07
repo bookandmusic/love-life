@@ -2,7 +2,7 @@ import { http } from '../lib/http'
 
 export type MapSourceType = 'public' | 'tianditu'
 
-// 瓦片源（多卡片；密钥只写不读：回读仅含 has_key 标记——REQUIREMENTS §8.3）
+// 瓦片源（多卡片；密钥只写不读：回读仅含 has_key 标记——）
 export interface MapSource {
   id: number
   type: MapSourceType

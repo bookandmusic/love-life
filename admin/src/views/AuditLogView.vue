@@ -3,11 +3,9 @@ import { computed, onMounted, ref } from 'vue'
 import { auditApi } from '../api'
 import type { AuditEntry, AuditActorType } from '../api/audit'
 import AppCard from '../components/AppCard.vue'
-import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppIcon from '../components/AppIcon.vue'
 import { errMsg } from '../lib/http'
-import { toCsv } from '../lib/csv'
 import { toast } from '../lib/toast'
 
 const entries = ref<AuditEntry[]>([])
@@ -37,29 +35,6 @@ function latency(e: AuditEntry): string {
   if (e.latencyMs === null) return '—'
   return e.latencyMs >= 1000 ? (e.latencyMs / 1000).toFixed(1) + 's' : e.latencyMs + 'ms'
 }
-
-// CSV 导出（含 BOM，Excel 直接打开不乱码）；导出范围为当前筛选结果。
-// 公式注入防御与转义在 lib/csv.ts（纯 TS，便于 .verify/admin-csv.mjs 回归）。
-function exportLog() {
-  const header = ['时间', '操作者类型', '操作者', '操作', '参数摘要', '结果', '耗时(ms)']
-  const rows = filtered.value.map((e) => [
-    e.time,
-    actorMeta[e.actorType].label,
-    e.actor,
-    e.action,
-    e.params,
-    e.result === 'success' ? '成功' : '失败',
-    e.latencyMs === null ? '' : String(e.latencyMs),
-  ])
-  const csv = toCsv(header, rows)
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = `audit-log-${new Date().toISOString().slice(0, 10)}.csv`
-  a.click()
-  URL.revokeObjectURL(url)
-}
 </script>
 
 <template>
@@ -72,7 +47,6 @@ function exportLog() {
             {{ f === '全部' ? '全部类型' : actorMeta[f].label + '操作' }}
           </option>
         </select>
-        <AppButton variant="secondary" icon="download" @click="exportLog">导出</AppButton>
       </div>
     </div>
 

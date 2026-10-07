@@ -2,7 +2,7 @@ import { http } from '../lib/http'
 
 /**
  * 输出风格库。数据源由 VITE_API_BASE_URL 指向的服务决定。
- * 契约（DESIGN §4.3/§9）：
+ * 契约：
  * - 风格 = 名称 + 提示词片段（拼在全局 System Prompt 主干之后，切风格不动主干）
  * - 内置风格完全固化（不可删改）；自定义风格由后台管理
  * - default_style_id = 全局默认风格，APP 端未设置风格时使用

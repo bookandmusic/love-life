@@ -22,7 +22,7 @@ const router = createRouter({
           redirect: '/ai/providers',
           meta: { title: 'AI 配置' },
           children: [
-            { path: 'providers', component: () => import('../views/ProviderView.vue'), meta: { title: 'AI 配置 · 接入与模型' } },
+            { path: 'providers', component: () => import('../views/ProviderView.vue'), meta: { title: 'AI 配置 · 模型与链路' } },
             { path: 'prompts', component: () => import('../views/PromptStyleView.vue'), meta: { title: 'AI 配置 · 提示词与风格' } },
             { path: 'tools', component: () => import('../views/McpToolsView.vue'), meta: { title: 'AI 配置 · MCP 工具' } },
             { path: 'tokens', component: () => import('../views/TokensView.vue'), meta: { title: 'AI 配置 · 访问令牌' } },

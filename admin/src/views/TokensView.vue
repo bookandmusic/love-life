@@ -16,7 +16,7 @@ import { useConfirmAction } from '../lib/confirm'
 const tokens = ref<PatToken[]>([])
 const users = ref<UserItem[]>([])
 
-// PAT 仅绑定情侣用户（girl/boy）；admin 仅后台操作，不签发外部令牌（DESIGN §8.2）
+// PAT 仅绑定情侣用户（girl/boy）；admin 仅后台操作，不签发外部令牌
 const bindableUsers = computed(() => users.value.filter((u) => u.role !== 'admin'))
 
 // 生成表单弹窗

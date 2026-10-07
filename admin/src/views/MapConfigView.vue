@@ -31,7 +31,7 @@ async function load() {
     loaded.value = true
     loadFailed.value = false
   } catch (e) {
-    // 操作反馈统一走全局 toast（DESIGN §后台）；占位段只表达加载状态，不渲染原始错误串
+ // 操作反馈统一走全局 toast；占位段只表达加载状态，不渲染原始错误串
     loadFailed.value = true
     toast.error(errMsg(e, '加载失败'))
   }

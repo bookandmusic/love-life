@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 
 // 全局轻提示（后台统一反馈通道：成功/失败/信息，顶部居中自动消失，
-// 不在页面内联展示以免布局跳动——REQUIREMENTS §8.3 布局约定）
+// 不在页面内联展示以免布局跳动—— 布局约定）
 export interface ToastItem {
   id: number
   message: string

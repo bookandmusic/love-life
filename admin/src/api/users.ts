@@ -7,9 +7,9 @@ export interface UserItem {
   username: string
   role: UserRole
   nickname: string
-  /** 仅后台维护，不下发 APP（GAP16） */
+  /** 仅后台维护，不下发 APP */
   birthday?: string
-  /** 头像签名 URL；空串表示无头像（GAP16 独立通道） */
+  /** 头像签名 URL；空串表示无头像（独立通道） */
   avatar?: string
 }
 
@@ -46,7 +46,7 @@ export function updateUser(id: number, nickname: string): Promise<UserItem> {
   })
 }
 
-// GAP16 头像上传：multipart/form-data，字段名 avatar
+// 头像上传：multipart/form-data，字段名 avatar
 export function uploadAvatar(id: number, file: File): Promise<{ status: string; avatar: string }> {
   const form = new FormData()
   form.append('avatar', file)
@@ -56,7 +56,7 @@ export function uploadAvatar(id: number, file: File): Promise<{ status: string; 
   })
 }
 
-// GAP16 生日：仅后台维护，空串清除；格式 YYYY-MM-DD
+// 生日：仅后台维护，空串清除；格式 YYYY-MM-DD
 export function updateBirthday(id: number, birthday: string): Promise<{ status: string }> {
   return http<{ status: string }>(`/api/v1/admin/users/${id}/birthday`, {
     method: 'PUT',

@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { spaceApi, securityApi, usersApi } from '../api'
 import { errMsg } from '../lib/http'
 import type { SpaceInfo } from '../api/space'
-import type { ChatRetention } from '../api/security'
+import type { SecuritySettings } from '../api/security'
 import type { UserItem, CoupleSidePayload } from '../api/users'
 import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
@@ -61,7 +61,6 @@ async function loadAll() {
     space.value = sp
     users.value = us
     recycleDays.value = sec.recycleRetentionDays
-    chatRetention.value = sec.chatRetention
     if (space.value) spaceForm.value = { ...space.value }
   } catch (e) {
     toast.error(errMsg(e, '空间管理加载失败'))
@@ -106,7 +105,7 @@ async function submitEdit() {
   }
 }
 
-// ---------- GAP16：头像与生日（仅后台维护；头像独立通道，生日不下发 APP） ----------
+// ---------- ：头像与生日（仅后台维护；头像独立通道，生日不下发 APP） ----------
 const avatarTarget = ref<UserItem | null>(null)
 const avatarUploading = ref(false)
 
@@ -184,13 +183,12 @@ async function submitReset() {
   }
 }
 
-// ---------- 数据保留（两类空间级保留策略集中于此；两卡各自独立保存，互不携带对方未确认的修改） ----------
+// ---------- 数据保留（空间级保留策略：仅回收站期限；对话历史不设保留时长） ----------
 const recycleDays = ref(30)
-const chatRetention = ref<ChatRetention>('30')
 
 async function saveRecycle() {
   const days = recycleDays.value
-  // 范围有文档依据（DESIGN §9 / REQUIREMENTS §8.3），超范围行为无规定：不静默改写，直接报错不发请求
+  // 范围有文档依据（PRODUCT「后台管理页面功能范围（admin）」数据保留），超范围行为无规定：不静默改写，直接报错不发请求
   if (!Number.isInteger(days) || days < 7 || days > 365) {
     toast.error('保留期限需在 7 ~ 365 天之间')
     return
@@ -204,20 +202,14 @@ async function saveRecycle() {
   }
 }
 
-async function saveChat() {
-  try {
-    await securityApi.saveSecuritySettings({ chatRetention: chatRetention.value })
-    toast.success('对话保留策略已保存')
-  } catch (e) {
-    toast.error(errMsg(e, '保存失败'))
-  }
-}
-
 onMounted(loadAll)
 </script>
 
 <template>
   <div class="page">
+    <!-- 页面本身不滚动，内容容器内部滚动（PRODUCT「后台管理页面功能范围（admin）」布局约定）；
+         与其余页面同款 page-scroll，避免长内容在视口锁定下不可达 -->
+    <div class="page-scroll" style="display: flex; flex-direction: column; gap: var(--space-6)">
     <AppAlert variant="info" icon="users">
       单情侣应用：情侣账户需一次性同时创建（双方各一个账号）；建立后仅可修改昵称与重置密码，用户名与角色不可变更，不提供删除。
     </AppAlert>
@@ -382,21 +374,8 @@ onMounted(loadAll)
         <p class="form-hint">超过此天数的已删除内容将被系统定时任务自动永久删除；回收站页顶部展示的期限提示读自此处。</p>
       </AppCard>
 
-      <AppCard title="对话保留策略">
-        <div class="flex gap-2" style="align-items: flex-end">
-          <div class="form-group" style="margin: 0; flex: 1">
-            <label class="form-label">AI 对话记录默认保留时长</label>
-            <select v-model="chatRetention" class="form-select" style="max-width: 160px">
-              <option value="7">7 天</option>
-              <option value="30">30 天</option>
-              <option value="90">90 天</option>
-              <option value="permanent">永久保留</option>
-            </select>
-          </div>
-          <AppButton variant="secondary" size="sm" icon="save" @click="saveChat()">保存</AppButton>
-        </div>
-        <p class="form-hint">空间级默认值，用户可在 APP 中自行调整。</p>
-      </AppCard>
+    </div>
+
     </div>
 
     <AppModal v-if="editTarget" :title="`修改昵称 — ${editTarget.username}`" @close="editTarget = null">
@@ -443,7 +422,7 @@ onMounted(loadAll)
 
     <AppModal v-if="birthdayTarget" :title="`设置生日 — ${birthdayTarget.username}`" @close="birthdayTarget = null">
       <form class="flex" style="flex-direction: column; gap: 14px" @submit.prevent="submitBirthday">
-        <p class="form-hint">仅后台维护，不会下发到 APP（需求 §4.1 关系卡未列）。</p>
+        <p class="form-hint">仅后台维护，不会下发到 APP。</p>
         <div class="form-group" style="margin: 0">
           <label class="form-label">生日</label>
           <input v-model="birthdayValue" class="form-input" type="date" />

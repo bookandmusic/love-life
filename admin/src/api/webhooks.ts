@@ -12,7 +12,7 @@ export interface WebhookChannel {
   events: string[]
 }
 
-/** 订阅事件（7 类，以 REQUIREMENTS §4.8/§8.3 为准） */
+/** 订阅事件（7 类，以 为准） */
 export const WEBHOOK_EVENTS: Array<[string, string]> = [
   ['new_post', '新动态'],
   ['like', '点赞'],
@@ -23,7 +23,7 @@ export const WEBHOOK_EVENTS: Array<[string, string]> = [
   ['album', '相册上新'],
 ]
 
-/** 预设模板（REQUIREMENTS §8.3：Bark/Server酱/Qmsg/企业微信） */
+/** 预设模板（Bark/Server酱/Qmsg/企业微信） */
 export const WEBHOOK_PRESETS: Record<string, string> = {
   Bark: 'https://api.day.app/你的key',
   'Server酱': 'https://sctapi.ftqq.com/你的key.send',

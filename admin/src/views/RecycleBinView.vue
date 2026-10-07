@@ -34,11 +34,10 @@ async function loadRetention() {
   }
 }
 
-const types: Array<'全部' | RecycleType> = ['全部', '动态', '评论', '照片', '相册', '纪念日', '地图点位']
+const types: Array<'全部' | RecycleType> = ['全部', '动态', '评论', '相册', '纪念日', '地图点位']
 const typeVariant: Record<RecycleType, 'info' | 'neutral' | 'warning' | 'success' | 'error'> = {
   动态: 'info',
   评论: 'neutral',
-  照片: 'warning',
   相册: 'warning',
   纪念日: 'error',
   地图点位: 'success',
@@ -47,7 +46,7 @@ const typeVariant: Record<RecycleType, 'info' | 'neutral' | 'warning' | 'success
 async function load() {
   try {
     const [list, log] = await Promise.all([recycleApi.listRecycle(), recycleApi.listRestoreLog()])
-    // DESIGN §9：按删除时间排序（倒序）；前端排序兜底，不依赖后端返回顺序
+ // ：按删除时间排序（倒序）；前端排序兜底，不依赖后端返回顺序
     items.value = [...list].sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
     restoreLog.value = log.items
     selected.value = new Set()

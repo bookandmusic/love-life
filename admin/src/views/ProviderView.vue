@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { providersApi } from '../api'
-import type { AiProvider, ApiProtocol, ModelEntry } from '../api/providers'
+import type { AiProvider, ApiProtocol, ModelKind, ModelRow } from '../api/providers'
 import { API_PROTOCOLS, protocolLabel } from '../api/providers'
 import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
@@ -14,28 +14,29 @@ import { useConfirmAction } from '../lib/confirm'
 import AppAlert from '../components/AppAlert.vue'
 
 const providers = ref<AiProvider[]>([])
+const chains = ref<Record<ModelKind, ModelRow[]>>({ chat: [], embedding: [] })
 
 async function load() {
   try {
     providers.value = await providersApi.listProviders()
+    chains.value = await providersApi.listModels()
   } catch (e) {
-    toast.error(errMsg(e, '供应商列表加载失败'))
+    toast.error(errMsg(e, '模型配置加载失败'))
   }
 }
-onMounted(() => {
-  load()
-  loadEmbedding()
-})
+onMounted(load)
 
-// ---------- 供应商 添加/编辑弹窗 ----------
+function providerName(id: number): string {
+  return providers.value.find((p) => p.id === id)?.name ?? `供应商 #${id}`
+}
+
+// ---------- 供应商 添加/编辑弹窗（仅身份与凭据；模型条目在「模型与链路」管理） ----------
 const editingId = ref<number | null>(null)
 const showForm = ref(false)
 const fApiType = ref<ApiProtocol>('openai-chat')
 const fName = ref('')
 const fBaseUrl = ref('')
 const fKey = ref('')
-const fModels = ref<ModelEntry[]>([])
-const fDefaultModel = ref('')
 const fetching = ref(false)
 
 const protocolHint = computed(
@@ -57,8 +58,6 @@ function openCreate() {
   fName.value = ''
   fBaseUrl.value = ''
   fKey.value = ''
-  fModels.value = []
-  fDefaultModel.value = ''
   showForm.value = true
 }
 
@@ -68,61 +67,7 @@ function openEdit(p: AiProvider) {
   fName.value = p.name
   fBaseUrl.value = p.base_url
   fKey.value = ''
-  fModels.value = p.models.map((m) => ({ ...m }))
-  fDefaultModel.value = p.default_model
   showForm.value = true
-}
-
-// 获取模型列表：保留已填参数（按模型 id 对应），新模型参数默认不设置
-async function fetchModelList() {
-  if (!fBaseUrl.value.trim()) {
-    toast.error('请先填写服务地址')
-    return
-  }
-  fetching.value = true
-  try {
-    const res = await providersApi.fetchModels({
-      api_type: fApiType.value,
-      base_url: fBaseUrl.value.trim(),
-      api_key: fKey.value.trim() || undefined,
-      provider_id: editingId.value ?? undefined,
-    })
-    const prev = new Map(fModels.value.filter((m) => m.id.trim()).map((m) => [m.id, m]))
-    fModels.value = res.models.map((id) => prev.get(id) ?? { id, temperature: null, max_tokens: null })
-    if (!fModels.value.some((m) => m.id === fDefaultModel.value)) {
-      fDefaultModel.value = fModels.value[0]?.id ?? ''
-    }
-    toast.success('模型列表已获取')
-  } catch (e) {
-    toast.error(errMsg(e, '获取模型列表失败'))
-  } finally {
-    fetching.value = false
-  }
-}
-
-function addManualModel() {
-  const last = fModels.value[fModels.value.length - 1]
-  if (last && !last.id.trim()) return
-  fModels.value.push({ id: '', temperature: null, max_tokens: null })
-}
-
-function removeModelRow(i: number) {
-  const removed = fModels.value[i]
-  fModels.value.splice(i, 1)
-  if (removed.id === fDefaultModel.value) {
-    fDefaultModel.value = fModels.value[0]?.id ?? ''
-  }
-}
-
-// 空输入框（''）归一化为 null = 不传参
-function normalizeModels(): ModelEntry[] {
-  return fModels.value
-    .filter((m) => m.id.trim())
-    .map((m) => ({
-      id: m.id.trim(),
-      temperature: m.temperature === null || (m.temperature as unknown as string) === '' ? null : Number(m.temperature),
-      max_tokens: m.max_tokens === null || (m.max_tokens as unknown as string) === '' ? null : Number(m.max_tokens),
-    }))
 }
 
 async function submitForm() {
@@ -134,26 +79,19 @@ async function submitForm() {
     toast.error('API Key 必填')
     return
   }
-  const models = normalizeModels()
-  if (models.length > 0 && !models.some((m) => m.id === fDefaultModel.value)) {
-    toast.error('请在模型列表中勾选一个默认模型')
-    return
-  }
   try {
     const payload = {
       api_type: fApiType.value,
       name: fName.value.trim() || undefined,
       base_url: fBaseUrl.value.trim(),
-      models,
-      default_model: fDefaultModel.value,
     }
     if (editingId.value === null) {
       await providersApi.createProvider({ ...payload, api_key: fKey.value.trim() })
+    } else if (fKey.value.trim()) {
+      await providersApi.updateProvider(editingId.value, payload)
+      await providersApi.setProviderKey(editingId.value, fKey.value.trim())
     } else {
-      const updated = await providersApi.updateProvider(editingId.value, payload)
-      const i = providers.value.findIndex((p) => p.id === updated.id)
-      if (i >= 0) providers.value[i] = updated
-      if (fKey.value.trim()) await providersApi.setProviderKey(editingId.value, fKey.value.trim())
+      await providersApi.updateProvider(editingId.value, payload)
     }
     showForm.value = false
     toast.success(editingId.value === null ? '供应商已创建' : '供应商已保存')
@@ -172,64 +110,127 @@ async function runRemoveProvider(p: AiProvider) {
   await load()
 }
 
-// ---------- 语义检索（嵌入模型） ----------
-const embeddingProviderId = ref(0)
-const embeddingModel = ref('')
-const embeddingSaving = ref(false)
+// ---------- 模型与链路（chat / embedding 两条链） ----------
+const showModelForm = ref(false)
+const editingModelId = ref<number | null>(null)
+const mKind = ref<ModelKind>('chat')
+const mProviderId = ref<number | null>(null)
+const mModelId = ref('')
+const mTemperature = ref<number | null>(null)
+const mMaxTokens = ref<number | null>(null)
+const mSaving = ref(false)
 
-// 嵌入走 OpenAI 兼容 /embeddings，仅 OpenAI Chat 协议供应商可用
-const embeddingProviders = computed(() => providers.value.filter((p) => p.api_type === 'openai-chat'))
-// 已保存的供应商可能已被删除：保留一个选项，避免下拉静默变成「不启用」
-const embeddingOptions = computed(() => {
-  const opts = embeddingProviders.value.map((p) => ({ id: p.id, name: p.name }))
-  if (embeddingProviderId.value !== 0 && !opts.some((o) => o.id === embeddingProviderId.value)) {
-    opts.push({ id: embeddingProviderId.value, name: `供应商 #${embeddingProviderId.value}（已删除）` })
+const kindLabel: Record<ModelKind, string> = { chat: '对话模型链', embedding: '嵌入模型链' }
+
+// 嵌入走 OpenAI 兼容 /embeddings，仅 OpenAI Chat 协议供应商可用（服务端同口径校验）
+const providerOptions = computed(() =>
+  providers.value
+    .filter((p) => (mKind.value === 'embedding' ? p.api_type === 'openai-chat' : true))
+    .filter((p) => p.has_key || editingModelId.value !== null),
+)
+
+// 获取模型列表：以所选供应商的地址与已存秘钥为准
+async function fetchModelList() {
+  const p = providers.value.find((x) => x.id === mProviderId.value)
+  if (!p) {
+    toast.error('请先选择供应商')
+    return
   }
-  return opts
-})
-
-async function loadEmbedding() {
+  fetching.value = true
   try {
-    const cfg = await providersApi.getEmbeddingConfig()
-    embeddingProviderId.value = cfg.provider_id
-    embeddingModel.value = cfg.model
+    const res = await providersApi.fetchModels({ api_type: p.api_type, base_url: p.base_url, provider_id: p.id })
+    const hit = res.models.find((id) => id === mModelId.value.trim())
+    if (!hit && res.models.length > 0) mModelId.value = res.models[0]
+    toast.success('模型列表已获取，请从常用名中选用')
   } catch (e) {
-    toast.error(errMsg(e, '嵌入模型配置加载失败'))
+    toast.error(errMsg(e, '获取模型列表失败'))
+  } finally {
+    fetching.value = false
   }
 }
 
-async function saveEmbedding() {
-  const providerId = embeddingProviderId.value
-  const model = providerId === 0 ? '' : embeddingModel.value.trim()
-  if (providerId !== 0 && !model) {
-    toast.error('请填写嵌入模型名')
+function openModelCreate(kind: ModelKind) {
+  editingModelId.value = null
+  mKind.value = kind
+  mProviderId.value = providerOptions.value[0]?.id ?? null
+  mModelId.value = ''
+  mTemperature.value = null
+  mMaxTokens.value = null
+  showModelForm.value = true
+}
+
+function openModelEdit(row: ModelRow) {
+  editingModelId.value = row.id
+  mKind.value = row.kind
+  mProviderId.value = row.provider_id
+  mModelId.value = row.model_id
+  mTemperature.value = row.temperature
+  mMaxTokens.value = row.max_tokens
+  showModelForm.value = true
+}
+
+function normalizeParam(v: number | null): number | null {
+  return v === null || (v as unknown as string) === '' ? null : Number(v)
+}
+
+async function submitModelForm() {
+  if (mProviderId.value === null && editingModelId.value === null) {
+    toast.error('请选择供应商')
     return
   }
-  embeddingSaving.value = true
+  if (!mModelId.value.trim()) {
+    toast.error('模型名必填')
+    return
+  }
+  mSaving.value = true
   try {
-    const cfg = await providersApi.saveEmbeddingConfig({ provider_id: providerId, model })
-    embeddingProviderId.value = cfg.provider_id
-    embeddingModel.value = cfg.model
-    toast.success(providerId === 0 ? '已关闭语义检索' : '语义检索已保存')
+    const temp = normalizeParam(mTemperature.value)
+    const maxTok = normalizeParam(mMaxTokens.value)
+    if (editingModelId.value === null) {
+      chains.value = await providersApi.createModel({
+        kind: mKind.value,
+        provider_id: mProviderId.value!,
+        model_id: mModelId.value.trim(),
+        temperature: temp,
+        max_tokens: maxTok,
+      })
+    } else {
+      chains.value = await providersApi.updateModel(editingModelId.value, {
+        model_id: mModelId.value.trim(),
+        temperature: temp,
+        max_tokens: maxTok,
+      })
+    }
+    showModelForm.value = false
+    toast.success(editingModelId.value === null ? '模型条目已添加' : '模型条目已保存')
   } catch (e) {
     toast.error(errMsg(e, '保存失败'))
   } finally {
-    embeddingSaving.value = false
+    mSaving.value = false
   }
 }
 
-// 排序即故障切换链：乐观更新 + 服务端持久化，失败回滚重载
-async function move(idx: number, dir: -1 | 1) {
+const modelRemove = useConfirmAction<ModelRow>('删除失败')
+
+async function runRemoveModel(row: ModelRow) {
+  await providersApi.deleteModel(row.id)
+  toast.success(`已移除模型「${row.model_id}」`)
+  chains.value = await providersApi.listModels()
+}
+
+// 链内排序：乐观更新 + 服务端持久化，失败回滚重载
+async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
+  const list = chains.value[kind]
   const target = idx + dir
-  if (target < 0 || target >= providers.value.length) return
-  const next = [...providers.value]
+  if (target < 0 || target >= list.length) return
+  const next = [...list]
   ;[next[idx], next[target]] = [next[target], next[idx]]
-  providers.value = next
+  chains.value = { ...chains.value, [kind]: next }
   try {
-    providers.value = await providersApi.reorderProviders(next.map((p) => p.id))
+    chains.value = await providersApi.reorderModels(kind, next.map((r) => r.id))
   } catch (e) {
     toast.error(errMsg(e, '排序保存失败'))
-    await load()
+    chains.value = await providersApi.listModels()
   }
 }
 </script>
@@ -237,9 +238,8 @@ async function move(idx: number, dir: -1 | 1) {
 <template>
   <div class="tab-panel">
     <AppAlert variant="info" icon="info">
-      供应商按列表顺序使用：从第一个开始，失败依次向下切换（排序即故障切换策略）。
+      模型条目按类型分两条链：对话与语义检索各自独立，调用从链首开始、失败依次向下切换（链内排序即故障切换策略）。
     </AppAlert>
-
 
     <div class="page-section-header">
       <h2 class="page-section-title">AI 供应商（{{ providers.length }}）</h2>
@@ -252,19 +252,13 @@ async function move(idx: number, dir: -1 | 1) {
       <div v-else class="table-wrapper">
         <table>
           <thead>
-            <tr><th style="width: 44px">顺序</th><th>名称</th><th>协议</th><th>地址</th><th>默认模型</th><th>Key</th><th></th></tr>
+            <tr><th>名称</th><th>协议</th><th>地址</th><th>Key</th><th></th></tr>
           </thead>
           <tbody>
-            <tr v-for="(p, idx) in providers" :key="p.id">
-              <td>
-                <span class="order-num">{{ idx + 1 }}</span>
-                <button class="order-btn" type="button" title="上移" :disabled="idx === 0" @click="move(idx, -1)">↑</button>
-                <button class="order-btn" type="button" title="下移" :disabled="idx === providers.length - 1" @click="move(idx, 1)">↓</button>
-              </td>
+            <tr v-for="p in providers" :key="p.id">
               <td>{{ p.name }}</td>
               <td><code>{{ protocolLabel(p.api_type) }}</code></td>
               <td class="text-secondary" style="word-break: break-all; max-width: 240px">{{ p.base_url }}</td>
-              <td><code>{{ p.default_model || '—' }}</code></td>
               <td>
                 <AppBadge :variant="p.has_key ? 'success' : 'neutral'">{{ p.has_key ? '已配置' : '未配置' }}</AppBadge>
               </td>
@@ -280,45 +274,63 @@ async function move(idx: number, dir: -1 | 1) {
       </div>
     </AppCard>
 
-    <div class="page-section-header">
-      <h2 class="page-section-title">语义检索（嵌入模型）</h2>
-      <AppBadge :variant="embeddingProviderId ? 'success' : 'neutral'">
-        {{ embeddingProviderId ? '已启用' : '未启用' }}
-      </AppBadge>
-    </div>
-    <AppCard>
-      <div class="flex gap-3" style="align-items: flex-end; flex-wrap: wrap">
-        <div class="form-group" style="flex: 1; min-width: 220px; margin: 0">
-          <label class="form-label">供应商</label>
-          <select v-model.number="embeddingProviderId" class="form-select">
-            <option :value="0">不启用（按关键词检索）</option>
-            <option v-for="p in embeddingOptions" :key="p.id" :value="p.id">{{ p.name }}</option>
-          </select>
+    <template v-for="kind in (['chat', 'embedding'] as const)" :key="kind">
+      <div class="page-section-header">
+        <h2 class="page-section-title">{{ kindLabel[kind] }}（{{ chains[kind].length }}）</h2>
+        <div class="flex gap-2 items-center">
+          <AppBadge v-if="kind === 'embedding'" :variant="chains[kind].length ? 'success' : 'neutral'">
+            {{ chains[kind].length ? '语义检索已启用' : '未启用（回落关键词）' }}
+          </AppBadge>
+          <AppButton variant="primary" icon="plus" @click="openModelCreate(kind)">添加模型条目</AppButton>
         </div>
-        <div class="form-group" style="flex: 1; min-width: 220px; margin: 0">
-          <label class="form-label">嵌入模型</label>
-          <input
-            v-model="embeddingModel"
-            class="form-input"
-            :disabled="embeddingProviderId === 0"
-            placeholder="如 text-embedding-3-small / bge-m3"
-          />
-        </div>
-        <AppButton variant="primary" icon="save" :disabled="embeddingSaving" @click="saveEmbedding">保存</AppButton>
       </div>
-      <AppAlert variant="warning" icon="alert-triangle" style="margin-top: 14px">
-        嵌入由所选供应商完成：动态正文会发送到该地址，向量结果只存在本机。如需零出站，可指向本机 OpenAI 兼容服务，例如
-        <code>http://127.0.0.1:11434/v1</code> + <code>bge-m3</code>。
-      </AppAlert>
-      <p class="text-secondary" style="margin: 10px 0 0">
-        仅 OpenAI Chat 协议供应商可用于嵌入。未启用或调用失败时，AI 搜索自动回落关键词匹配；更换模型后，历史动态由后台逐步重建索引。
-      </p>
-    </AppCard>
+      <AppCard class="card-fill">
+        <div v-if="chains[kind].length === 0" class="empty-state">
+          <div class="empty-state-title">
+            {{ kind === 'chat' ? '对话链为空——AI 模式不可用' : '嵌入链为空——语义检索回落关键词匹配' }}，点右上角添加
+          </div>
+        </div>
+        <div v-else class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 44px">链序</th><th>供应商</th><th>协议</th><th>模型</th>
+                <th>Temperature</th><th>Max Tokens</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="(row, idx) in chains[kind]" :key="row.id">
+                <td>
+                  <span class="order-num">{{ idx + 1 }}</span>
+                  <button class="order-btn" type="button" title="上移" :disabled="idx === 0" @click="moveModel(kind, idx, -1)">↑</button>
+                  <button class="order-btn" type="button" title="下移" :disabled="idx === chains[kind].length - 1" @click="moveModel(kind, idx, 1)">↓</button>
+                </td>
+                <td>{{ row.provider_name }}</td>
+                <td><code>{{ protocolLabel(row.api_type) }}</code></td>
+                <td><code>{{ row.model_id }}</code></td>
+                <td>{{ row.temperature ?? '—' }}</td>
+                <td>{{ row.max_tokens ?? '—' }}</td>
+                <td class="text-right">
+                  <div class="flex gap-2" style="justify-content: flex-end">
+                    <AppButton variant="secondary" size="sm" icon="edit" @click="openModelEdit(row)">编辑</AppButton>
+                    <AppButton variant="danger" size="sm" icon="trash" @click="modelRemove.target.value = row">移除</AppButton>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <AppAlert v-if="kind === 'embedding'" variant="warning" icon="alert-triangle" style="margin-top: 14px">
+          嵌入由链上供应商完成：动态正文会发送到该地址，向量结果只存在本机。如需零出站，可指向本机 OpenAI 兼容服务，例如
+          <code>http://127.0.0.1:11434/v1</code> + <code>bge-m3</code>。链为空或全部失败时，AI 搜索自动回落关键词匹配。
+        </AppAlert>
+      </AppCard>
+    </template>
 
     <AppModal
       v-if="showForm"
       :title="editingId === null ? '添加 AI 供应商' : '编辑供应商'"
-      :width="640"
+      :width="560"
       @close="showForm = false"
     >
       <form class="flex" style="flex-direction: column; gap: 14px" @submit.prevent="submitForm">
@@ -348,46 +360,7 @@ async function move(idx: number, dir: -1 | 1) {
             :placeholder="editingId === null ? '粘贴服务商提供的密钥' : '••••••••'"
             :required="editingId === null"
           />
-          <p class="form-hint">秘钥加密存储于服务端，保存后不再回显。</p>
-        </div>
-        <div class="form-group" style="margin: 0">
-          <label class="form-label">模型列表与参数</label>
-          <div class="flex gap-2" style="margin-bottom: 8px">
-            <AppButton variant="secondary" icon="refresh-cw" type="button" :disabled="fetching" @click="fetchModelList">
-              {{ fetching ? '获取中…' : '获取模型列表' }}
-            </AppButton>
-            <AppButton variant="secondary" icon="plus" type="button" @click="addManualModel">手动添加模型</AppButton>
-          </div>
-          <table v-if="fModels.length > 0" class="model-table">
-            <thead>
-              <tr><th>默认</th><th>模型</th><th>Temperature</th><th>Max Tokens</th><th></th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="(m, i) in fModels" :key="i">
-                <td>
-                  <input
-                    type="radio"
-                    name="default-model"
-                    :checked="fDefaultModel === m.id"
-                    @change="fDefaultModel = m.id"
-                  />
-                </td>
-                <td><input v-model="m.id" class="form-input" placeholder="模型名" /></td>
-                <td>
-                  <input v-model.number="m.temperature" class="form-input" type="number" min="0" max="2" step="0.1" placeholder="不传" />
-                </td>
-                <td>
-                  <input v-model.number="m.max_tokens" class="form-input" type="number" min="256" max="32768" step="256" placeholder="不传" />
-                </td>
-                <td>
-                  <button class="order-btn" type="button" title="移除该模型" @click="removeModelRow(i)">✕</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p v-else class="form-hint">
-            填好地址与秘钥后点击「获取模型列表」；也可手动添加模型。参数留空 = 调用时不传，使用供应商默认值。
-          </p>
+          <p class="form-hint">秘钥加密存储于服务端，保存后不再回显。模型条目在下方「模型与链路」中按类型添加与排序。</p>
         </div>
         <div class="flex gap-2" style="justify-content: flex-end">
           <AppButton variant="secondary" icon="x" type="button" @click="showForm = false">取消</AppButton>
@@ -396,14 +369,74 @@ async function move(idx: number, dir: -1 | 1) {
       </form>
     </AppModal>
 
+    <AppModal
+      v-if="showModelForm"
+      :title="(editingModelId === null ? '添加' : '编辑') + kindLabel[mKind] + '条目'"
+      :width="520"
+      @close="showModelForm = false"
+    >
+      <form class="flex" style="flex-direction: column; gap: 14px" @submit.prevent="submitModelForm">
+        <div class="form-group" style="margin: 0">
+          <label class="form-label">供应商</label>
+          <select v-model.number="mProviderId" class="form-select" :disabled="editingModelId !== null">
+            <option v-for="p in providerOptions" :key="p.id" :value="p.id">{{ p.name }}（{{ protocolLabel(p.api_type) }}）</option>
+          </select>
+          <p v-if="mKind === 'embedding' && providerOptions.length === 0" class="form-hint">
+            嵌入只允许 OpenAI Chat 协议且已配 Key 的供应商；请先在上方添加。
+          </p>
+        </div>
+        <div class="form-group" style="margin: 0">
+          <label class="form-label">模型名</label>
+          <div class="flex gap-2">
+            <input v-model="mModelId" class="form-input" placeholder="如 gpt-4o / deepseek-chat / bge-m3" required />
+            <AppButton
+              v-if="editingModelId === null"
+              variant="secondary"
+              icon="refresh-cw"
+              type="button"
+              :disabled="fetching"
+              @click="fetchModelList"
+            >
+              {{ fetching ? '获取中…' : '取候选' }}
+            </AppButton>
+          </div>
+          <p class="form-hint">「取候选」用所选供应商的地址与已存秘钥请求其模型列表，取回后填入第一个候选名。</p>
+        </div>
+        <div class="flex gap-3">
+          <div class="form-group" style="flex: 1; margin: 0">
+            <label class="form-label">Temperature（可选）</label>
+            <input v-model.number="mTemperature" class="form-input" type="number" min="0" max="2" step="0.1" placeholder="不传" />
+          </div>
+          <div class="form-group" style="flex: 1; margin: 0">
+            <label class="form-label">Max Tokens（可选）</label>
+            <input v-model.number="mMaxTokens" class="form-input" type="number" min="256" max="32768" step="256" placeholder="不传" />
+          </div>
+        </div>
+        <div class="flex gap-2" style="justify-content: flex-end">
+          <AppButton variant="secondary" icon="x" type="button" @click="showModelForm = false">取消</AppButton>
+          <AppButton variant="primary" icon="save" type="submit" :disabled="mSaving">保存</AppButton>
+        </div>
+      </form>
+    </AppModal>
+
     <ConfirmDialog
       v-if="remove.target.value"
       title="删除供应商"
-      :message="`删除供应商「${remove.target.value.name}」（${remove.target.value.base_url}）？删除后使用该供应商的模型调用将失败。`"
+      :message="`删除供应商「${remove.target.value.name}」（${remove.target.value.base_url}）？其名下模型条目一并移除，链序自动收敛；使用该供应商的模型调用将失败。`"
       confirm-label="删除"
       :busy="remove.busy.value"
       @close="remove.target.value = null"
       @confirm="remove.confirm(runRemoveProvider)"
+    />
+
+    <ConfirmDialog
+      v-if="modelRemove.target.value"
+      title="移除模型条目"
+      :message="`从${kindLabel[modelRemove.target.value.kind]}移除「${modelRemove.target.value.model_id}」（${modelRemove.target.value.provider_name}）？`"
+      confirm-label="移除"
+      :busy="modelRemove.busy.value"
+      @close="modelRemove.target.value = null"
+      @confirm="modelRemove.confirm(runRemoveModel)"
     />
   </div>
 </template>
@@ -433,25 +466,5 @@ async function move(idx: number, dir: -1 | 1) {
 .order-btn:disabled {
   opacity: 0.35;
   cursor: not-allowed;
-}
-.model-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-.model-table th,
-.model-table td {
-  text-align: left;
-  padding: 6px 8px;
-  border-bottom: 1px solid var(--color-border);
-  vertical-align: middle;
-}
-.model-table th {
-  color: var(--color-text-tertiary);
-  font-weight: 500;
-}
-.model-table .form-input {
-  width: 100%;
-  min-width: 90px;
 }
 </style>

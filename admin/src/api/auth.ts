@@ -11,7 +11,7 @@ export async function login(username: string, password: string): Promise<LoginRe
     method: 'POST',
     body: JSON.stringify({ username, password, client: 'admin' }),
   })
-  // 仅 admin 角色可登录后台（DESIGN 第 9 章）；其余角色不落 token，直接拒绝
+  // 仅 admin 角色可登录后台（ARCHITECTURE 第 9 章）；其余角色不落 token，直接拒绝
   // 抛 ApiError 而非普通 Error：errMsg 仅透出 ApiError 文案，用普通 Error 会让该业务原因被兜底文案吞掉
   // 403 与后端同口径（客户端 client=admin 时非 admin 角色返回 403）
   if (res.user.role !== 'admin') {

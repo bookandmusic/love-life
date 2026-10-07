@@ -1,7 +1,7 @@
 import { http } from '../lib/http'
 
 /**
- * MCP 工具清单（定义见 DESIGN.md §6）。数据源由 VITE_API_BASE_URL 指向的服务决定。
+ * MCP 工具清单（定义）。数据源由 VITE_API_BASE_URL 指向的服务决定。
  * schema：参数名册（键=参数名，值="类型 — 说明"），详情展示用。
  */
 
