@@ -28,12 +28,12 @@
 | `server/` | 后端单静态二进制：REST API + MCP Server + 模型网关 + 内嵌后台页面 | Go 1.25 · SQLite |
 | `admin/` | 后台管理页面（仅 admin 登录）：模型 / 成员 / 通知 / 审计 | Vue 3 · Vite · TS |
 | `app/` | 手机 APP：传统模式 + AI 对话双模式界面 | Tauri v2 · Vue 3 · TS |
-| `docs/` | 需求 / 设计 / 待办等权威文档 | — |
+| `docs/` | 需求 / 设计 / 开发指南等权威文档 | — |
 
 ### 功能一览
 
 - **动态**：图文视频动态、评论、点赞与收藏
-- **相册**：照片随动态上传，月度相册每月 1 日自动聚合
+- **相册**：照片随动态上传进入时间轴，可收入手动相册；集合视图按自然月分组展示（无独立月度相册实体）
 - **纪念日**：按年循环，每个纪念日可单独设置提前提醒天数
 - **地图**：足迹点位与关联动态，瓦片源由后台配置，逆地理本地离线完成
 - **通知**：站内通知中心 + 外部 Webhook（Bark / Server酱 等，空间级配置）
@@ -45,10 +45,10 @@
 官方镜像发布在 GHCR（多架构 amd64 / arm64），推 `v*` tag 时由 [GitHub Actions](.github/workflows/docker-publish.yml) 自动构建发布。仓库根目录已附带 `docker-compose.yml`，直接启动：
 
 ```yaml
-# docker-compose.yml
+# docker-compose.yml（版本用 VERSION 覆盖：make up VERSION=1.2.3）
 services:
   love-life:
-    image: ghcr.io/bookandmusic/love-life:latest
+    image: ghcr.io/bookandmusic/love-life:${LOVE_LIFE_VERSION:-0.1.0}
     container_name: love-life
     ports:
       - "8080:8080"
@@ -65,9 +65,9 @@ services:
 ```
 
 ```bash
-docker compose up -d    # 启动
-docker compose logs -f  # 看日志
-docker compose down     # 停止
+make up      # 启动（VERSION 可选：make up VERSION=1.2.3）
+make logs    # 看日志
+make down    # 停止
 ```
 
 首次使用三步：
@@ -82,7 +82,7 @@ docker compose down     # 停止
 > [!NOTE]
 > 数据持久化在宿主机 `./data` 目录。容器启动时会自动把数据目录属主修正为内部 `app` 用户（uid 100）并以非 root 运行；若曾用 root 手工拷贝数据导致属主混杂，需自行 `sudo chown -R 100:101 ./data`。
 
-镜像 tag 约定：`latest`；语义化版本 `v1.2.3` / `1.2.3` / `1.2` / `1`（推 `v*` tag 时自动生成，`v0.x` 阶段不生成主版本 tag）；`sha-<短SHA>`（特定提交）。
+镜像 tag 约定（只推这些，**没有 `latest`**）：`v1.2.3` / `1.2.3` / `1.2` / `1`（推 `v*` tag 时自动生成，`v0.x` 阶段不生成主版本 tag）；`sha-<短SHA>`（特定提交）。升级 = 改版本号后重新 `pull` + `up -d`。
 
 ### 环境变量
 
@@ -98,7 +98,7 @@ docker compose down     # 停止
 <summary>不用 Compose？手动 docker run</summary>
 
 ```bash
-docker pull ghcr.io/bookandmusic/love-life:latest
+docker pull ghcr.io/bookandmusic/love-life:${LOVE_LIFE_VERSION:-0.1.0}   # 改成你要的版本（export LOVE_LIFE_VERSION=1.2.3）
 docker run -d \
   --name love-life \
   -p 8080:8080 \
@@ -106,7 +106,7 @@ docker run -d \
   -e TZ=Asia/Shanghai \
   -e ADMIN_USER=admin -e ADMIN_PASS=<密码> \
   --restart unless-stopped \
-  ghcr.io/bookandmusic/love-life:latest
+  ghcr.io/bookandmusic/love-life:${LOVE_LIFE_VERSION:-0.1.0}
 ```
 
 </details>
@@ -122,8 +122,12 @@ docker run -d \
 
 | 文档 | 内容 |
 |:--|:--|
-| [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md) | 产品需求：页面 / 交互 / 视觉 / 数据规则 / 决策清单 |
-| [docs/DESIGN.md](docs/DESIGN.md) | 技术设计：架构 / 认证 / MCP / 后台 / 部署 / 数据模型 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发与构建：本地开发 / 源码构建 / Android APK CI |
-| [docs/TODO.md](docs/TODO.md) | 未完成事项台账 |
-| [AGENTS.md](AGENTS.md) | AI 协作开发流程与仓库约定 |
+| [docs/PRODUCT.md](docs/PRODUCT.md) | **产品需求（唯一需求源）**：页面 / 交互 / 视觉 / 数据规则 |
+| [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) | 跨域技术设计：架构 / 认证 / 服务端机制 / 部署 / 数据模型 / 已否决项 |
+| [docs/design/客户端设计.md](docs/design/客户端设计.md) | 客户端通用能力：两端职责 / 删除交互 / 另存到本机 / 响应式与浮层 / 媒体查看器 |
+| [docs/design/对外集成.md](docs/design/对外集成.md) | 对外通道与 MCP：双通道调用模型 / PAT 档位 / 工具注解 / 接入与传输协议 |
+| [docs/design/AI模式设计.md](docs/design/AI模式设计.md) | AI 模式子系统设计：模型网关 / Agent 调度 / 工具契约 / SSE 协议 / 图片处理 |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发与构建：本地开发（浏览器为主）/ 本地测试 / 构建（二进制 / 镜像 / APK）/ 发布（CI）/ 发布前检查清单 |
+| [AGENTS.md](AGENTS.md) | **文档地图**（哪份内容放哪份文档）；AI 协作开发流程与仓库约定 |
+
+> `docs/dev/` 是本地推进目录（在 `.gitignore` 内）：克隆仓库里没有这个路径。待办与待验证项写在对应文档的清单里，不另设台账文件。

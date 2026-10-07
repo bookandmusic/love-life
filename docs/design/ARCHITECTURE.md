@@ -1,0 +1,412 @@
+# 跨域技术设计
+
+## 目录
+
+1. [架构总览](#1-架构总览)
+2. [统一登录与认证](#2-统一登录与认证)
+3. [后端服务架构](#3-后端服务架构)
+4. [回收站机制](#4-回收站机制)
+5. [后台管理页面实现](#5-后台管理页面实现)
+6. [部署架构与技术栈](#6-部署架构与技术栈)
+7. [部署与网络](#7-部署与网络)
+8. [数据模型](#8-数据模型)
+9. [明确不做与已否决项](#9-明确不做与已否决项)
+
+---
+
+## 1. 架构总览
+
+```mermaid
+flowchart TB
+    AUTH["统一登录系统（本地账号）<br/>账号登录 / Token 签发 / 权限校验"]
+    APP["手机 APP（独立客户端）<br/>传统模式界面 · AI 对话模式 · 本地缓存 · 零 AI 配置"]
+    subgraph SERVER["服务端（一体化部署）"]
+        ADMIN["后台管理页面（Web）<br/>模型配置 / MCP 工具 / 账号管理 / 审计 · 仅 admin"]
+        BACK["后端服务<br/>REST API · MCP Server · 模型网关 · 业务逻辑 + 数据存储"]
+    end
+    AUTH --> APP
+    AUTH --> SERVER
+    APP -->|"远程调用 REST API / MCP"| BACK
+    ADMIN --> BACK
+```
+
+统一登录系统为所有端提供认证：APP 远程调用服务端；Web 后台与后端同机/同集群部署，本地/内网调用。
+
+---
+
+## 2. 统一登录与认证
+
+| 维度 | 方案 |
+|:---|:---|
+| 人（两端） | JWT + Refresh Token，APP / Web 后台通用 |
+| 令牌寿命 | Access Token **1 小时**；Refresh Token **30 天**（`auth/token.go`）——每次刷新顺延，故常用设备无需重登；超过 30 天未使用即失效，需重新登录（需求侧口径见 PRODUCT「角色与账号」）。过期 refresh token 由 janitor 每小时清理（见「定时任务总表」） |
+| 外部 Agent | 个人访问令牌 PAT（生成/吊销/档位见 对外集成「对外 MCP 服务能力」；PAT 绑定签发用户，数据以该用户身份隔离） |
+| 账号来源 | 部署时环境变量内置 admin；admin 创建 girl/boy；密码重置由 admin 在后台操作 |
+| 权限校验 | admin 拥有系统配置权（模型/MCP/回收站/审计）；情侣用户专注内容操作 |
+| 未登录状态 | 所有页面重定向至登录页，无公开匿名访问；后台登录入口仅接受 admin 角色，APP 登录入口仅接受情侣角色 |
+| 登录安全 | 登录与令牌签发接口内置限速与失败锁定，防在线爆破（见「网络访问（双通道）」）。口径：同一「用户名 + IP」连续失败 **5 次**即锁定 **15 分钟**（单进程内存态，重启清零对本场景可接受） |
+
+---
+
+## 3. 后端服务架构
+
+### 3.1 配置管理入口
+
+| 入口 | 说明 |
+|:---|:---|
+| 管理后台 | admin 配置全局模型、工具、安全策略 |
+| 用户设置页 | 按当前模式分层显示：通用项（模式切换器 / 外观 / 关于与退出登录）始终可见，AI 偏好（输出风格）只在 AI 模式下显示；接口仍是一个 `PATCH /api/v1/me`（仅 `ai_style`），与显示分层无关 |
+| 客户端 | 零配置，只传用户 Token，后台自动加载对应空间配置 |
+
+### 3.2 媒体访问鉴权
+
+| 决策项 | 方案 |
+|:---|:---|
+| 访问方式 | 后端按需签发**短期签名 URL**（默认 15 分钟有效），客户端 `<img>` / `<video>` 标签直接渲染 |
+| 签名校验 | 服务端校验签名与过期时间，过期返回 401，客户端重新请求换取新 URL |
+| 客户端一致 | APP / Web 后台均使用签名 URL，无需各自注入凭证 |
+| 扩展性 | 媒体走后端统一接口 + 签名 URL，客户端无直连存储的耦合 |
+| 签名派生 | `HMAC(secret, "media:{mediaID}:{variant}:{exp}")`，密钥取 TokenManager 的密钥材料并按用途域分隔；**签名主体是媒体行 id**，未落库的临时区文件没有签名 URL 通路 |
+
+### 3.3 通知分发器
+
+| 决策项 | 方案 |
+|:---|:---|
+| 事件源 | 业务写入瞬间（动态/评论/点赞/收藏/足迹/相册）+ 删除对方发布内容时（仅站内）+ 纪念日提醒检查（每小时，按「当日已发」幂等，故不会重复）。触发口径同 PRODUCT「通知中心」：足迹仅**手动建点 / AI 口语报点**产生（动态带地点自动生成的点位不另发，该次发布已有 `post_created`）；相册由用户**手动建册**产生（AI 代建同；月度分组不产生事件），只通知对方（自建静默）。**按月分组不是事件源**：它是查询视图，不生成、不通知 |
+| 事件类型 | 站内 **12** 类：`post_created` / `post_liked` / `post_commented` / `post_favorited` / `map_point_created` / `anniversary_reminder` / `album_created` / `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`。**无 `media_deleted`**：媒体不独立删除（删动态即删其媒体），删除语义由 `post_deleted` 表达（PRODUCT「相册（独立底部 tab）」）。产品侧触发口径见 PRODUCT「通知中心」 |
+| 站内通知 | 写入通知表，APP 打开时同步显示红点；通知中心列表始终全量收录，不设站内通知开关 |
+| 外部渠道 | 空间级（admin 配置）的**通用 API Webhook**：请求方式 / 服务地址 / 请求头 / 请求体模板（`{{title}}`、`{{content}}`、`{{time}}`、`{{type}}` 占位符）；每渠道按事件订阅过滤（**7 类**：纪念日/新动态/评论/点赞/收藏/足迹/相册上新——相册均指**用户手动建册**，月度分组不产生事件）；内容删除 5 类**仅站内不进外部推送**；Bark / Server酱 / Qmsg / 企业微信为预设模板 |
+| 快照字段读法 | `operator` 恒为真实发起人用户名；`via:"ai"` **仅在 AI 代操作时出现**，缺省即发起人本人操作（REST 直连与站内自操作均不带）——接收端据此判别来源；推送正文以「（AI）」后缀区分 |
+| 操作者口径 | 外部推送与站内**同一触发条件**：站内通知的收件人恒为对方（操作者本人不收，即「自建静默」自动成立），外部推送随之在同样条件下触发；渠道为空间级，推送内容带操作者用户名，「是不是自己的动作」由接收端过滤 |
+| 设计动机 | 规避 Android 后台存活限制（国产 ROM 杀后台）；服务端常驻进程无此问题，实时性优于一切端上方案 |
+| 边界 | 通知通道仅两条：站内红点 + 外部 Webhook。不做 APP 本地定时通知（需精确闹钟权限、杀进程后不可靠） |
+| 出站依赖 | 出站第三方依赖仅限三类：模型 API、通知 Webhook、**地图瓦片**（服务端代理转发至公开 XYZ / 天地图上游，地址可配，见「地图服务」）；逆地理用本地离线数据；核心数据全部留在自部署服务器 |
+
+### 3.4 地图服务
+
+| 决策项 | 方案 |
+|:---|:---|
+| 瓦片来源 | **服务端瓦片代理**：APP 统一请求 `GET /api/v1/map/tile?z=&x=&y=&exp=&sig=`，后端按配置转发；两类源——①公开 XYZ（URL 模板含 `{z}/{x}/{y}` 占位，admin 可配）；②天地图（admin 配 tk 密钥，加密存储，密钥永不下发 APP）。新增瓦片源 APP 零改动 |
+| 配置管理 | `map_sources` 多行表（type / url_template / tianditu_key 加密 / tianditu_layer / enabled，部分唯一索引保证至多一个使用中）；admin `GET/POST /api/v1/admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`（启用校验：public 需模板非空、tianditu 需已配密钥；使用中的源不可删除；不提供编辑）；APP `GET /api/v1/map/config` 仅下发使用中源的 provider、tile_api 与瓦片短时签名 exp/sig |
+| 城市判定 | **写时判定落库**：创建点位时以坐标做 point-in-polygon（`server/internal/geo` 内置地级市边界多边形，DataV.GeoAtlas 简化数据、射线法零外部依赖），未命中回退「名称·」前缀，再未命中留空（留空不进城市列表）；`GET /api/v1/map/points/cities` 按 city 分组计数，不做「城市点亮」视觉 UI |
+| 点位生成 | 双来源进同一点位池：动态携带地点时服务端自动创建/同名复用（判定键 = 地点名，坐标以先创建者为准；不做邻近合并）；手动创建（REST 与 AI 工具） |
+| 地理编码 | `GET /api/v1/geocode?q=<地名>` 返回候选 `{name, city, lat, lng, display}`；包含匹配（`city` 仅服务端搜索匹配用，候选行不展示，用户可见口径见 PRODUCT「地图」）；无第三方 POI 依赖（mock 与真实后端同源内置同一离线表：`tools/mock/fixtures.mjs` GEOCODE_PLACES / `server/internal/geo/places.go`） |
+| 不使用 GPS | 不使用设备定位、不自动建点（选地点为手动地图点选） |
+| 转发请求头 | 两类源均设 `Accept: image/png,image/*;q=0.8,*/*;q=0.5`；public 源 UA=`love-life-server/0.1 (…; self-hosted)`（避免 OSM 按 Go 默认 UA 黑名单 403）；天地图源 UA=浏览器 UA（实测其 WAF 对非浏览器 UA 一律 418）。**Referer 统一透传入站页面真实值**：天地图浏览器端 tk 绑定域名白名单，不在白名单 418、完全无 Referer 403；缺时回退 public→项目仓库页、天地图→`https://map.tianditu.gov.cn/`（实现 `api/mapconfig.go applyUpstreamHeaders`） |
+| 瓦片鉴权 | 短时签名（与媒体同口径）：config 下发 `exp+sig`，瓦片请求校验失败 401——img 标签无法携带 header，签名即凭证。签名只绑 `exp`（HMAC-SHA256），**一次覆盖全部坐标**：瓦片由 APP 按视口实时算出、数量随拖动变化，逐张签名会不断触发重签；TTL 30 分钟，APP 每 10 分钟静默换签（`mapTiles.startTileGrantRefresh`）。取舍：签名有效期内可被持有者复用，撤销依赖短 TTL 到期 |
+| 未配源提示 | config 无启用源时下发 `provider:""`（服务端与 mock 同源）；APP 记住 `provider`，为空时 `MapCanvas` 与 `MiniMapPicker` 覆盖「未配置地图服务」提示（`MapNoSource.vue`）且不再发无源瓦片请求；区分于「有源但个别瓦片/上游抓取失败」（保留瓦片 `@error` 降透明度降级）。`GET /map/tile` 未配源返回 **503**（需 admin 配置），区别于上游抓取失败的 **502** |
+
+### 3.5 媒体上传管线
+
+| 决策项 | 方案 |
+|:---|:---|
+| 上传时序 | 两段式：**提交（点 [发布] / [确认执行]，传统与 AI 同一规则）时**逐个上传至临时区（`media/tmp/{uuid}`，返回 media_token）；创建请求携带 token 列表，服务端原子创建 Post + Media 并将文件移入正式区。选择阶段服务端零数据（PRODUCT「发布动态」「提交时才上传」）；单文件独立请求、独立重试，失败不影响其他文件 |
+| 整批把关 | 创建请求只在**批次全部就绪后自动发出**（无需二次点击）：个别文件上传失败（自动重试 2 次指数退避 + 可手动重传）不阻塞已成功文件（token 保留不重传）。服务端侧任一 token 失效 / 校验失败 → 整批回滚（已转正文件删除），不产生缺图的半条动态 |
+| 主动撤销 | `POST /api/v1/media/discard`（体带 token 列表，幂等）：放弃 / 取消 / 卡片过期 / 把关作废时客户端立即撤销已上传的临时文件；sidecar 记录上传者、服务端校验归属，防跨用户误删 |
+| 临时区元数据 | sidecar JSON `media/tmp/{token}.json` 存 kind/宽高/size/duration/taken_at/上传者（discard 归属校验用），让元数据跨重启存活；**临时区阶段不落任何数据库行** |
+| 孤儿清理（兜底） | 临时区文件 24h 未被发布引用，由 janitor 的每小时循环删除（见「定时任务总表」）——常规路径由主动撤销清理，此项只兜客户端崩溃 / 断网来不及撤销的残留 |
+| 缩略图 | 上传时同步生成：图片等比缩放（最长边 1080px）；视频不抽帧，使用统一播放占位图 + 时长角标——零外部依赖，保持单二进制自包含（不引入 ffmpeg） |
+| EXIF | 读取拍摄时间作为 taken_at（缺失回退上传时间），供时间轴与那年今日排序；GPS 坐标忽略；EXIF 原样保留（自部署无外泄面，签名 URL 仅短时有效） |
+| 音频时长 | 上传时解析容器头取 duration（mp3/m4a/wav 自实现，不引入 ffmpeg）；解析失败不阻塞上传、duration 留空 |
+| 格式与大小 | 照片 jpg/png/webp；视频 mp4/mov/webm；音频 mp3/m4a/wav；HEIC 首版不支持（上传时明确拒绝并提示）；单文件默认软限 500MB（`MEDIA_MAX_MB` 可配） |
+| 存储布局 | 数据目录内 `media/{yyyy}/{mm}/{uuid}.{ext}` 主文件 + `thumbs/` 平行缩略图 + `avatars/` 头像（见「部署形态与产物」）。**文件本体在文件系统，数据库只存相对路径** |
+| 无主文件通道 | 头像走独立通道（`SaveAvatar` 直接写 `avatars/{yyyy}/{mm}/`，路径存 `users.avatar_path`），**不进媒体表**——头像无缩略图变体、无相册归属，且是「单用户覆盖」语义，与媒体的追加式记录不同；签名命名空间与媒体隔离（`avatar:<userID>` vs `media:<id>:<variant>`）。后台维护入口见「后台管理页面实现」空间管理 |
+| 物理删除 | 回收站永久清除时同步删除主文件与缩略图（规则见「回收站机制」）；`Delete()` 带数据目录越界保护，拒绝删除目录外的文件 |
+| 存储形态约束 | **无外部存储后端**：配置项只有监听地址 / 数据目录 / admin 账号 / 单文件大小上限，全部运行状态（SQLite、向量库、媒体、密钥）自包含于数据目录（「部署形态与产物」）；对象存储不在出站依赖白名单内 |
+| 对话中的图片 | **与动态发布同一条管线，无 AI 专属路径**——因此**不存在无主媒体行**，`media.post_id` 保持 `NOT NULL`。上传时机、本机预览与取消 / 过期口径见 AI模式设计「图片处理与存储」 |
+
+```mermaid
+flowchart LR
+    A["APP 选图/视频<br/>（仅本机，服务端零数据）"] --> B["提交：点 [发布] / [确认执行]"]
+    B --> C["逐个上传临时区<br/>同步生成缩略图<br/>个别失败整批把关、定向重传"]
+    C -->|"全部就绪（自动）"| D["创建请求<br/>（携带 media_token 列表）"]
+    D --> E["服务端原子创建 Post + Media<br/>文件移入正式区；任一失败整批回滚"]
+    C -.->|"放弃 / 过期"| F["discard 主动撤销临时文件"]
+    C -.->|"崩溃 / 断网残留"| G["24h 后 janitor 兜底清理"]
+```
+
+### 3.6 语义检索
+
+| 项 | 口径 |
+|:---|:---|
+| 实现 | chromem-go 本地向量库（`<数据目录>/vectors/` + 同级 `.dim` 维度标记），嵌入按**嵌入链**取数：`kind=embedding` 的模型条目按链序（仅 openai-chat 供应商），逐个尝试、失败向下切换 |
+| 索引时机 | 动态写入时同步建索引（失败只告警、不阻断落库）；janitor 启动与每小时增量回填 |
+| 回落 | 嵌入链为空 / 链上全部失败 / 无命中 → 回落关键词匹配，不报错 |
+| 数据位置 | 向量是**派生数据**：可从动态正文重建，不纳入备份必要项 |
+| 出站说明 | 嵌入调用会把动态文本发往所选供应商、向量只存本机；如需零出站，把该供应商 `base_url` 指向本机 OpenAI 兼容服务（如 Ollama）即可，代码路径相同 |
+
+---
+
+## 4. 回收站机制
+
+### 4.1 删除与恢复流程
+
+```mermaid
+flowchart TD
+    A["用户 / AI 触发删除"] --> B["软删除（标记 deleted_at）"]
+    B --> C["进入回收站（前端不可见）"]
+    C --> D["APP：看不到已删除内容"]
+    C --> E["AI Agent：无法搜索 / 访问已删除内容"]
+    C --> F["后台管理页面：可查看 + 可恢复"]
+```
+
+### 4.2 自动清理规则
+
+- 后台可配置回收站保留期限（取值域与默认值见 PRODUCT「后台管理页面功能范围（admin）」）
+- 定时任务：每日凌晨执行（服务启动时先补跑一轮，覆盖 0 点整停机的漏跑；判定幂等）
+- 逻辑：`deleted_at + 保留期限 < 当前时间` → 永久删除（恰好到期保留）
+- 清理范围：动态连同其评论/点赞/收藏/媒体（含缩略图）物理删除；相册连同 album_items；纪念日与地图点位直接删除；待删媒体若被活跃相册引用，其 AlbumItem 组织项与封面指针一并清理（相册本身保留，回退到其它照片）
+- 留痕：每轮有删除时写一条回收站操作日志（operator = 系统定时任务，内容为类型与条数汇总）
+### 4.3 定时任务总表
+
+> **只有两个循环**，其余一切清理都挂在这两处；不存在按保留时长清理对话的第三个任务（对话历史不自动过期，见「数据模型」的 `ChatSession`）。
+
+| 频率 | 任务 | 口径 |
+|:---|:---|:---|
+| **每日本地 0 点**（启动补跑一轮） | 回收站超期永久删除 | 见上一节：`deleted_at + 保留期限 < 当前时间` → 物理删除，留痕 |
+| **每小时**（janitor） | 临时区孤儿媒体清理 | `media/tmp/` 中超过 24h 未被发布引用的文件 |
+| | 过期 refresh token 清理 | 内部维护 |
+| | 纪念日提醒检查 | 站内 + 外部同发；按「当日已发」幂等，故每小时跑不会重复 |
+| | 向量索引回填 | 每轮一批（`backfillBatch`）；未配置嵌入模型时跳过。启动时先跑一轮 |
+
+### 4.4 安全约束
+
+| 约束 | 说明 |
+|:---|:---|
+| 用户不可手动清空回收站 | 防止情绪化操作或误触 |
+| AI 不可调用永久删除工具 | 工具清单中不存在 purge_recycle_bin |
+| 仅管理员可恢复 | 通过后台管理页面操作 |
+| 仅系统可永久删除 | 定时任务自动执行，无人工入口 |
+| 回收站操作需审计 | 恢复记录谁在何时恢复了什么；系统永久删除记录类型与条数 |
+
+> 回收站对 AI 工具清单的影响（哪些工具不收录及理由）见 AI模式设计「不收录的工具与理由（负向契约）」。
+
+---
+
+## 5. 后台管理页面实现
+
+导航：扁平 6 项（仪表盘 / 空间管理 / AI 配置 / 外部集成 / 回收站 / 审计日志）。AI 配置为单页 4 个 tab、外部集成为单页 2 个 tab，嵌套路由 `/ai/*`、`/integrations/*` 可直达；旧路径全部 redirect 到新路径（redirect 表见 `admin/src/router/index.ts` 兜底段）。整页 flex 视口锁定，页面不滚动，各数据容器内部滚动。功能范围见 PRODUCT「后台管理页面功能范围（admin）」。
+
+- **仪表盘**：内容统计（单空间部署口径）；AI 调用量 / Token 消耗 / 平均延迟——ai-usage 时序每点含 `avgLatencyMs`，页面按调用量加权汇总；异常告警；最近活动（后台操作/内容事件流水）
+- **空间管理**
+  - 空间信息：名称 / 个性签名 / 在一起日期（在一起统计并入信息卡）
+  - 空间成员：可创建、可改字段、不可删除等业务规则见 PRODUCT「后台管理页面功能范围（admin）」；此处只定接口与实现约束
+  - admin 账号只读展示，由部署环境管理，后台不提供增改
+  - 数据保留：**取值域与默认值见 PRODUCT「后台管理页面功能范围（admin）」**；本文件只管读写语义——回收站页只读读自同一数据源，对话历史不设保留期限（见「数据模型」的 User / ChatMessage）
+  - 接口：`GET /api/v1/admin/users`、`POST /admin/users/couple`（原子创建）、`PUT /admin/users/{id}`（昵称 + 生日）、`POST /admin/users/{id}/avatar`（头像上传）、`POST /admin/users/{id}/reset-password`、`GET/PUT /space`、`GET/PUT /admin/security`
+  - **保留策略部分更新**：`/admin/security` 请求体可只含本次变更字段（`recycleRetentionDays`），服务端按字段合并，**不得整体覆盖**；该接口无对话保留字段——对话历史不设保留期限（PRODUCT「会话模型」）
+- **AI 配置**（4 tabs，配置语义与拼装规则见 AI模式设计「配置中心与 Prompt 拼装」，此处只列接口）
+  - **模型与链路（/ai/providers）**：供应商增删改（Key 只写不读）+ 模型条目按类型分两条链（`chat` / `embedding`），链内顺序可调（上移下移），嵌入类型只允许 openai-chat 供应商；`POST /fetch-models` 取模型名候选。接口：`GET/POST /api/v1/admin/model-providers`、`PUT/DELETE /{id}`、`PUT /{id}/key`、`GET/POST /api/v1/admin/models`、`PUT/DELETE /api/v1/admin/models/{id}`、`PUT /api/v1/admin/models/order`（体带 `kind` + 有序 id 数组）
+  - **提示词与风格（/ai/prompts）**：全局 System Prompt 模板、输出风格库增删改与默认设置。接口：`GET/PUT /admin/system-prompt`、`GET/POST /admin/styles`、`PUT/DELETE /admin/styles/{id}`、`PUT /admin/styles/default`、`GET /api/v1/styles`（APP 端并集 + 默认标记，仅此接口对 APP 开放）
+  - **MCP 工具（/ai/tools）**：内置工具列表（名称 / 描述 / 参数 Schema）+ 启用停用开关；按类别分组展示，新工具复用既有类别无需改页面
+  - **访问令牌（/ai/tokens）**：PAT 生成 / 吊销 / 档位 / 绑定用户
+- **外部集成**（2 tabs）
+  - **通知渠道（/integrations/webhooks）**：渠道 CRUD + `[发送测试]`。接口：`GET/POST /api/v1/admin/webhooks`、`PUT/DELETE /{id}`、`POST /{id}/test`
+  - **地图配置（/integrations/map）**：瓦片源卡片网格（等高），末尾固定「添加瓦片源」卡；支持启用（全局至多一个使用中）、删除（两步确认，使用中的源不可删），**不提供编辑**——配置有误删除后重加。接口 `GET/POST /admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`
+- **回收站管理**：列表按删除时间排序、按类型筛选（动态/评论/相册/纪念日/地图点位）、显示删除者（用户/AI）；**照片不单列为类型**——媒体无独立生命周期，随所属动态一并进入回收站、随动态恢复，不做单独恢复（PRODUCT「相册（独立底部 tab）」）；单条与批量恢复（二次确认）；操作日志（恢复 + 系统超期永久删除，不可删除、永久保留）
+- **审计日志**：操作者筛选（user/ai/pat）+ 单条耗时列；模型响应延迟与用量报表归仪表盘
+- **交互约定（实现侧）**：全局反馈统一用 `AppToast`（不用原生 `alert`/`confirm`/`prompt`，避免布局跳动）；危险操作确认用应用内 `ConfirmDialog`。**需要哪些确认、按钮用什么色档**见 PRODUCT「后台管理页面功能范围（admin）」
+
+---
+
+## 6. 部署架构与技术栈
+
+### 6.1 分层与职责
+
+| 层级 | 职责 | 是否持有模型凭证 |
+|:---|:---|:---|
+| 手机 APP | 纯展示 + 纯交互，零 AI 配置 | 否 |
+| Web 后台（服务端部署） | 系统配置 + 审计监控 | 否（仅管理界面，凭证在后端加密存储） |
+| 后端服务 | 模型网关 + MCP Server + 业务逻辑 + 数据安全 | 是（加密存储） |
+| 对外 MCP 通道 | 自有 Agent 接入（PAT 认证），与内部 MCP 同实例 | 是（服务端托管） |
+
+### 6.2 部署架构
+
+```mermaid
+flowchart TB
+    subgraph PROC["服务端（Go 单静态二进制）"]
+        MCPIN["MCP Server — 内部通道<br/>Tool Registry + Auth Layer"]
+        MCPOT["MCP Server — 外部通道<br/>自有 Agent 经 PAT 调用（同一实例）"]
+        REST["REST API Server<br/>APP + Web 后台调用"]
+        WEB["Web 静态托管（后台管理页面）"]
+        BIZ["共享业务逻辑层"]
+        DATA[("SQLite(WAL) + chromem-go 向量库")]
+        MCPIN --> BIZ
+        MCPOT --> BIZ
+        REST --> BIZ
+        BIZ --> DATA
+    end
+```
+
+REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最终形态（共享内存与连接池），不提供独立部署选项；代码按 REST / MCP 分模块组织仅为工程习惯，不为进程拆分做额外设计。
+
+### 6.3 技术决策清单
+
+| 决策项 | 最终方案 |
+|:---|:---|
+| 客户端分类 | 两类：手机 APP + Web 后台（服务端一体部署） |
+| 登录系统 | 部署时内置 admin（环境变量），角色 admin/girl/boy，admin 有系统配置权 |
+| 认证方式 | JWT + Refresh Token（人，两端统一）+ PAT（外部 Agent） |
+| MCP Server | 统一实例，同时服务内部 Agent（APP）和外部 Agent（PAT） |
+| 对外 MCP | 同一实例的外部通道：PAT 认证，只读/读写两档，删除类不开放 |
+| 数据存储 | SQLite(WAL) + chromem-go 向量库 + 本地媒体文件（全部位于自包含数据目录，见「部署形态与产物」） |
+| 语义检索 | 见「语义检索」 |
+| 安全机制 | 发起人确认（限 APP 内部通道，见 对外集成「工具权限分级与确认口径」）+ 操作审计 + 出站依赖白名单（三类） |
+| 回收站 | 软删除 + 后台可配保留期限 + 仅系统自动永久删除 |
+| 对话历史 | 服务端权威存储，**不自动过期**（用户删会话即硬删）；客户端仅缓存加速 |
+| 外部通知 | 通用 API Webhook：请求方式/服务地址/请求头/请求体模板（占位符）；按事件订阅推送 |
+| 技术栈 | Go 单静态二进制（REST + MCP Streamable HTTP + Web 静态托管）+ SQLite(WAL) + chromem-go + Tauri v2 APP（Vue 3，Android only）+ Vue 3（后台管理页面） |
+| 部署与网络 | 局域网 / 公网域名+HTTPS 双通道访问，客户端双地址自动优选；TLS/反代、进程管理、备份由部署者自选 |
+| 地图服务 | 服务端瓦片代理：公开 XYZ 模板可配 + 天地图密钥可配（加密存储不下发） |
+| AI 子系统技术决策 | 模型网关、流式、Agent 预算、工具契约、SSE 协议 → 见 AI模式设计「模型网关与配置中心」「端到端协议：SSE 与消息结构」「Agent 调度与上下文」 |
+
+---
+
+## 7. 部署与网络
+
+### 7.1 部署形态与产物
+
+- 官方发布产物：**服务端单静态二进制**（内嵌 Web 后台静态资源）、**Android APK**、**Docker 镜像**；APK 直接分发手动安装，服务端不内置托管入口
+- Android release 签名密钥由仓库维护者生成并离线保管（`scripts/gen-android-keystore.sh`）：Android 要求同一 App 的更新沿用同一密钥，密钥丢失或更换会导致旧包无法覆盖安装；密钥不入版本库，CI 经仓库 secrets 取用
+- 运行方式由部署者自选：裸机直跑（systemd 等）或 Docker / 容器编排均可，本文档不指定特定方案
+- **最低运行要求：一个监听端口 + 一个可写数据目录**；全部运行状态（SQLite、向量库、媒体文件、配置）自包含于该数据目录，便于用任意工具做快照与迁移
+- 向量库是派生数据：可从动态正文重建，不纳入备份必要项——缺失只影响语义检索，由 janitor 回填
+- 环境变量：至少包含 admin 初始账号（用户名/密码）、数据目录路径、监听地址
+
+### 7.2 网络访问（双通道）
+
+- **在家：局域网直连**——APP / Web 后台直接访问内网地址或主机名
+- **在外：域名 + HTTPS 公网访问**
+- APP 支持配置**内网 / 公网双服务地址**，自动探测连通性并优选内网；Web 后台随部署地址访问，无需双地址
+- TLS 终止与反向代理（Caddy / Nginx / 云 LB 等）由部署者自定，服务端本身只监听 HTTP 端口
+- 应用内置安全基线（非部署可选项）：
+  - 公网通道必须经 HTTPS 反代暴露，明文访问仅限内网场景
+  - 登录与令牌签发接口内置限速与失败锁定，防在线爆破
+  - 媒体访问一律走短期签名 URL（见「媒体访问鉴权」）
+  - `/api/*` 启用 CORS（Allow-Origin \*）：APP/Tauri WebView 的 origin 与服务端不同域，浏览器直连为必需路径；认证走 Authorization 头无 Cookie，放开 Origin 不引入 CSRF 面
+- **明文传输说明**：Android APP 在仅内网 HTTP 部署场景需在 APP 内允许明文传输；公网通道一律经 HTTPS 反代。iOS 端未来另立需求（PWA 或 iOS APP）
+
+### 7.3 备份与迁移
+
+- 平台定位**不内置备份/导出/导入功能**；备份与迁移 = 部署者直接拷贝自包含数据目录（rsync、网盘同步、磁盘快照等，方式自选）
+- 建议部署者定期备份数据目录——回忆类数据不可再生
+- 向量库可随目录一起拷贝（省一次重建）；缺失也不影响恢复：服务启动后 janitor 自动回填
+
+---
+
+## 8. 数据模型
+
+> **单一权威源**：实体、字段与关系以本章为准（含 AI 子系统的 `chat_*` 表——schema 对应唯一一份建表 SQL，必须单处描述，AI模式设计 只引用不重列）。
+>
+> 回收站不是独立实体——各内容实体统一 `deleted_at` 软删标记 + 后台视图（规则见「回收站机制」）；仅系统定时任务可永久清除。
+>
+> **schema 变更规则**：只有 `server/internal/store/migrations/001_init.sql` 一个全量文件。变更直接改写它，不留增量迁移，也不提供存量库原地升级（文件头已定「无历史升级路径」）。`TestFullSchema` 守卫「目录里只有这一个文件」。
+>
+> **时间口径**：库内时间列一律存 **UTC**（`datetime('now')`）；**用户可见的「日期」按部署者本地时区判定**（进程 TZ，可用 `TZ=Asia/Shanghai` 覆盖；实现 `store/timeutil.go`）。适用：那年今日同月同日匹配、按月分组的归属、另存文件名日期、仪表盘「今天/昨天」。例外：EXIF `taken_at` 是相机墙钟时间、无时区信息，原样存用不参与换算。
+>
+> **外键**：连接串启用 `_pragma=foreign_keys(1)`，FK 在库层强制（不是仅应用层约定）。
+
+### 8.1 账号与配置
+
+| 实体 | 关键字段 | 说明 |
+|:---|:---|:---|
+| User | id, username, password_hash, role(admin/girl/boy), nickname, avatar_path?, birthday, ai_style | 用户级 AI 偏好（**仅输出风格**）内嵌本表，按用户生效；**无 `chat_retention_days`**——对话历史不设保留时长。admin 由部署环境变量内置。`avatar_path` 见「媒体上传管线」无主文件通道；`birthday` 仅后台维护，不下发 APP |
+| Space | id, name, signature, love_start_date | 单行表（单空间部署）；`GET /space` 额外返回即时聚合字段 members / days_together / next_anniversary / anniversary_count / album_count（首页「全新部署空态」判定用：无动态 + 无纪念日 + 无相册；用计数而非 `next_anniversary.name`，否则「纪念日存在但日期全部无效」会被误判成空态） |
+| ModelProvider | id, api_type(openai-chat/openai-responses/anthropic/gemini), name, base_url, api_key_enc | admin 域；Key 加密存储，客户端永不接触。**无 `default_model` / `sort_order`**：用哪个模型、按什么顺序重试，全部由模型条目的链序决定 |
+| ProviderModel | id, provider_id, model_id, kind(chat/embedding), temperature?, max_tokens?, chain_order | 模型条目：`kind` 决定属于哪条链，`chain_order` 是**同类型内的全局链序**（跨供应商，重试即按它依次走）；`(provider_id, kind, model_id)` UNIQUE，删除供应商时级联。嵌入类型只允许 openai-chat 供应商（应用层校验）。参数可空 = 调用不传。**无视觉能力字段**：媒体一律不入模型（AI模式设计「模型网关与配置中心」） |
+| OutputStyle | id, name, prompt, builtin, sort_order? | 输出风格库：内置固化 + 后台自定义；全局默认风格为单行配置（default_style_id，存 AppSetting） |
+| AppSetting | key, value | admin 域全局单值配置（default_style_id、system_prompt 等），键值存储，客户端永不接触。**嵌入模型不再走这里**：嵌入链由 `ProviderModel(kind=embedding)` 表达 |
+| RefreshToken | id, user_id, token_hash, expires_at, created_at | 仅存 hash；刷新时顺延（30 天），过期行由 janitor 每小时清理（见「定时任务总表」） |
+
+### 8.2 内容
+
+| 实体 | 关键字段 | 说明 |
+|:---|:---|:---|
+| Post | id, author_id, content, mood?, point_id?, location_name?(快照), created_at, deleted_at, deleted_by, deleted_by_type | 地点 = 外键 + 名称快照：点位被删/合并后时间轴仍显示快照名；发布只采集正文 / 媒体 / 地点 / 心情（PRODUCT「发布动态」），**无标题、无纪念日关联字段** |
+| Media | id, post_id, kind(photo/video/audio), file_path, thumb_path, width, height, size, duration?, taken_at?, created_at, deleted_at, deleted_by, deleted_by_type | **`post_id NOT NULL REFERENCES posts(id)`**：媒体随动态发布产生，**不存在无主媒体行**（未确认的选中媒体只在客户端，见 AI模式设计「图片处理与存储」），也没有独立媒体的创建 / 删除入口（PRODUCT「相册（独立底部 tab）」）；kind 含 audio（无缩略图）；taken_at 取 EXIF 拍摄时间 |
+| Comment | id, post_id, author_id, content, created_at, deleted_at, deleted_by, deleted_by_type | 记录内容，软删进回收站 |
+| Like | (post_id, user_id), created_at | 可撤销关系数据，复合主键，不进回收站 |
+| Favorite | (post_id, user_id), created_at | 同上；首版收藏对象仅动态 |
+| Album | id, name, description?, cover_media_id?, created_by?, created_at, deleted_at, deleted_by, deleted_by_type | 需求口径见 PRODUCT「相册（独立底部 tab）」。**只有手动相册是实体**：用户建册后从时间轴选入。**月度相册不是实体、不占行**：集合视图里的按月分组由查询即时聚合（该月未归属媒体的按月计数），故本表无 `monthly` 类型、无 `month_key`、无 `is_hidden` |
+| AlbumItem | (album_id, media_id), added_by, added_at + **UNIQUE(media_id)** | 相册是媒体池之上的组织视图；UNIQUE(media_id) 承载「一文件一相册」全相册唯一约束 |
+| MapPoint | id, name, lat, lng, city?, visit_date?, description?, source(post/manual), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `city` 写时判定落库（见「地图服务」）；同名地点复用同一点位，坐标以先创建者为准；无合并链、无可见性开关 |
+| MapSource | id, type(public/tianditu), url_template, tianditu_key?, tianditu_layer?, enabled, created_at | 瓦片源配置（admin 域，无用户归属）：部分唯一索引保证**至多一个使用中**；`tianditu_key` 加密存储、永不下发 APP；机制见「地图服务」 |
+| Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历；lunar=农历日期（如 `1996-05-15` = 农历 1996 年五月十五）。**不存 lunar_month/lunar_day 冗余**，闰月语义由 `is_leap` 承载；倒计时/排序/下一次公历由服务端即时推算（`internal/lunar`，mock 与后端同一离线算法）；农历换算为 1900–2100 社区表驱动，不引入外部天文数据做「权威校准」，改以不变量测试与 Go/TS 双表逐项一致性护栏防漂移 |
+
+### 8.3 通知与回收站
+
+| 实体 | 关键字段 | 说明 |
+|:---|:---|:---|
+| Notification | id, recipient_id, event_type, target_type?, target_id?, snapshot_json?, is_read, read_at, created_at | 事件类型清单与推送口径见「通知分发器」；内容删除事件带文案快照（`name` + `deleted_by`）、无跳转、仅站内；目标已被删时点击提示「内容已删除」 |
+| WebhookChannel | id, name, method(GET/POST), url, headers_json, body_template, events_json | 空间级外部通知渠道（admin 配置，无用户归属）；events_json = 订阅的事件类型（7 类） |
+| RestoreLog | id, operator, summary, created_at | 回收站操作日志（不可删除、永久保留）：恢复记录谁在何时恢复了什么；系统超期永久删除记 operator=系统定时任务 + 类型与条数汇总 |
+
+### 8.4 对话与提案
+
+| 实体 | 关键字段 | 说明 |
+|:---|:---|:---|
+| ChatSession | id, user_id→users, title, created_at, updated_at | 会话：懒创建（首条消息送达时建，title=首条消息前 20 字+省略号，纯媒体空文本回退「新的会话」）；updated_at 随消息推进；硬删（会话+消息事务同删，聊天为过程性数据不进回收站）。**不设自动过期**：没有按保留时长清理消息/会话的定时任务，历史只由用户删会话来终结 |
+| ChatMessage | id, user_id, session_id, role(user/assistant), parts, card_id?, quoted?, turn_id, created_at | **界面事实源**：一条消息 = 一行，`parts` 是有序 JSON 数组（一轮助手消息的思考、工具步骤、正文、确认卡全在同一行）。part 类型与渲染契约见 AI模式设计「消息 parts 契约」。媒体只存引用与元数据不存 base64（AI模式设计「图片处理与存储」）。`turn_id` 标识同一轮，停止时按轮回滚；**不按时间清理**，仅在用户删会话时随会话硬删 |
+| ChatContext | id, user_id, session_id, turn_id, seq, role(system/user/assistant/tool), content, tool_calls_json?, tool_call_id?, tool_name?, tokens, kind, pinned, created_at | **模型事实源**，与 ChatMessage 彻底分离。追加写，组装时按 `seq` 取、按 `tokens` 裁剪（AI模式设计「Agent 调度与上下文」）。`kind` **四分类**（`system` / `dialogue` / `read_result` / `proposal`）定淘汰策略、`pinned` 标记永不淘汰，字段语义见 AI模式设计「上下文组装」 |
+| ConfirmAction | id, user_id, tool_name, params_json, preview_json, status(pending/confirmed/cancelled/expired/failed), expires_at, resolved_at, created_at | 提案：`preview_json` 存工具自构造的**目标形态**预览（结构见 AI模式设计「提案契约」），出卡即落库；单次有效；`expires_at` = 生成 + 卡片有效期（见 PRODUCT「卡片体系」）；批量提案的 `params_json` 存展开后的具体 id（提案自包含，不依赖结果集存活）；执行失败回写 `failed` + 原因 |
+| ChatResultSet | id, session_id, result_id, kind, ids_json, groups_json, created_at | 读工具命中的 id 列表换回句柄 `r_N`；**用户勾选的子集也落这张表**（kind 同父、ids = 勾选交集，换回 `r_M`）。展开与校验规则见 AI模式设计「结果集句柄与点选优先」 |
+
+### 8.5 审计与令牌
+
+| 实体 | 关键字段 | 说明 |
+|:---|:---|:---|
+| AuditLog | id, actor_type(user/ai/pat), actor_id, action, params_digest, params, result, latency_ms, created_at | 永久保留；覆盖全部工具调用。`result` 记 `success` / `failed[: 原因]` / `pending` / `cancelled`；入参人类可读摘要放 `params`（`key: value` 逗号分隔、单值超 60 字截断），`params_digest` 保留原始 JSON；`latency_ms` 仅 ai/pat 有值。一次工具调用只记一条（由调用方记账）；提案例外，出卡与裁决各记一条 |
+| AIUsageLog | id, provider_id, model, prompt_tokens, completion_tokens, total_tokens, latency_ms, status, created_at | 模型调用用量流水：仪表盘「AI 调用量 / Token 消耗 / 平均延迟」与告警的数据源；时序点含 `avgLatencyMs`，页面按调用量加权汇总 |
+| PAT | id, token_hash, name, user_id, tier(readonly/readwrite), status(active/revoked), created_at, last_used_at, revoked_at | 仅存 hash；吊销 = 写入 `revoked_at` 并置 `status=revoked`；无令牌限流（见 对外集成「服务架构」） |
+
+### 8.6 关系要点
+
+- Post → MapPoint 外键 + location_name 快照（点位删除不影响动态显示）；同名地点复用点位，无合并链
+- Media 仅随 Post 存在（`post_id` 必填），删除动态即删除其媒体；Album/AlbumItem 仅为组织视图，删相册不动照片、移出相册不动媒体；AlbumItem UNIQUE(media_id) 承载全相册唯一
+- 软删除统一 `deleted_at`；点赞/收藏例外（关系数据，撤销即物理失效）
+- 聊天侧五张表（会话 / 消息 / 上下文 / 提案 / 结果集）全部随会话硬删同删；**提案不设自动清理任务**——卡片过期只改状态（`expired`），记录随会话一并硬删
+
+---
+
+## 9. 明确不做与已否决项
+
+> **这里记的是「考虑过、决定不要」**，不是产品形态——形态在 PRODUCT。需求文档只写「是什么」，否决记录属设计决策，故集中在此，避免以后被重新提出时无从查证。**要恢复其中任何一项，先在这里划掉并说明理由，再改需求。**
+
+### 9.1 产品形态
+
+| 否决项 | 理由 |
+|:---|:---|
+| Web 前台 | 用户侧客户端只做手机 APP；Web 只做 admin 后台。移动端优先，双端维护成本不划算 |
+| PC 双栏仪表盘 | 保持 iOS 单栏心智，不为桌面单独设计一套布局 |
+| 应用锁 | 设备锁屏已覆盖基础场景 |
+| 帮助与反馈 | 自部署无接收方 |
+| 数据导出 / 导入 | 备份与迁移由部署者直接拷贝自包含数据目录完成，应用内不重复提供 |
+| 草稿 | 发布即发；草稿态会引入「未完成内容」这一新状态与相应清理规则 |
+| 站内通知开关 | 站内全量收录、点开即消；外部推送按渠道订阅，两者口径不同故不给站内开关 |
+| 多人 / 多空间 | 单情侣、单空间部署；支持多租户会改变数据模型与认证模型 |
+| 城市点亮判定 | 城市列表由点位统计直出，不做「是否点亮」的额外判定与视觉 |
+
+### 9.2 AI 能力
+
+| 否决项 | 理由 |
+|:---|:---|
+| 视觉能力（看图） | 媒体一律不入模型，详见 AI模式设计「模型网关与配置中心」；附件与「看图」边界见 PRODUCT「图片与「看图」边界」 |
+| AI 主动推送 / 主动提醒 | 不做 AI 主动发起；提醒走通知系统，归用户配置 |
+| 年度回顾 / 情感洞察 | 属「AI 替用户总结情感」，与「记录工具」定位不符；且需要长期数据积累才有意义 |
+| 语音输入 | 首版不做 |
+| 写封信 / 许个愿 | 现有动态 + 纪念日已覆盖该场景，不另立仪式型功能 |
+| 跨模式跳转 | AI 模式内直接展示结果，不在两个模式间跳来跳去 |
+| 相册合并 | 低频操作，收益不足 |
+| 随机回忆 | 首页已有回忆精选常驻卡，AI 侧重复建设 |
+| AI 查询范围开关 | 两人共享空间，数据本就互相可见，没有需要保护的对象 |
+
+### 9.3 实现取向
+
+| 否决项 | 理由 |
+|:---|:---|
+| 新增 `files` / `file_refs` 抽象 | 复用 `media` 表即可（详见 AI模式设计「图片处理与存储」） |
+| 让临时区 token 长期充当附件载体 | 文件会永远停在临时区、没有签名 URL 通路，还要另造一套按 token 的签名与清理规则，语义错位 |
+| 外部对象存储 / Storage 抽象层 | 运行状态自包含于数据目录，出站白名单不含对象存储 |
+| 第四套文件存放路径 | 已有 media / 临时区 / 头像三条；不再新增 |
+| 反查「提案 id 是否来自本会话」 | 提案自包含（出卡时已展开 id），不需要额外约束 |
+| 与 AI 操作绑定的补集操作 | 勾选即范围，补集需取消勾选后分两轮说 |
