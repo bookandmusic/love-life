@@ -102,6 +102,81 @@ func FormatParams(args map[string]any) string {
 	return sb.String()
 }
 
+// FormatParamsFor 按工具定制审计的人类可读摘要；未定制的工具走通用 FormatParams。
+//
+// 定制的原因：通用格式化按字母序拼 `key: value` 并对超长单值截断，
+// 批量删除会落成 `ids: [1,2,3…`（看不出删了几条）。审计口径要求
+// 「kind + 条数 + 前 3 个 id」（AI模式设计「批量删除契约」· 通道与审计）。
+func formatParamsFor(tool string, args map[string]any) string {
+	if tool == "propose_delete" {
+		return formatDeleteParams(args)
+	}
+	return FormatParams(args)
+}
+
+// formatDeleteParams 批量删除的审计摘要：kind + 条数 + 前 3 个 id。
+//
+// 三种入参形态：`{kind,id}` 单条 / `{kind,ids[]}` 显式批量 / `{kind,source}` 句柄。
+// 句柄在出卡时展开为具体 ids 并写进 `params_json`——**resolve 时的审计用的正是它**，
+// 故那一条能给出条数与前 3 个 id；出卡前的 pending 审计只有句柄，如实记 kind + source。
+func formatDeleteParams(args map[string]any) string {
+	kind := str(args, "kind")
+	ids := deleteParamIDs(args)
+	switch {
+	case len(ids) > 0:
+		head := ids
+		if len(head) > 3 {
+			head = head[:3]
+		}
+		parts := make([]string, 0, len(head))
+		for _, id := range head {
+			parts = append(parts, fmt.Sprintf("%v", id))
+		}
+		tail := ""
+		if len(ids) > len(head) {
+			tail = "…"
+		}
+		return fmt.Sprintf("kind: %s, 条数: %d, ids: [%s%s]", kind, len(ids), strings.Join(parts, ", "), tail)
+	case args["source"] != nil:
+		if src := parseSource(args); src != nil {
+			return fmt.Sprintf("kind: %s, source: %s", kind, src.ResultID)
+		}
+	}
+	return FormatParams(args)
+}
+
+// deleteParamIDs 从入参取删除目标 id（单条 id 或批量 ids），两者都没有时返回空。
+func deleteParamIDs(args map[string]any) []int64 {
+	if list, ok := args["ids"].([]any); ok && len(list) > 0 {
+		ids := make([]int64, 0, len(list))
+		for i := range list {
+			// 非正数一律丢弃：入参非法时（如 id 传了字符串）宁可退回通用摘要，
+			// 也不能在审计里写成「条数: 1, ids: [0]」这种失实摘要。
+			if n := asInt64(list[i]); n > 0 {
+				ids = append(ids, n)
+			}
+		}
+		return ids
+	}
+	if n := asInt64(args["id"]); n > 0 {
+		return []int64{n}
+	}
+	return nil
+}
+
+// asInt64 单值容错取整：模型 JSON 解码给 float64、提案回读给 int64、内部直传给 int。
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case float64:
+		return int64(n)
+	case int64:
+		return n
+	case int:
+		return int64(n)
+	}
+	return 0
+}
+
 func formatParamValue(v any) string {
 	if str, ok := v.(string); ok {
 		b, _ := json.Marshal(textutil.TruncMark(str, auditParamValueMax))
@@ -112,11 +187,31 @@ func formatParamValue(v any) string {
 }
 
 // AuditWithLatency 工具审计带 latency 版本：argsJSON 原样存 params_digest，
-// 人类可读摘要存 params。latencyMs 仅 ai/pat 调用有值。
+// 人类可读摘要存 params（由 argsJSON 派生）。latencyMs 仅 ai/pat 调用有值。
 func (d *Deps) AuditWithLatency(ctx context.Context, userID int64, tool, argsJSON, result string, latencyMs int64) {
+	d.auditWithLatency(ctx, userID, tool, argsJSON, nil, result, latencyMs)
+}
+
+// AuditWithLatencyParams 同 AuditWithLatency，但**人类可读摘要改由 params 派生**
+// （`params_digest` 仍原样存 argsJSON）。
+//
+// 用于提案类工具：读工具/提案的出卡会把入参归一化——最典型是 `source` 句柄在此展开成
+// 具体 ids。审计口径要求摘要记「kind + 条数 + 前 3 个 id」，只看模型原始入参只能记到句柄
+// 名，故这条 pending 审计必须用归一化后的参数。resolve 那条本就用落库的 params_json。
+func (d *Deps) AuditWithLatencyParams(ctx context.Context, userID int64, tool, argsJSON string, params map[string]any,
+	result string, latencyMs int64) {
+	d.auditWithLatency(ctx, userID, tool, argsJSON, params, result, latencyMs)
+}
+
+func (d *Deps) auditWithLatency(ctx context.Context, userID int64, tool, argsJSON string, summaryFrom map[string]any,
+	result string, latencyMs int64) {
 	var args map[string]any
 	_ = json.Unmarshal([]byte(argsJSON), &args)
-	_ = d.DB.InsertAuditLogFull(ctx, store.ActorTypeAI, userID, tool, argsJSON, FormatParams(args), result, &latencyMs)
+	src := args
+	if summaryFrom != nil {
+		src = summaryFrom
+	}
+	_ = d.DB.InsertAuditLogFull(ctx, store.ActorTypeAI, userID, tool, argsJSON, formatParamsFor(tool, src), result, &latencyMs)
 }
 
 // aiOperatorLabel AI 操作者名称查不到时的回退标签。
@@ -153,17 +248,7 @@ func str(args map[string]any, key string) string {
 
 // num 容错取整：参数来源有三处（模型 JSON 解码=float64、提案 params 回读=float64、
 // 服务端内部直传=int64/int），三者都要认，否则「参数看着在、执行时却丢了」。
-func num(args map[string]any, key string) int64 {
-	switch v := args[key].(type) {
-	case float64:
-		return int64(v)
-	case int64:
-		return v
-	case int:
-		return int64(v)
-	}
-	return 0
-}
+func num(args map[string]any, key string) int64 { return asInt64(args[key]) }
 
 func flt(args map[string]any, key string) float64 {
 	switch v := args[key].(type) {
