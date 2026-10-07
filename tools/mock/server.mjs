@@ -44,7 +44,7 @@ const server = http.createServer((req, res) => {
   req.on('data', (chunk) => (body += chunk))
   req.on('end', () => {
     // JSON 预校验：带 body 的请求必须是合法 JSON（否则 400，不进入 handler）
-    // multipart/form-data（媒体上传）跳过预校验，直接交给 handler（A2）
+    // multipart/form-data（媒体上传）跳过预校验，直接交给 handler
     const contentType = req.headers['content-type'] || ''
     if (req.method !== 'GET' && body.trim() && !contentType.startsWith('multipart/')) {
       try { JSON.parse(body) } catch {
@@ -59,7 +59,9 @@ const server = http.createServer((req, res) => {
       return
     }
     try {
-      const result = route.handler(req.url || pathname, body, req.headers, res)
+      // 第 1 参仍是 url 字符串（存量路由依赖 match/queryParams）；
+      // 第 4 参从 res 改为 URL 对象（无 handler 曾用它收 res，SSE 均经返回的闭包写流）——供按 query 过滤的路由使用
+      const result = route.handler(req.url || pathname, body, req.headers, new URL(req.url || '/', 'http://mock.local'))
       if (typeof result === 'function') {
         // 非 JSON 响应：handler 直接返回写 response 的函数
         result(res)

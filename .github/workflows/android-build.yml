@@ -84,8 +84,7 @@ jobs:
           } > keystore.properties
 
       - name: 构建 Android APK + AAB（release）
-        working-directory: app
-        run: pnpm tauri android build
+        run: make android-apk
 
       - name: 收集并重命名产物
         run: |

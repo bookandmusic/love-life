@@ -11,9 +11,9 @@ import { randomBytes } from 'node:crypto'
 
 // ---------- 认证与用户 ----------
 export const USERS = [
-  { id: 1, username: 'admin', password: 'admin123456', role: 'admin', nickname: '管理员', avatar: '', birthday: '', ai_style: '简洁', chat_retention_days: 30 },
-  { id: 2, username: 'girl', password: 'girl123456', role: 'girl', nickname: '她', avatar: '', birthday: '1998-06-15', ai_style: '文艺', chat_retention_days: 30 },
-  { id: 3, username: 'boy', password: 'boy123456', role: 'boy', nickname: '他', avatar: '', birthday: '1996-03-22', ai_style: '幽默', chat_retention_days: -1 },
+  { id: 1, username: 'admin', password: 'admin123456', role: 'admin', nickname: '管理员', avatar: '', ai_style: '简洁' },
+  { id: 2, username: 'girl', password: 'girl123456', role: 'girl', nickname: '她', avatar: '', ai_style: '文艺' },
+  { id: 3, username: 'boy', password: 'boy123456', role: 'boy', nickname: '他', avatar: '', ai_style: '幽默' },
 ]
 
 export const tokenStore = new Map()
@@ -60,7 +60,7 @@ export const posts = [
   { id: 4, author_id: 3, content: '今天加班到很晚，回家看到她留了热汤，心里暖暖的。', mood: '感动', point_id: null, location_name: '', media: [], created_at: new Date(now - 5 * day).toISOString() },
   { id: 5, author_id: 2, content: '上海的夜景真的太美了，灯光洒在黄浦江上，拍了好多照片。', mood: '兴奋', point_id: 3, location_name: '上海 · 外滩', media: [{ id: 5, kind: 'photo', thumb_url: '/api/v1/media/file/5' }, { id: 6, kind: 'photo', thumb_url: '/api/v1/media/file/6' }], created_at: new Date(now - 8 * day).toISOString() },
   { id: 6, author_id: 3, content: '还记得去年在苏州平江路，一起在小桥上看了很久的落日。', mood: '怀念', point_id: 4, location_name: '苏州 · 平江路', media: [], created_at: new Date(now - 12 * day).toISOString() },
-  // 「去年的今天」按运行日动态计算，保证 D8 那年今日永远有命中数据（固定日期会过期导致断言假红）；
+  // 「去年的今天」按运行日动态计算，保证 那年今日永远有命中数据（固定日期会过期导致断言假红）；
   // 用本地年月日构造，与服务端/APP 的「本地时区月日」口径一致。
   { id: 7, author_id: 2, content: '去年的今天，我们刚认识——她穿了一件浅蓝的裙子，笑起来眼睛弯弯的。', mood: '心动', point_id: null, location_name: '大理 · 古城', media: [], created_at: lastYearToday() },
 ]
@@ -77,8 +77,8 @@ export const favorites = new Set(['1:2', '5:3'])
 
 // ---------- 相册 ----------
 export const albums = [
-  { id: 1, type: 'manual', name: '海边合集', description: '所有看海的时光', is_hidden: false, cover_url: '/api/v1/media/file/5', item_count: 2, created_by: 2 },
-  { id: 2, type: 'manual', name: '苏州回忆', description: '平江路与落日', is_hidden: false, cover_url: '/api/v1/media/file/6', item_count: 1, created_by: 2 },
+  { id: 1, name: '海边合集', description: '所有看海的时光', cover_url: '/api/v1/media/file/5', item_count: 2, created_by: 2 },
+  { id: 2, name: '苏州回忆', description: '平江路与落日', cover_url: '/api/v1/media/file/6', item_count: 1, created_by: 2 },
 ]
 
 /**
@@ -93,7 +93,7 @@ function mediaRow(id, { post_id = null, kind = 'photo', taken_at, author_id = 2,
     thumb_url: `/api/v1/media/file/${id}?v=thumb`,
     url: `/api/v1/media/file/${id}?v=raw&kind=${kind}&ext=${ext}`,
   }
-  // D4：音频必带时长（秒，DESIGN 12）；默认给样例值，可显式覆盖
+  // 音频必带时长（秒）；默认给样例值，可显式覆盖
   if (kind === 'audio') row.duration = duration ?? 42.5
   return row
 }
@@ -130,8 +130,8 @@ export const anniversaries = [
   { id: 5, name: '中秋节', date: '2026-08-15', remind_days_before: 3, created_by: 1, type: 'lunar' },
 ]
 
-// ---------- 通知（站内 8+1 类事件；字段对齐真实：snapshot 为 JSON 字符串，快照键 operator 等） ----------
-// 8 业务事件：post_liked / post_commented / post_created / post_favorited / album_created / anniversary_reminder / post_deleted / comment_deleted，加 media_deleted → 8+1
+// ---------- 通知（字段对齐真实：snapshot 为 JSON 字符串，快照键 operator 等） ----------
+// 站内共 12 类事件（ARCHITECTURE「通知分发器」）；此处抽样展示常见几种
 export const notifications = [
   { id: 1, recipient_id: 2, event_type: 'post_liked', target_type: 'post', target_id: 1, is_read: 0, snapshot: '{"operator":"他"}', created_at: new Date(now - 1 * 3600000).toISOString() },
   { id: 2, recipient_id: 2, event_type: 'post_commented', target_type: 'post', target_id: 1, is_read: 0, snapshot: '{"operator":"他","content":"照片拍得真好！下次带我去"}', created_at: new Date(now - 2 * 3600000).toISOString() },
@@ -141,11 +141,10 @@ export const notifications = [
   { id: 6, recipient_id: 3, event_type: 'album_created', target_type: 'album', target_id: 2, is_read: 1, snapshot: '{"operator":"她","name":"苏州回忆"}', created_at: new Date(now - 50 * 3600000).toISOString() },
   { id: 7, recipient_id: 2, event_type: 'post_deleted', target_type: 'post', target_id: null, is_read: 1, snapshot: '{"deleted_by":"他","content":"被我删除的动态内容"}', created_at: new Date(now - 55 * 3600000).toISOString() },
   { id: 8, recipient_id: 2, event_type: 'comment_deleted', target_type: 'comment', target_id: null, is_read: 1, snapshot: '{"deleted_by":"他","content":"被你删除的评论"}', created_at: new Date(now - 60 * 3600000).toISOString() },
-  { id: 9, recipient_id: 3, event_type: 'media_deleted', target_type: 'media', target_id: null, is_read: 1, snapshot: '{"deleted_by":"她"}', created_at: new Date(now - 65 * 3600000).toISOString() },
-  { id: 10, recipient_id: 2, event_type: 'system', target_type: null, target_id: null, is_read: 1, snapshot: '{"message":"系统维护公告"}', created_at: new Date(now - 72 * 3600000).toISOString() },
+  { id: 9, recipient_id: 2, event_type: 'system', target_type: null, target_id: null, is_read: 1, snapshot: '{"message":"系统维护公告"}', created_at: new Date(now - 72 * 3600000).toISOString() },
 ]
 
-// ---------- 地图点位（A7：无 merged_into；同名即同一点位，坐标以先创建者为准） ----------
+// ---------- 地图点位（无 merged_into；同名即同一点位，坐标以先创建者为准） ----------
 export const mapPoints = [
   { id: 1, name: '厦门 · 鼓浪屿', lat: 24.4438, lng: 118.0683, visit_date: '2026-08-19', description: '', source: 'post', created_at: new Date(now - 1 * day).toISOString(), deleted_at: null, created_by: 2 },
   { id: 2, name: '杭州 · 西湖', lat: 30.2592, lng: 120.1481, visit_date: '2026-08-17', description: '', source: 'post', created_at: new Date(now - 3 * day).toISOString(), deleted_at: null, created_by: 2 },
@@ -185,13 +184,17 @@ export const mapSources = [
 ]
 
 // ---------- AI 对话 ----------
+// 多会话：会话列表（懒创建——首条消息送达时建，标题=首条消息摘要）；消息按 session_id 归属
+export const chatSessions = [
+  { id: 1, user_id: 2, title: '历史会话', created_at: new Date(now - 2 * 3600000).toISOString(), updated_at: new Date(now - 2 * 3600000).toISOString() },
+]
 export const chatHistory = [
-  { id: 1, role: 'assistant', content: '你好呀！我是你的 AI 助手，可以帮你记录动态、纪念日、管理相册。今天有什么想记下的吗？', created_at: new Date(now - 2 * 3600000).toISOString() },
+  { id: 1, session_id: 1, role: 'assistant', content: '你好呀！我是你的 AI 助手，可以帮你记录动态、纪念日、管理相册。今天有什么想记下的吗？', created_at: new Date(now - 2 * 3600000).toISOString() },
 ]
 export const actions = new Map()
 
 // 计数器（所有写操作共享）
-export const seq = { post: 100, chat: 100, action: 100, comment: 100, album: 100, anniversary: 100, media: 100, mapPoint: 100, mapSource: 100, notification: 100, pat: 10, provider: 10, style: 10, webhook: 10, user: 10 }
+export const seq = { post: 100, chat: 100, session: 1, action: 100, comment: 100, album: 100, anniversary: 100, media: 100, mapPoint: 100, mapSource: 100, notification: 100, pat: 10, provider: 10, style: 10, webhook: 10, user: 10 }
 // --- Admin（保留原有全文） ---
 export const dashboardStats = [
   { label: '动态总数', value: '128', change: '+12 本月', trend: 'up', icon: 'message-square' },
@@ -205,23 +208,22 @@ export const recentActivity = [
   { icon: 'heart', text: '点赞了一条动态', time: '昨天' },
   { icon: 'message-circle', text: '发表了一条评论', time: '昨天' },
 ]
-// AI 供应商（协议化配置，DESIGN §9）：列表有序，调用从第一个开始、失败依次向下（排序即故障切换链）。
-// has_key：秘钥是否已配置（明文只写不回读）。
-// models：每条 = { id, temperature|null, max_tokens|null }——参数挂模型级，null = 调用不传（用供应商默认）。
-// default_model：models 中某项的 id。
+// AI 供应商与模型链（按类型分链）：供应商 = 协议 + 地址 + 秘钥（只写不读）；
+// 模型条目按 kind 分两条链（chat / embedding），链内顺序 = 故障切换顺序，供应商本身无默认模型。
+// models：每条 = { id, kind, temperature|null, max_tokens|null }——参数挂条目级，null = 调用不传。
 export const modelProviders = [
   { id: 1, api_type: 'openai-chat', name: 'OpenAI', base_url: 'https://api.openai.com/v1', has_key: true, models: [
-    { id: 'gpt-4o', temperature: null, max_tokens: null },
-    { id: 'gpt-4o-mini', temperature: null, max_tokens: null },
-  ], default_model: 'gpt-4o' },
-  { id: 2, api_type: 'anthropic', name: 'Claude', base_url: 'https://api.anthropic.com', has_key: true, models: [
-    { id: 'claude-sonnet-4-20250514', temperature: 0.7, max_tokens: null },
-    { id: 'claude-opus-4-1-20250805', temperature: null, max_tokens: null },
-  ], default_model: 'claude-sonnet-4-20250514' },
+    { id: 'gpt-4o', kind: 'chat', temperature: null, max_tokens: null },
+    { id: 'gpt-4o-mini', kind: 'chat', temperature: null, max_tokens: null },
+  ] },
+  { id: 2, api_type: 'openai-chat', name: '本地嵌入', base_url: 'http://127.0.0.1:11434/v1', has_key: true, models: [
+    { id: 'bge-m3', kind: 'embedding', temperature: null, max_tokens: null },
+  ] },
+  { id: 3, api_type: 'anthropic', name: 'Claude', base_url: 'https://api.anthropic.com', has_key: true, models: [
+    { id: 'claude-sonnet-4-20250514', kind: 'chat', temperature: 0.7, max_tokens: null },
+    { id: 'claude-opus-4-1-20250805', kind: 'chat', temperature: null, max_tokens: null },
+  ] },
 ]
-// 语义检索（嵌入模型）配置：复用某个 OpenAI Chat 协议供应商的地址与 Key 调 /embeddings；
-// provider_id = 0 表示关闭语义检索（检索回落关键词）。语义与 server/internal/api/embedding.go 一致。
-export const embeddingConfig = { provider_id: 0, model: '' }
 export const systemPrompt = {
   content: '你们是这对情侣的生活助手。说话温暖简短，主动回顾共同记忆；写操作先出确认卡片，经发起人确认后才执行。',
   updatedAt: '2026-08-20 21:00',
@@ -234,42 +236,31 @@ export const styles = [
   { id: 3, name: '简洁', prompt: '回答尽量简短，直给要点，不啰嗦。', builtin: true },
 ]
 export const styleDefaults = { id: 1 }
-// schema：参数名册（键=参数名，值="类型 — 说明"）；空对象 = 无参数。与 DESIGN §6 工具清单对应
+// schema：参数名册。与服务端 16 工具同名：读 7 / 提案 8 / 删除 1（propose_delete 仅内部通道）。
 export const tools = [
-  { name: 'create_post', description: '创建一条新动态', category: '动态', enabled: true, schema: { content: 'string — 动态正文', media_tokens: 'string[] — 已上传媒体令牌（可选）', location_name: 'string — 地点名（可选）' } },
-  { name: 'delete_post', description: '删除动态（进入回收站）', category: '动态', enabled: true, schema: { post_id: 'number — 动态 ID' } },
-  { name: 'search_posts', description: '语义搜索历史动态', category: '动态', enabled: true, schema: { query: 'string — 语义检索词' } },
-  { name: 'get_today_in_history', description: '获取那年今日内容', category: '动态', enabled: true, schema: {} },
-  { name: 'create_album', description: '创建专门相册', category: '相册', enabled: true, schema: { name: 'string — 相册名', description: 'string — 描述（可选）' } },
-  { name: 'add_photos_to_album', description: '将照片加入相册', category: '相册', enabled: true, schema: { album_id: 'number — 相册 ID', media_ids: 'number[] — 待加入媒体 ID（来自动态媒体池）' } },
-  { name: 'remove_photos_from_album', description: '从相册移除照片（不影响照片本身）', category: '相册', enabled: true, schema: { album_id: 'number — 相册 ID', media_ids: 'number[] — 待移除媒体' } },
-  { name: 'suggest_photo_grouping', description: 'AI 推荐照片分组', category: '相册', enabled: true, schema: { media_ids: 'number[] — 待分组照片' } },
-  { name: 'list_albums', description: '列出所有相册（时间轴/集合视图）', category: '相册', enabled: true, schema: { view_type: 'string — timeline（全部）或 collection（手动相册）', page: 'number — 页码（从 1 开始，可选）', page_size: 'number — 每页数量（可选）' } },
-  { name: 'delete_album', description: '删除手动相册（进入回收站）', category: '相册', enabled: true, schema: { album_id: 'number — 相册 ID' } },
-  { name: 'create_map_point', description: '创建地图点位（足迹）', category: '地图', enabled: true, schema: { name: 'string — 地点名', latitude: 'number — 纬度', longitude: 'number — 经度', visit_date: 'string — 到访日期 YYYY-MM-DD（可选）', description: 'string — 描述（可选）' } },
-  { name: 'delete_map_point', description: '删除地图点位（进入回收站）', category: '地图', enabled: true, schema: { point_id: 'number — 点位 ID' } },
-  { name: 'search_locations', description: '按地点名称搜索足迹', category: '地图', enabled: true, schema: { query: 'string — 地点关键词' } },
-  { name: 'get_location_posts', description: '获取某地点下所有动态', category: '地图', enabled: true, schema: { location_id: 'number — 点位 ID' } },
-  { name: 'create_anniversary', description: '创建纪念日', category: '纪念日', enabled: true, schema: { name: 'string — 名称', date: 'string — YYYY-MM-DD', type: 'solar | lunar', remind_days_before: 'number — 提前提醒天数' } },
-  { name: 'delete_anniversary', description: '删除纪念日（进入回收站）', category: '纪念日', enabled: true, schema: { anniversary_id: 'number — 纪念日 ID' } },
-  { name: 'get_next_anniversary', description: '获取下一个纪念日信息', category: '纪念日', enabled: true, schema: {} },
-  { name: 'configure_reminder', description: '配置纪念日提醒', category: '纪念日', enabled: true, schema: { anniversary_id: 'number — 纪念日 ID', days_before: 'number — 提前提醒天数（0-90）' } },
-  { name: 'get_space_summary', description: '空间概览（天数/动态/相册/足迹/纪念日聚合）', category: '空间', enabled: true, schema: {} },
-  { name: 'get_timeline_summary', description: '时间线统计（按月/年分布）', category: '空间', enabled: true, schema: { granularity: 'month | year — 粒度' } },
-  { name: 'toggle_like', description: '点赞/取消点赞动态', category: '互动', enabled: true, schema: { post_id: 'number — 动态 ID' } },
-  { name: 'toggle_favorite', description: '收藏/取消收藏动态', category: '互动', enabled: true, schema: { post_id: 'number — 动态 ID' } },
-  { name: 'list_favorites', description: '列出我收藏的动态', category: '互动', enabled: true, schema: { page: 'number — 页码' } },
-  { name: 'create_comment', description: '发表评论', category: '互动', enabled: true, schema: { post_id: 'number — 动态 ID', content: 'string — 评论内容' } },
-  { name: 'delete_comment', description: '删除评论（软删除，进入回收站）', category: '互动', enabled: true, schema: { comment_id: 'number — 评论 ID' } },
-  { name: 'list_comments', description: '列出某条动态下的评论', category: '互动', enabled: true, schema: { post_id: 'number — 动态 ID' } },
+  { name: 'find_posts', description: '查动态：关键词/日期/心情/地点，或那年今日', category: '动态', enabled: true, schema: { query: 'string — 可选', on_this_day: 'boolean' } },
+  { name: 'find_albums', description: '查相册（不含媒体本体）', category: '相册', enabled: true, schema: { query: 'string' } },
+  { name: 'find_media', description: '查媒体；group_by 按日期或地点聚合未归档媒体', category: '相册', enabled: true, schema: { group_by: 'date | place' } },
+  { name: 'find_anniversaries', description: '查纪念日', category: '纪念日', enabled: true, schema: { query: 'string' } },
+  { name: 'find_places', description: '查足迹点位与离线地名候选', category: '地图', enabled: true, schema: { query: 'string' } },
+  { name: 'get_record', description: '取一条记录详情', category: '动态', enabled: true, schema: { kind: 'post | album | anniversary | place | comment | media', id: 'number' } },
+  { name: 'get_space_stats', description: '空间聚合概览：动态/媒体/相册/足迹/纪念日/互动总量与分布，一次全给', category: '空间', enabled: true, schema: {} },
+  { name: 'propose_post', description: '提案发布动态（确认后生效）', category: '动态', enabled: true, schema: { content: 'string — 正文', mood: 'string', place: 'string — 地点名' } },
+  { name: 'propose_comment', description: '提案评论动态', category: '互动', enabled: true, schema: { post_id: 'number', content: 'string' } },
+  { name: 'propose_album', description: '提案新建相册；首批媒体用 source 引用结果集', category: '相册', enabled: true, schema: { name: 'string', source: 'object — {result_id, group?}' } },
+  { name: 'propose_album_members', description: '提案相册增删媒体（一次确认）', category: '相册', enabled: true, schema: { album_id: 'number', add_source: 'object', remove_source: 'object' } },
+  { name: 'propose_anniversary', description: '提案新建纪念日', category: '纪念日', enabled: true, schema: { name: 'string', date: 'string', calendar: 'solar | lunar' } },
+  { name: 'propose_reminder', description: '提案设置纪念日提醒', category: '纪念日', enabled: true, schema: { anniversary_id: 'number', days_before: 'number' } },
+  { name: 'propose_place', description: '提案记录地点', category: '地图', enabled: true, schema: { place_query: 'string', visit_date: 'string' } },
+  { name: 'propose_reaction', description: '提案点赞/收藏（设为语义，状态无变化不出卡）', category: '互动', enabled: true, schema: { post_id: 'number', like: 'boolean', favorite: 'boolean' } },
+  { name: 'propose_delete', description: '提案移入回收站（仅 APP 内部通道）', category: '动态', enabled: true, schema: { kind: 'string', id: 'number' } },
 ]
 export const recycle = [
   { id: 1, type: '动态', summary: '今天天气真好，适合出去走走...', deletedAt: '2026-08-20 14:30', deletedBy: 'AI 助手' },
   { id: 2, type: '评论', summary: '好漂亮的照片！', deletedAt: '2026-08-19 10:15', deletedBy: 'Boy' },
-  { id: 3, type: '照片', summary: 'IMG_20260815.jpg', deletedAt: '2026-08-18 20:45', deletedBy: 'Girl' },
 ]
-export const security = { recycleRetentionDays: 30, chatRetention: '30' }
-// 回收站操作日志：操作人/时间/内容摘要（恢复 + 系统超期永久删除）；不可删除，永久保留（DESIGN §5/第9章）
+export const security = { recycleRetentionDays: 30 }
+// 回收站操作日志：操作人/时间/内容摘要（恢复 + 系统超期永久删除）；不可删除，永久保留
 export const restoreLog = [
   { time: '2026-08-21 09:12:44', operator: 'admin', summary: '动态"上次去海边的那组照片"' },
   { time: '2026-08-15 22:03:10', operator: 'admin', summary: '评论"下次还要一起去！"' },
@@ -291,7 +282,7 @@ export const alerts = [
 ]
 // latencyMs：模型响应耗时，仅 ai/pat 调用有值；user 直接写库为 null
 export const audit = [
-  { time: '2026-08-24 10:30:15', actorType: 'user', actor: 'Girl', action: 'create_post', params: 'content: "周末出游"', result: 'success', latencyMs: null },
+  { time: '2026-08-24 10:30:15', actorType: 'user', actor: 'Girl', action: 'propose_post', params: 'content: "周末出游"', result: 'success', latencyMs: null },
   { time: '2026-08-24 09:15:42', actorType: 'ai', actor: 'GPT-4o', action: 'search_posts', params: 'query: "海边"', result: 'success', latencyMs: 1320 },
   { time: '2026-08-23 22:05:18', actorType: 'pat', actor: 'Claude Desktop', action: 'list_favorites', params: 'page: 1', result: 'success', latencyMs: 861 },
   { time: '2026-08-23 18:30:05', actorType: 'user', actor: 'Boy', action: 'delete_comment', params: 'comment_id: 42', result: 'success', latencyMs: null },

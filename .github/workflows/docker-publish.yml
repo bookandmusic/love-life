@@ -36,12 +36,16 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # tag 规则（YAML 注释，不能写进 tags: 块——块内每行都会被当作规则解析，
+          # metadata-action 不忽略 # 开头的行，会产出垃圾 tag）。
+          #   1) {{raw}} 保留 v 前缀（v1.2.3，与 git tag 同名）
+          #   2) {{version}} 产出 1.2.3；3) major.minor 产出 1.2
+          #   4) 裸主版本仅非 v0.x 阶段产出（v0.x 不发 :0）
+          #   5) sha-<短SHA> 便于追溯
           tags: |
-            # {{raw}} 保留 v 前缀（v1.2.3，与 git tag 同名）；{{version}} 产出 1.2.3
             type=semver,pattern={{raw}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
-            # v0.x 阶段不产出裸主版本 :0
             type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
             type=sha,prefix=sha-,format=short
 

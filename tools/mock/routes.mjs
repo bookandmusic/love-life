@@ -15,8 +15,8 @@ import {
   USERS, tokenStore, space, posts, comments, likes, favorites,
   albums, timelineMedia, anniversaries, notifications, mapSources, mapPoints,
   GEOCODE_PLACES,
-  chatHistory, actions, seq, now,
-  dashboardStats, recentActivity, aiUsage, alerts, modelProviders, embeddingConfig, systemPrompt, styles, styleDefaults,
+  chatHistory, chatSessions, actions, seq, now,
+  dashboardStats, recentActivity, aiUsage, alerts, modelProviders, systemPrompt, styles, styleDefaults,
   tools, recycle, restoreLog, security, audit, tokens, webhooks, adminUsers,
   newToken, userIdFromToken, userById,
 } from './fixtures.mjs'
@@ -33,7 +33,6 @@ const badRequest = (msg) => ({ _s: 400, d: { error: msg } })
 const unauthorized = (msg) => ({ _s: 401, d: { error: msg } })
 const forbidden = (msg) => ({ _s: 403, d: { error: msg } })
 const notFound = (msg) => ({ _s: 404, d: { error: msg } })
-const conflict = (msg) => ({ _s: 409, d: { error: msg } }) // 用户名冲突等「已存在」类（对齐服务端 409）
 
 // 占位图：直接返回原始 SVG 字符串（而非 data URI，避免此前 base64 解码错误）
 const placeholder = (id, w = 512, h = 512) =>
@@ -109,7 +108,7 @@ function spaceResponse() {
   }
   const na = nextAnniversaryInfo()
   const members = USERS.filter((u) => u.role !== 'admin').map((u) => ({ id: u.id, nickname: u.nickname, role: u.role, avatar: u.avatar || '' }))
-  // S5：单靠 next_anniversary 无法区分「没有纪念日」与「纪念日存在但日期无效」，
+  // 单靠 next_anniversary 无法区分「没有纪念日」与「纪念日存在但日期无效」，
   // 首页空态需要计数（即时统计，不落库）
   return {
     name: space.name,
@@ -130,7 +129,7 @@ function mediaOut(m) {
     url: m.url || `/api/v1/media/file/${m.id}?v=raw`,
     thumb_url: m.thumb_url || `/api/v1/media/file/${m.id}?v=thumb`,
   }
-  // D4 音频时长（秒）；照片/视频不带 duration 字段
+  // 音频时长（秒）；照片/视频不带 duration 字段
   if (m.kind === 'audio' && typeof m.duration === 'number') out.duration = m.duration
   return out
 }
@@ -206,7 +205,7 @@ function locatePlace(name) {
 // ---------- 路由 ----------
 const routes = []
 
-// 健康检查：客户端双地址探测（AP1，DESIGN §11.2）ping 的就是这里，无鉴权。
+// 健康检查：客户端双地址探测（AP1）ping 的就是这里，无鉴权。
 // 此前 mock 缺该路由 → 探测恒 404，登录页状态点恒显示「不可达」。
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/health$/, handler: () => ok({ status: 'ok' }) })
 
@@ -262,7 +261,6 @@ routes.push({ method: 'PATCH', pattern: /^\/api\/v1\/me$/, handler: (url, body, 
   if (b.nickname !== undefined) u.nickname = b.nickname
   if (b.birthday !== undefined) u.birthday = b.birthday
   if (b.ai_style !== undefined) u.ai_style = b.ai_style
-  if (b.chat_retention_days !== undefined) u.chat_retention_days = b.chat_retention_days
   return ok({ status: 'ok' })
 }})
 
@@ -273,7 +271,7 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/posts$/, handler: (url, body,
   const page = parseInt(q.page) || 1
   const pageSize = parseInt(q.page_size) || 20
   let sorted = [...posts].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-  // D8 那年今日（REQUIREMENTS §4.1）：先按同月同日过滤，再分页——否则只能在最新一页里碰运气
+ // 那年今日：先按同月同日过滤，再分页——否则只能在最新一页里碰运气
   if (q.memories === '1') {
     // 日期口径（与服务端 store/timeutil.go 一致）：created_at 落库为 UTC，但「今天」按**本地时区**判定；
     // 且只取**历史**年份——当年今天发的动态不算「那年今日」（与服务端 ListPostsOnMonthDay 同口径）。
@@ -360,7 +358,7 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/posts\/\d+$/, handler: (ur
   const idx = posts.findIndex((x) => x.id === id)
   if (idx === -1) return notFound()
   const p = posts[idx]
-  // F7 自删静默 + REQUIREMENTS §4.8：内容删除仅通知被删内容作者（非本人删除时），其余人静默
+ // F7 自删静默 + ：内容删除仅通知被删内容作者（非本人删除时），其余人静默
   if (p.author_id !== uid) {
     addNotification(p.author_id, 'post_deleted', 'post', id, { deleted_by: operatorName(uid), content: (p.content || '').slice(0, 50) })
   }
@@ -384,7 +382,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/posts\/\d+\/like$/, handler:
     const op = operatorName(uid)
     for (const r of partnerIds(uid)) addNotification(r, 'post_liked', 'post', id, { operator: op })
   }
-  // 响应维持 {liked}，计数由 APP 本地增减（A6）
+  // 响应维持 {liked}，计数由 APP 本地增减
   return ok({ liked })
 }})
 
@@ -443,7 +441,7 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/comments\/\d+$/, handler: 
   if (!id) return notFound()
   const c = comments.find((x) => x.id === id)
   if (!c) return notFound()
-  // F7 自删静默 + REQUIREMENTS §4.8：评论删除仅通知评论作者（非本人删除时），其余人静默
+ // F7 自删静默 + ：评论删除仅通知评论作者（非本人删除时），其余人静默
   if (c.author_id !== uid) {
     addNotification(c.author_id, 'comment_deleted', 'comment', id, { deleted_by: operatorName(uid), content: (c.content || '').slice(0, 50) })
   }
@@ -460,17 +458,37 @@ function liveTimelineMedia() {
   })
 }
 
-routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums$/, handler: (url) => {
-  const q = queryParams(url)
-  const includeHidden = q.include_hidden === '1'
-  const list = albums.filter((a) => includeHidden || !a.is_hidden).map((a) => ({
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums$/, handler: () => {
+  const list = albums.map((a) => ({
     ...a,
-    // D4 月度虚拟口径：该月未归属手动相册的媒体数
-    item_count: a.type === 'monthly'
-      ? liveTimelineMedia().filter((m) => m.album_id == null && (m.taken_at || m.created_at || '').slice(0, 7) === a.month_key).length
-      : liveTimelineMedia().filter((m) => m.album_id === a.id).length,
+    item_count: liveTimelineMedia().filter((m) => m.album_id === a.id).length,
   }))
   return ok({ items: list })
+}})
+
+// 月度分组：查询即时聚合（该月未归属媒体按月计数），非实体——与真实后端同口径
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums\/months$/, handler: () => {
+  const byMonth = new Map()
+  for (const m of liveTimelineMedia()) {
+    if (m.album_id != null) continue
+    const key = (m.taken_at || m.created_at || '').slice(0, 7)
+    if (!/^\d{4}-\d{2}$/.test(key)) continue
+    const g = byMonth.get(key) ?? { month_key: key, item_count: 0, cover_url: '' }
+    if (g.item_count === 0) g.cover_url = `/api/v1/media/file/${m.id}?v=thumb`
+    g.item_count += 1
+    byMonth.set(key, g)
+  }
+  const items = [...byMonth.values()].sort((x, y) => y.month_key.localeCompare(x.month_key))
+  return ok({ items })
+}})
+
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums\/months\/([\d-]{7})$/, handler: (url) => {
+  const key = decodeURIComponent(url.split('/').pop() ?? '')
+  if (!/^\d{4}-\d{2}$/.test(key)) return notFound()
+  const media = liveTimelineMedia()
+    .filter((m) => m.album_id == null && (m.taken_at || m.created_at || '').slice(0, 7) === key)
+    .map(timelineItemOut)
+  return ok({ month_key: key, media })
 }})
 
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/albums$/, handler: (url, body, headers) => {
@@ -478,9 +496,9 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/albums$/, handler: (url, bod
   if (!uid) return unauthorized()
   const b = JSON.parse(body || '{}')
   const id = ++seq.album
-  const a = { id, type: 'manual', name: b.name || '新相册', description: b.description || '', is_hidden: false, cover_url: '', item_count: 0, created_by: uid }
+  const a = { id, name: b.name || '新相册', description: b.description || '', cover_url: '', item_count: 0, created_by: uid }
   albums.push(a)
-  // 通知另一方「相册上新」（按 REQUIREMENTS §4.8：对方创建相册时通知，自建静默）
+ // 通知另一方「相册上新」（按 ：对方创建相册时通知，自建静默）
   for (const r of partnerIds(uid)) addNotification(r, 'album_created', 'album', id, { operator: operatorName(uid), name: a.name })
   return created(a)
 }})
@@ -490,15 +508,7 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums\/\d+$/, handler: (url)
   if (!id) return notFound()
   const a = albums.find((x) => x.id === id)
   if (!a) return notFound()
-  // 月度相册虚拟口径（D4）：该月未归属手动相册的媒体，item_count 同口径
-  let media
-  if (a.type === 'monthly') {
-    media = liveTimelineMedia()
-      .filter((m) => m.album_id == null && (m.taken_at || m.created_at || '').slice(0, 7) === a.month_key)
-      .map(timelineItemOut)
-  } else {
-    media = liveTimelineMedia().filter((m) => m.album_id === id).map(timelineItemOut)
-  }
+  const media = liveTimelineMedia().filter((m) => m.album_id === id).map(timelineItemOut)
   return ok({ album: { ...a, item_count: media.length }, media })
 }})
 
@@ -507,9 +517,7 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/albums\/\d+$/, handler: (u
   if (!id) return notFound()
   const idx = albums.findIndex((x) => x.id === id)
   if (idx === -1) return notFound()
-  // 月度相册不可删除（只可隐藏，DESIGN §12.2）；此前漏判 + 漏删，删除后列表仍显示该相册
-  if (albums[idx].type === 'monthly') return { _s: 400, d: { error: '月度相册不可删除，只可隐藏' } }
-  // 删除对方创建的手动相册 → 通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+ // 删除对方创建的手动相册 → 通知创建者（自删静默；内容删除仅站内）
   const uid = userIdFromToken(headers)
   if (uid && albums[idx].created_by && albums[idx].created_by !== uid) {
     addNotification(albums[idx].created_by, 'album_deleted', 'album', id, { name: albums[idx].name, deleted_by: operatorName(uid) })
@@ -556,17 +564,27 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/albums\/\d+\/photos$/, han
   return ok({ status: 'ok', item_count: liveTimelineMedia().filter((m) => m.album_id === a.id).length })
 }})
 
-routes.push({ method: 'PATCH', pattern: /^\/api\/v1\/albums\/\d+\/hidden$/, handler: (url, body) => {
-  const id = parseIntParam(url, /\/albums\/(\d+)\/hidden/)
-  if (!id) return notFound()
-  const a = albums.find((x) => x.id === id)
-  if (!a) return notFound()
+// --- Media ---
+// 主动撤销：放弃 / 取消 / 把关作废时清临时文件（幂等，mock 记录 token 归属）
+const tmpTokens = new Map()
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/media\/discard$/, handler: (url, body, headers) => {
+  const uid = userIdFromToken(headers)
+  if (!uid) return unauthorized()
   const b = JSON.parse(body || '{}')
-  a.is_hidden = b.hidden === true
-  return ok({ status: 'ok' })
+  if (!Array.isArray(b.tokens)) return badRequest('tokens 必填（数组）')
+  if (b.tokens.length > 100) return badRequest('单次最多撤销 100 个临时文件')
+  let discarded = 0
+  for (const tk of b.tokens) {
+    const owner = tmpTokens.get(tk)
+    if (owner !== undefined && owner === uid) {
+      tmpTokens.delete(tk)
+      discarded++
+    }
+  }
+  return ok({ discarded })
 }})
 
-// --- Media ---
+
 // mock 简易 multipart 解析：仅取 filename 与 content-type 子段，不解码二进制
 function parseMultipartMeta(rawBody, contentType) {
   const m = /filename="([^"]+)"/i.exec(rawBody || '')
@@ -587,8 +605,11 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/media\/timeline$/, handler: (
   const q = queryParams(url)
   const page = parseInt(q.page) || 1
   const size = Math.min(parseInt(q.size) || 20, 50)
+  // 口径（2026-09-22 确认）：默认只返回未归档媒体（时间轴=未归档）；scope=all 返回全部（选图器灰显用）
   // F1/F2：列表项带 album_name；F2 一文件一相册由 album_id 决定
-  const list = liveTimelineMedia().slice().sort((a, b) => {
+  let list = liveTimelineMedia()
+  if (q.scope !== 'all') list = list.filter((m) => m.album_id == null)
+  list = list.slice().sort((a, b) => {
     const ta = a.taken_at || a.created_at || ''
     const tb = b.taken_at || b.created_at || ''
     return tb.localeCompare(ta)
@@ -600,19 +621,15 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/media\/timeline$/, handler: (
 
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/media\/upload$/, handler: (url, body, headers) => {
   const { kind, filename } = parseMultipartMeta(body, headers['content-type'] || '')
+  const uid = userIdFromToken(headers)
+  if (!uid) return unauthorized()
   const token = 'mock-media-' + randomBytes(6).toString('hex')
   uploads.set(token, kind)
+  tmpTokens.set(token, uid) // discard 归属校验
   return ok({ media_token: token, kind, filename })
 }})
 
-// F1 独立媒体 finalize 已停用：媒体仅随「动态」上传（post_id 必填），不再支持独立上传/传媒体。
-routes.push({
-  method: 'POST',
-  pattern: /^\/api\/v1\/media$/,
-  handler: () => ({ _s: 410, d: { error: 'INDEPENDENT_MEDIA_DISABLED', message: '媒体仅随动态发布，不再支持独立上传' } }),
-})
-
-// D1 reurl 批量重签：{ids ≤200} → {items:[{id,thumb_url,url}]}；无效/已删 id 跳过
+// reurl 批量重签：{ids ≤200} → {items:[{id,thumb_url,url}]}；无效/已删 id 跳过
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/media\/reurl$/, handler: (url, body, headers) => {
   const uid = userIdFromToken(headers)
   if (!uid) return unauthorized()
@@ -624,13 +641,6 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/media\/reurl$/, handler: (ur
     .filter((id) => Number.isFinite(id) && liveTimelineMedia().some((m) => m.id === id))
     .map((id) => ({ id, url: `/api/v1/media/file/${id}?v=raw`, thumb_url: `/api/v1/media/file/${id}?v=thumb` }))
   return ok({ items })
-}})
-
-// F6 独立媒体删除已停用（需求 §4.5/166：媒体仅随动态，删除媒体=删除整条动态；mock 契约 410）
-routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/media\/\d+$/, handler: (url, body, headers) => {
-  const uid = userIdFromToken(headers)
-  if (!uid) return unauthorized()
-  return { _s: 410, d: { error: 'INDEPENDENT_MEDIA_DISABLED', message: '媒体仅随动态发布，不再支持独立删除（删除媒体=删除整条动态）' } }
 }})
 
 
@@ -755,7 +765,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/anniversaries$/, handler: (u
     date,
     type,
     is_leap: type === 'lunar' ? b.is_leap === true : undefined,
-    remind_days_before: b.remind_days_before ?? 1, // 默认 1 天（REQUIREMENTS §4.6）；显式 0=当天提醒，不得被 || 改写
+ remind_days_before: b.remind_days_before ?? 1, // 默认 1 天；显式 0=当天提醒，不得被 || 改写
     created_by: uid,
   }
   anniversaries.push(a)
@@ -768,7 +778,7 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/anniversaries\/\d+$/, hand
   if (!id) return notFound()
   const idx = anniversaries.findIndex((x) => x.id === id)
   if (idx === -1) return notFound()
-  // 删除对方创建的纪念日 → 通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+ // 删除对方创建的纪念日 → 通知创建者（自删静默；内容删除仅站内）
   const uid = userIdFromToken(headers)
   if (uid && anniversaries[idx].created_by && anniversaries[idx].created_by !== uid) {
     addNotification(anniversaries[idx].created_by, 'anniversary_deleted', 'anniversary', id, { name: anniversaries[idx].name, deleted_by: operatorName(uid) })
@@ -820,255 +830,220 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/notifications\/read-all$/, h
 // --- Chat ---
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/status$/, handler: () => ok({ available: true, reason: '' }) })
 
-// A8 history 补字段：{id, role, content, card_id?, created_at}
-// 阶段4/4.1：追加 card 快照 {action_id, tool, params, status, expires_in}，APP 重进对话可恢复确认卡片（未过期可继续确认，过期/重启置 expired）
-routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/withdraw-last$/, handler: () => {
-  // 停止生成即撤回（与后端同契约）：仅当最后一条是 user（尚无回复）时删除
-  const last = chatHistory[chatHistory.length - 1]
-  if (last && last.role === 'user') {
-    chatHistory.pop()
-    return ok({ withdrawn: true })
+// 多会话：会话工具函数（懒创建 + 摘要命名，与后端 sessionTitleFrom 同口径）
+const sessionTitleFrom = (content) => {
+  const t = (content || '').trim()
+  if (!t) return '新的会话'
+  return t.length > 20 ? t.slice(0, 20) + '…' : t
+}
+function ensureSession(uid, wanted, firstMsg) {
+  if (wanted > 0) {
+    const s = chatSessions.find((x) => x.id === wanted && x.user_id === uid)
+    if (!s) return null
+    s.updated_at = new Date().toISOString()
+    return s
   }
-  return ok({ withdrawn: false })
+  const s = { id: ++seq.session, user_id: uid, title: sessionTitleFrom(firstMsg), created_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+  chatSessions.push(s)
+  return s
+}
+const touchSession = (sid) => {
+  const s = chatSessions.find((x) => x.id === sid)
+  if (s) s.updated_at = new Date().toISOString()
+}
+
+// 会话列表 / 删除（硬删，消息与会话一起删）
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/sessions$/, handler: (url, body, headers) => {
+  const uid = userIdFromToken(headers) || 2
+  return ok({ items: chatSessions.filter((s) => s.user_id === uid)
+    .sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at)) })
+}})
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/chat\/sessions\/(\d+)$/, handler: (url, body, headers) => {
+  const uid = userIdFromToken(headers) || 2
+  const sid = Number(url.match(/\/chat\/sessions\/(\d+)$/)[1])
+  const idx = chatSessions.findIndex((s) => s.id === sid && s.user_id === uid)
+  if (idx < 0) return notFound('会话不存在')
+  chatSessions.splice(idx, 1)
+  for (let i = chatHistory.length - 1; i >= 0; i--) {
+    if (chatHistory[i].session_id === sid) chatHistory.splice(i, 1)
+  }
+  return ok({ deleted: true })
 }})
 
-routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/history$/, handler: () => {
-  const items = chatHistory.map((h) => {
-    const base = { id: h.id, role: h.role, content: h.content, card_id: h.card_id ?? 0, created_at: h.created_at, media: h.media ?? [] }
-    const cardId = h.card_id
-    if (!cardId) return base
-    const act = actions.get(cardId)
-    let status = 'expired'
-    let tool = ''
-    let params = {}
-    let expiresIn = 0
-    if (act) {
-      tool = act.tool
-      params = act.params ?? {}
-      if (act.resolved) {
-        status = act.resolved === 'cancelled' ? 'cancelled' : (act.resolved === 'failed' ? 'failed' : 'executed')
-      } else if (Date.now() > act.created_at + ACTION_TTL_MS) {
-        status = 'expired'
-      } else {
-        status = 'pending'
-        expiresIn = Math.max(1, Math.ceil((act.created_at + ACTION_TTL_MS - Date.now()) / 1000))
+// 首屏一次拿全（可用性 + 欢迎语 + chips），与后端 /chat/bootstrap 同契约。
+// 欢迎语由空间事实模板拼装（不调模型）；天数含首日 +1，与 /space 的 days_together 同口径。
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/status$/, handler: () => ok({ available: true, reason: '' }) })
+
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/bootstrap$/, handler: () => {
+  let welcome = '想记点什么？'
+  if (space.love_start_date) {
+    const days = Math.floor((Date.now() - new Date(space.love_start_date).getTime()) / 86400000) + 1
+    const recent = posts.filter((p) => !p.deleted_at && Date.now() - new Date(p.created_at).getTime() < 7 * 86400000).length
+    welcome = recent > 0
+      ? `今天是你们在一起的第 ${days} 天。这周已经记了 ${recent} 条，想再记点什么？`
+      : `今天是你们在一起的第 ${days} 天。想记点什么？`
+  }
+  return ok({ available: true, reason: '', welcome, chips: ['帮我发动态', '整理最近的照片', '我们记过什么'] })
+}})
+
+// 显式中止 → 整轮回滚（取代 withdraw-last）。按 turn_id 精确删，不波及上一轮；
+// 该轮未裁决的确认卡置 cancelled（留痕供审计，不可再确认）。意外断线不自动删。
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/turns\/([\w-]+)\/abort$/, handler: (url) => {
+  const turn = url.match(/\/chat\/turns\/([\w-]+)\/abort/)[1]
+  const before = chatHistory.length
+  for (let i = chatHistory.length - 1; i >= 0; i--) {
+    if (chatHistory[i].turn_id !== turn) continue
+    const cid = chatHistory[i].card_id
+    const act = cid ? actions.get(cid) : null
+    if (act && !act.resolved) act.resolved = 'cancelled'
+    chatHistory.splice(i, 1)
+  }
+  return ok({ aborted: chatHistory.length < before })
+}})
+
+// 历史回显：提案卡读 preview（工具自构造），不回放执行参数。
+// tool 行带 tool_text / tool_ui（含 result_id，刷新后仍可勾选引用）。
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/chat\/history$/, handler: (url, _body, _headers, u) => {
+  const sid = Number(u.searchParams.get('session_id')) || 0
+  if (sid <= 0) return ok({ items: [] })
+  // parts 契约（AI模式设计「消息 parts 契约」）：一条消息一行，parts 有序数组直出
+  const items = []
+  for (const h of chatHistory.filter((x) => x.session_id === sid)) {
+    if (h.role === 'tool_result') continue
+    const base = { id: h.id, role: h.role, parts: h.parts ?? [], created_at: h.created_at, quoted: h.quoted ?? null }
+    if (h.card_id) {
+      const act = actions.get(h.card_id)
+      let status = 'expired'
+      let expiresIn = 0
+      if (act) {
+        if (act.resolved) status = act.resolved === 'cancelled' ? 'cancelled' : (act.resolved === 'failed' ? 'failed' : 'executed')
+        else if (Date.now() > act.created_at + ACTION_TTL_MS) status = 'expired'
+        else { status = 'pending'; expiresIn = Math.max(1, Math.ceil((act.created_at + ACTION_TTL_MS - Date.now()) / 1000)) }
       }
+      items.push({ ...base, card: { action_id: h.card_id, intent: act?.tool || '', summary: act?.preview?.summary || '', preview: act?.preview?.preview || null, warnings: act?.preview?.warnings || [], attachments: act?.preview?.attachments || [], status, expires_in: expiresIn, result: act?.result || '' } })
+      continue
     }
-    return { ...base, card: { action_id: cardId, tool, params, status, expires_in: expiresIn, result: act?.result } }
-  })
+    items.push(base)
+  }
+  if (items.length && items[items.length - 1].role === 'user') items[items.length - 1].interrupted = true
   return ok({ items })
 }})
 
-// A1 SSE 流式响应 + A8 card 契约：{action_id(数值), tool, params, status:"pending", expires_in:900}
+// 语义事件：session（仅懒创建）/ turn.start / thinking.* / answer.* / tool.* / proposal / turn.end。
+// quoted 原样落库并回显；结果集句柄挂在 tool.end.ui.result_id。
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/message$/, handler: (url, body, headers) => {
-  const uid = userIdFromToken(headers)
+  const uid = userIdFromToken(headers) || 2
   const b = JSON.parse(body || '{}')
   const msg = (b.content || '').trim()
-  // 聊天多选媒体：仅随消息展示 + 卡片带「客户端引用」（media_refs，无服务端 id、不上传）。
-  // 真正落库发生在「确认执行」：客户端先把本地文件 POST /media/upload 换 token，随 confirm 提交
-  // （与「传统模式·发动态」一致——取消/过期不产生任何媒体资源，无垃圾数据），见 docs/TODO.md D8。
   const attach = Array.isArray(b.media) ? b.media.filter((m) => m && m.data_url) : []
   const mediaRefs = attach.map((m) => ({ name: m.name || '', type: m.type || '', size: m.size || 0 }))
+  const created = !(Number(b.session_id) > 0)
+  const sess = ensureSession(uid, Number(b.session_id) || 0, msg)
+  if (!sess) return notFound('会话不存在')
+  const sessionId = sess.id
+  touchSession(sessionId)
+  const turnId = 't' + randomBytes(4).toString('hex')
+  chatHistory.push({ id: ++seq.chat, session_id: sessionId, turn_id: turnId, role: 'user', parts: [{ type: 'text', text: msg }, ...attach.map((a) => ({ type: 'attachment', name: a.name, mime: a.type, size: a.size })), ...(b.quoted ? [{ type: 'quote', refs: b.quoted }] : [])], quoted: b.quoted || null, created_at: new Date().toISOString() })
 
-  const userId = uid || 2
-  const userMsgId = ++seq.chat
-  chatHistory.push({ id: userMsgId, role: 'user', content: msg, media: attach, created_at: new Date().toISOString() })
-
-  // 意图 → 卡片参数（按 DESIGN §6 工具参数；mock 先定契约）
-  let replyText = null
-  let card = null
-  let searchResult = null // D2：搜索结果卡片（读工具，无确认卡，直接内联展示）
-
-  if (attach.length && /相册/.test(msg)) {
-    // 媒体只能随动态存在（D8 口径）：新照片不能直接落相册，只能发布成动态后从时间轴选入相册。
-    // 「建相册」→ create_album（空相册，不含上传附件）；其他「加相册」→ 引导发带图动态。
-    const actionId = ++seq.action
-    if (/建相册|新建相册|创建相册/.test(msg)) {
-      const params = { name: msg.match(/(?:建|新建|创建)相册[：:]?\s*(\S+)?/)?.[1] || '新相册', media_refs: [] }
-      actions.set(actionId, { tool: 'create_album', params, user_id: userId, created_at: Date.now(), resolved: null })
-      card = { action_id: actionId, tool: 'create_album', params, status: 'pending', expires_in: ACTION_TTL_SEC }
-    } else {
-      const params = { content: (msg.replace(/帮(我|你)(记|发|创建|把[^]*加(到)?相册)/, '').trim() || '记录一下今天'), mood: '', media_refs: mediaRefs }
-      actions.set(actionId, { tool: 'create_post', params, user_id: userId, created_at: Date.now(), resolved: null })
-      card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: ACTION_TTL_SEC }
-    }
-  } else if (attach.length && /(动态|发|记)/.test(msg)) {
-    // 带媒体发布动态：卡片携带 media_refs（元数据），确认时客户端上传+落库
-    const actionId = ++seq.action
-    const params = { content: msg.replace(/帮(我|你)(记|发|创建)/, '').trim() || '记录一下今天', mood: '', media_refs: mediaRefs }
-    actions.set(actionId, { tool: 'create_post', params, user_id: userId, created_at: Date.now(), resolved: null })
-    card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: ACTION_TTL_SEC }
-  } else if (attach.length) {
-    replyText = `收到 ${attach.length} 张图片/视频${msg ? `（${msg}）` : ''}，你可以说「把它们加到相册」「建个相册」或「发条带图动态」。`
-  } else if (/搜索|搜一下|搜搜|查找|查一下|找一下|找找/.test(msg)) {
-    // D2 搜索结果卡片（REQUIREMENTS §5.1：卡片内联展示，不做跨模式跳转）
+  // 意图分流：读工具出 tool.end；写意图出 proposal。都不出旧的 text/card/result。
+  let answer = null
+  let tool = null
+  let proposal = null
+  const resultId = 'r_' + (seq.action + 1)
+  if (/搜索|搜一下|搜搜|查找|查一下|找一下|找找/.test(msg)) {
     const query = msg.replace(/^(帮我|帮忙)?\s*(搜索|搜一下|搜搜|查找|查一下|找一下|找找)(一下)?/, '').replace(/[「」"']/g, '').trim()
-    const hits = posts
-      .filter((p) => !query || (p.content || '').includes(query))
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 6)
-    searchResult = {
-      tool: 'search_posts',
-      query,
-      items: hits.map((p) => ({
-        id: p.id,
-        content: (p.content || '').slice(0, 60),
-        thumb_url: p.media?.[0]?.thumb_url || '',
-      })),
-    }
-    replyText = hits.length
-      ? `找到 ${hits.length} 条${query ? `和「${query}」相关的` : '最近的'}回忆：`
-      : `没找到${query ? `和「${query}」相关的` : ''}回忆。`
+    const hits = posts.filter((p) => !p.deleted_at && (!query || (p.content || '').includes(query))).slice(0, 6)
+    tool = { label: '搜索动态', text: hits.length ? `找到 ${hits.length} 条动态` : '没有找到内容', ui: { kind: 'record_list', title: '动态', result_id: resultId, selectable: true, records: hits.map((p) => ({ id: p.id, kind: 'post', text: (p.content || '').slice(0, 40) })) } }
+    answer = tool.text
+  } else if (/建相册|新建相册|创建相册/.test(msg)) {
+    const name = msg.match(/(?:建|新建|创建)相册[：:]?\s*(\S+)?/)?.[1] || '新相册'
+    proposal = makeProposal('propose_album', `新建相册「${name}」`, { kind: 'album', body: { name, count: 0 } }, { name })
   } else if (msg.includes('纪念日') || msg.includes('周年')) {
-    const nameMatch = msg.match(/纪念日[：:]\s*(.+?)(?:\s|$)/)
-    const dateMatch = msg.match(/(\d{4}[-/]\d{1,2}[-/]\d{1,2})/)
-    const actionId = ++seq.action // 数值 int64
-    const params = { name: nameMatch ? nameMatch[1].trim() : '新纪念日', date: dateMatch ? dateMatch[1] : '' }
-    // type 字段为可选（DESIGN §6 create_anniversary type?），mock 默认 anniversary
-    actions.set(actionId, { tool: 'create_anniversary', params, user_id: userId, created_at: Date.now(), resolved: null })
-    card = { action_id: actionId, tool: 'create_anniversary', params, status: 'pending', expires_in: ACTION_TTL_SEC }
-  } else if (msg.includes('动态') || msg.includes('记') || msg.includes('发')) {
-    const contentMatch = msg.replace(/帮(我|你)(记|发|创建)/, '').trim()
-    const actionId = ++seq.action
-    const params = { content: contentMatch || '今天过得怎么样？', mood: '' }
-    actions.set(actionId, { tool: 'create_post', params, user_id: userId, created_at: Date.now(), resolved: null })
-    card = { action_id: actionId, tool: 'create_post', params, status: 'pending', expires_in: ACTION_TTL_SEC }
+    const name = msg.match(/纪念日[：:]\s*(.+?)(?:\s|$)/)?.[1]?.trim() || '新纪念日'
+    const date = msg.match(/(\d{4}[-/]\d{1,2}[-/]\d{1,2})/)?.[1] || ''
+    proposal = makeProposal('propose_anniversary', `新建纪念日「${name}」`, { kind: 'anniversary', body: { name, date } }, { name, date })
+  } else if (msg.includes('动态') || msg.includes('记') || msg.includes('发') || (attach.length && /(相册|发)/.test(msg))) {
+    const content = msg.replace(/帮(我|你)(记|发|创建)/, '').trim() || '记录一下今天'
+    proposal = makeProposal('propose_post', `发布动态：「${content.slice(0, 20)}」`, { kind: 'post', body: { content, attachments: mediaRefs } }, { content }, mediaRefs)
   } else {
-    replyText = '好的，我明白了！作为你的 AI 助手，我随时准备好帮你记录生活中的美好瞬间。你可以说「帮我记一条动态」或「创建一个纪念日」。'
+    answer = attach.length
+      ? `收到 ${attach.length} 个附件${msg ? `（${msg}）` : ''}。可以说「发条带图动态」或「建个相册」。`
+      : '好的。你可以说「帮我记一条动态」或「找找海边的照片」。'
   }
+  const thinking = /思考/.test(msg) ? `用户说「${msg}」，我先梳理一下意图再作答。` : ''
 
-  // 返回 SSE 写入函数（server.mjs 接到 typeof result === 'function' 时调用 result(res)）
   return (res) => {
     res.statusCode = 200
     res.setHeader('Content-Type', 'text/event-stream;charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
-    res.setHeader('Connection', 'keep-alive')
-    res.setHeader('X-Accel-Buffering', 'no')
-
-    const send = (ev, data) => {
-      res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
+    const send = (ev, data) => res.write(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)
+    if (created) send('session', { session_id: sessionId, title: sess.title })
+    send('turn.start', { turn_id: turnId })
+    if (thinking) {
+      for (const ch of thinking) send('thinking.delta', { text: ch })
+      send('thinking.end', { seconds: 1 })
     }
-
-    // D2：搜索结果先推（客户端渲染内联卡片网格），随后照常推文字；空结果由客户端渲染「没找到」
-    if (searchResult) send('result', searchResult)
-
-    if (card) {
-      // 先推一段 text 提示，再推 card；推完结束流（否则 APP busy 永远不结束，右下角一直显示「进行中」）
-      send('text', { content: '已为你准备好操作，请确认是否执行：' })
-      send('card', card)
-      const replyMsgId = ++seq.chat
-      chatHistory.push({ id: replyMsgId, role: 'assistant', content: '已为你准备好操作，请确认是否执行：', card_id: card.action_id, created_at: new Date().toISOString() })
-      send('done', null)
-      res.end()
-    } else if (replyText) {
-      // 简易分片：每次 2-3 字
-      let i = 0
-      const chunkSize = 3
-      const tick = () => {
-        if (i >= replyText.length) {
-          const replyMsgId = ++seq.chat
-          chatHistory.push({ id: replyMsgId, role: 'assistant', content: replyText, created_at: new Date().toISOString() })
-          send('done', null)
-          res.end()
-          return
-        }
-        const chunk = replyText.slice(i, i + chunkSize)
-        i += chunkSize
-        send('text', { content: chunk })
-        setTimeout(tick, 30)
-      }
-      tick()
+    if (tool) {
+      send('tool.start', { call_id: 'c1', label: tool.label })
+      send('tool.end', { call_id: 'c1', status: 'ok', text: tool.text, ui: tool.ui })
+      chatHistory.push({ id: ++seq.chat, session_id: sessionId, turn_id: turnId, role: 'assistant', parts: [{ type: 'tool', call_id: tool.call_id, label: tool.label || '', status: 'ok', text: tool.text, ui: tool.ui }], created_at: new Date().toISOString() })
+    }
+    if (proposal) {
+      const id = ++seq.action
+      actions.set(id, { tool: proposal.intent, params: proposal.params, preview: proposal, user_id: uid, created_at: Date.now(), resolved: null })
+      proposal.id = id
+      send('proposal', { proposal })
+      chatHistory.push({ id: ++seq.chat, session_id: sessionId, turn_id: turnId, role: 'assistant', parts: [{ type: 'card', action_id: id }], card_id: id, created_at: new Date().toISOString() })
+      send('turn.end', { stop_reason: 'proposal' })
     } else {
-      send('done', null)
-      res.end()
+      for (const ch of answer) send('answer.delta', { text: ch })
+      send('answer.end', {})
+      chatHistory.push({ id: ++seq.chat, session_id: sessionId, turn_id: turnId, role: 'assistant', parts: [{ type: 'text', text: answer }], created_at: new Date().toISOString() })
+      send('turn.end', { stop_reason: 'answer' })
     }
+    res.end()
   }
 }})
 
-// A8 confirm：{status, result}；重复 409；不存在 404；action_id 数值
-routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/confirm$/, handler: (url, body) => {
+function makeProposal(intent, summary, preview, params, attachments) {
+  return { intent, summary, preview, warnings: [], attachments: attachments || [], expires_in: ACTION_TTL_SEC, params }
+}
+
+// 提案裁决：approve 执行 / cancel 取消。重复 409，过期 410。
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/proposals\/(\d+)\/resolve$/, handler: (url, body) => {
+  const id = Number(url.match(/\/proposals\/(\d+)\/resolve/)[1])
   const b = JSON.parse(body || '{}')
-  const actionId = parseInt(b.action_id) || 0
-  const confirmed = b.confirmed === true
-  const action = actions.get(actionId)
-  if (!action) return { _s: 404, d: { error: '确认卡片不存在' } }
-
+  const action = actions.get(id)
+  if (!action) return notFound('确认卡片不存在')
   if (action.resolved) return { _s: 409, d: { error: '卡片已处理过（单次有效）' } }
-  // D4 确认卡片 15 分钟有效期（REQUIREMENTS §4.8/§5.1）：过期后确认 → 410「已过期」，
-  // 与 /chat/history 的 expires_in 同口径；不改 resolved，保证重启/重进后仍显示 expired
-  if (Date.now() > action.created_at + ACTION_TTL_MS) {
-    return { _s: 410, d: { error: '确认卡片已过期，请重新发起' } }
-  }
-
-  if (!confirmed) {
+  if (Date.now() > action.created_at + ACTION_TTL_MS) return { _s: 410, d: { error: '确认卡片已过期，请重新发起' } }
+  if (b.decision !== 'approve') {
     action.resolved = 'cancelled'
     return ok({ status: 'cancelled' })
   }
-
-  // execOk：把执行结果记在 action 上，供 /chat/history 的 card.result 回显（与后端 2026-09-21 口径对齐）
-  const execOk = (result) => { action.result = result; return ok({ status: 'executed', result }) }
-
   action.resolved = 'executed'
-  // 媒体随「确认执行」此刻才上传落库（token→湿库），与「传统模式·发动态」一致：取消/过期零垃圾数据
-  const tokens = Array.isArray(b.media_tokens) ? b.media_tokens.map((t) => String(t)) : []
-
-  if (action.tool === 'create_post') {
-    const id = ++seq.post
-    const media = []
-    for (const t of tokens) {
-      const kind = uploads.get(t) || 'photo'
-      const m = { id: ++seq.media, post_id: id, kind, author_id: action.user_id, album_id: null, taken_at: new Date().toISOString().slice(0, 10), thumb_url: `/api/v1/media/file/${seq.media}?v=thumb`, url: `/api/v1/media/file/${seq.media}?v=raw` }
-      timelineMedia.push(m)
-      media.push(m)
-    }
-    const newPost = { id, author_id: action.user_id, content: action.params.content || '', mood: action.params.mood || '', point_id: null, location_name: '', media, created_at: new Date().toISOString() }
-    posts.unshift(newPost)
-    // 通知另一方 post_created（按 F7 任意操作均通知另一方；这里与 REQUIREMENTS 一致——新动态通知对方）
-    for (const r of partnerIds(action.user_id)) addNotification(r, 'post_created', 'post', id, { operator: operatorName(action.user_id), content: (newPost.content || '').slice(0, 50) })
-    return execOk(`动态 #${id} 已发布${media.length ? `（含 ${media.length} 张媒体）` : ''}`)
+  const tokens = Array.isArray(b.media_tokens) ? b.media_tokens.map(String) : []
+  const done = (result) => { action.result = result; return ok({ status: 'executed', result }) }
+  if (action.tool === 'propose_post') {
+    const pid = ++seq.post
+    const media = tokens.map((tk) => ({ id: ++seq.media, post_id: pid, kind: uploads.get(tk) || 'photo', thumb_url: `/api/v1/media/file/${seq.media}?v=thumb` }))
+    posts.unshift({ id: pid, author_id: action.user_id, content: action.params.content || '', mood: action.params.mood || '', media, created_at: new Date().toISOString() })
+    return done(`动态 #${pid} 已发布`)
   }
-
-  if (action.tool === 'create_anniversary') {
-    const id = ++seq.anniversary
-    // type/is_leap 与表单契约对齐（DESIGN §6 create_anniversary）：lunar 时透传闰月标记
-    const a = { id, name: action.params.name || '新纪念日', date: action.params.date || '2024-01-01', type: action.params.type === 'lunar' ? 'lunar' : 'solar', is_leap: action.params.type === 'lunar' && action.params.is_leap === true ? true : undefined, remind_days_before: action.params.remind_days_before ?? 1, created_by: action.user_id }
-    anniversaries.push(a)
-    return execOk(`纪念日「${a.name}」已创建`)
+  if (action.tool === 'propose_anniversary') {
+    anniversaries.push({ id: ++seq.anniversary, name: action.params.name || '新纪念日', date: action.params.date || '2024-01-01', type: 'solar', remind_days_before: 1, created_by: action.user_id })
+    return done(`纪念日「${action.params.name}」已创建`)
   }
-
-  if (action.tool === 'create_album') {
-    const id = ++seq.album
-    const al = { id, type: 'manual', name: action.params.name || '新相册', description: '', is_hidden: false, cover_url: '/api/v1/media/file/5', item_count: 0, created_by: action.user_id }
-    albums.push(al)
-    // AI 建相册同样通知另一方（对齐手动 POST /albums 与服务端口径：operator 真实发起人 + via 标记来源）
-    for (const r of partnerIds(action.user_id)) addNotification(r, 'album_created', 'album', id, { operator: operatorName(action.user_id), name: al.name, via: 'ai' })
-    return execOk(`相册「${al.name}」已创建`)
+  if (action.tool === 'propose_album') {
+    albums.push({ id: ++seq.album, name: action.params.name || '新相册', description: '', cover_url: '', item_count: 0, created_by: action.user_id })
+    return done(`相册「${action.params.name}」已创建`)
   }
-
-  if (action.tool === 'add_photos_to_album') {
-    // D8 口径：媒体只能以动态为载体，相册只从媒体池（时间轴）选择 photo_ids（已有动态媒体 id），
-    // 不接受随 confirm 上传的新附件 token（独立媒体已废除）。
-    if (tokens.length) return badRequest('新附件不能直接加入相册：媒体只能随动态发布，请在时间轴选择照片后加入')
-    const al = albums.find((a) => a.id === (action.params.album_id || 1))
-    const ids = Array.isArray(action.params.media_ids) ? action.params.media_ids : []
-    const picked = timelineMedia.filter((m) => ids.includes(m.id) && !m.deleted_at)
-    if (!al) return badRequest('相册不存在')
-    let added = 0
-    let lastId = 0
-    for (const m of picked) {
-      m.album_id = al.id
-      lastId = m.id
-      added++
-    }
-    if (added) {
-      al.item_count += added
-      al.cover_url = `/api/v1/media/file/${lastId}`
-    }
-    return execOk(`已加入相册「${al.name}」${added} 张`)
+  if (action.tool === 'propose_album_members' && tokens.length) {
+    return badRequest('新附件不能直接加入相册：媒体只能随动态发布，请先发布动态再选入相册')
   }
-
-  return ok({ status: 'failed', error: '未知操作类型' })
+  return done('已执行')
 }})
+
 
 // --- Map ---
 // 瓦片短时签名：与真实服务端口径一致——只绑 exp 的空间级签名（一次覆盖全部坐标）
@@ -1183,7 +1158,7 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/map\/points\/\d+$/, handle
   if (!id) return notFound()
   const p = mapPoints.find((x) => x.id === id)
   if (!p || p.deleted_at) return notFound()
-  // 删除对方创建的足迹 → 通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+ // 删除对方创建的足迹 → 通知创建者（自删静默；内容删除仅站内）
   const uid = userIdFromToken(headers)
   if (uid && p.created_by && p.created_by !== uid) {
     addNotification(p.created_by, 'map_point_deleted', 'map_point', id, { name: p.name, deleted_by: operatorName(uid) })
@@ -1212,20 +1187,9 @@ const nowText = () => new Date().toISOString().slice(0, 19).replace('T', ' ')
 
 // 空间成员：单空间三角色（admin/girl/boy）；情侣账户必须一次性同时创建，建立后仅可改昵称/重置密码
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/users$/, handler: () => ok(adminUsers) })
-routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users$/, handler: (url, body) => {
-  const b = JSON.parse(body || '{}')
-  if (!b.username || !b.password) return badRequest('username/password 必填')
-  if (b.role !== 'girl' && b.role !== 'boy') return badRequest('role 仅允许 girl/boy')
-  // 格式校验先于存在性判断（对齐服务端 createUser 契约）
-  if (b.username.length < 2 || b.username.length > 32) return badRequest('用户名长度 2-32 个字符')
-  if (b.password.length < 6) return badRequest('密码强度不足：至少 6 位')
-  if (adminUsers.some((u) => u.username === b.username)) return conflict('用户名已存在')
-  const user = { id: ++seq.user, username: b.username, role: b.role, nickname: b.nickname || '' }
-  adminUsers.push(user)
-  return created(user)
-} })
 
 // 情侣账户原子创建：双方信息一次提交，任一情侣角色已存在则拒绝（规则由服务端强制）
+// 不提供单人创建端点：情侣两方必须一次性建出，与 PRODUCT「后台管理」一致。
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users\/couple$/, handler: (url, body) => {
   const b = JSON.parse(body || '{}')
   const girl = b.girl || {}
@@ -1265,7 +1229,7 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/users\/\d+$/, handler:
 
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users\/\d+\/reset-password$/, handler: () => ok({}) })
 
-// GAP16 头像上传（mock 仅回执，不持久化文件）
+// 头像上传（mock 仅回执，不持久化文件）
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users\/\d+\/avatar$/, handler: (url) => {
   const user = adminUsers.find((u) => u.id === idOf(url))
   if (!user) return notFound('用户不存在')
@@ -1273,7 +1237,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/users\/\d+\/avatar$/,
   return ok({ status: 'ok', avatar: user.avatar })
 } })
 
-// GAP16 生日（仅后台维护，空串清除）
+// 生日（仅后台维护，空串清除）
 routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/users\/\d+\/birthday$/, handler: (url, body) => {
   const user = adminUsers.find((u) => u.id === idOf(url))
   if (!user) return notFound('用户不存在')
@@ -1283,7 +1247,7 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/users\/\d+\/birthday$/
   return ok({ status: 'ok' })
 } })
 
-// GAP16 头像公开读取（签名即凭证，mock 不校验签名）
+// 头像公开读取（签名即凭证，mock 不校验签名）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/avatar\/\d+$/, handler: () => {
   // 占位 1x1 PNG，前端真实展示由 SignedURL 驱动
   return {
@@ -1293,7 +1257,7 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/avatar\/\d+$/, handler: () =>
   }
 } })
 
-// 通知渠道：CRUD（DESIGN 第 9 章：GET/POST/PUT/DELETE + test）
+// 通知渠道：CRUD（ARCHITECTURE 第 9 章：GET/POST/PUT/DELETE + test）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/webhooks$/, handler: () => ok({ items: webhooks }) })
 routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/webhooks$/, handler: (url, body) => {
   const b = JSON.parse(body || '{}')
@@ -1321,13 +1285,13 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/webhooks\/\d+\/test$/
   return ok({})
 } })
 
-// 仪表盘：内容统计 / AI 调用量与 Token / 异常告警（DESIGN 第 9 章三项）
+// 仪表盘：内容统计 / AI 调用量与 Token / 异常告警（ARCHITECTURE 第 9 章三项）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/dashboard\/stats$/, handler: () => ok(dashboardStats) })
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/dashboard\/activity$/, handler: () => ok(recentActivity) })
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/dashboard\/ai-usage$/, handler: () => ok({ items: aiUsage }) })
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/dashboard\/alerts$/, handler: () => ok({ items: alerts }) })
 
-// AI 供应商（协议化配置，DESIGN §9）：列表有序 = 故障切换链（从第一个开始、失败依次向下）
+// AI 供应商（协议化配置）：列表有序 = 故障切换链（从第一个开始、失败依次向下）
 const API_PROTOCOLS = {
   'openai-chat': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3-mini', 'deepseek-chat', 'deepseek-r1', 'kimi-k2', 'qwen3-max'],
   'openai-responses': ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4o', 'o3', 'o4-mini'],
@@ -1336,24 +1300,113 @@ const API_PROTOCOLS = {
 }
 const protocolInvalid = (t) => badRequest('api_type 不支持（openai-chat / openai-responses / anthropic / gemini）')
 
-// models 条目校验：{ id 必填, temperature|null, max_tokens|null }——参数挂模型级，null = 调用不传
+// models 条目校验：{ id 必填, kind=chat|embedding, temperature|null, max_tokens|null }——参数挂条目级，null = 调用不传
 const normalizedModels = (raw) => {
   if (!Array.isArray(raw)) return { error: 'models 必填（数组）' }
   const entries = []
   for (const m of raw) {
     const id = String(m?.id ?? '').trim()
     if (!id) return { error: 'models 中存在模型名为空的条目' }
+    const kind = String(m?.kind ?? '').trim()
+    if (kind !== 'chat' && kind !== 'embedding') return { error: `模型 ${id} 的 kind 需为 chat 或 embedding` }
     // ''/undefined 一律先归一为 null（不设置），再做区间校验
     const t = m.temperature === '' || m.temperature === undefined ? null : m.temperature
     if (t !== null && !(Number(t) >= 0 && Number(t) <= 2)) return { error: `模型 ${id} 的 temperature 需在 0~2 之间，或不设置` }
     const mt = m.max_tokens === '' || m.max_tokens === undefined ? null : m.max_tokens
     if (mt !== null && (!Number.isInteger(Number(mt)) || Number(mt) < 256 || Number(mt) > 32768)) return { error: `模型 ${id} 的 max_tokens 需为 256~32768 整数，或不设置` }
-    entries.push({ id, temperature: t === null ? null : Number(t), max_tokens: mt === null ? null : Number(mt) })
+    entries.push({ id, kind, temperature: t === null ? null : Number(t), max_tokens: mt === null ? null : Number(mt) })
   }
   return { entries }
 }
 
+// 模型链视图：从供应商条目摊平出两条链（数组顺序即链序）
+const modelChains = () => {
+  const out = { chat: [], embedding: [] }
+  for (const p of modelProviders) {
+    for (const m of p.models) {
+      if (!out[m.kind]) continue
+      out[m.kind].push({
+        id: m.row_id ?? `${p.id}:${m.id}:${m.kind}`,
+        provider_id: p.id, provider_name: p.name, api_type: p.api_type,
+        kind: m.kind, model_id: m.id, temperature: m.temperature, max_tokens: m.max_tokens,
+      })
+    }
+  }
+  return out
+}
+
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/model-providers$/, handler: () => ok(modelProviders) })
+
+// 模型链（chat / embedding 两条）：数组顺序即链序
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/models$/, handler: () => ok(modelChains()) })
+
+routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/models$/, handler: (url, body) => {
+  const b = JSON.parse(body || '{}')
+  const provider = modelProviders.find((p) => p.id === Number(b.provider_id))
+  if (!provider) return notFound('供应商不存在')
+  if (b.kind !== 'chat' && b.kind !== 'embedding') return badRequest('kind 需为 chat 或 embedding')
+  if (b.kind === 'embedding' && provider.api_type !== 'openai-chat') return badRequest('嵌入模型只能挂 openai-chat 供应商')
+  const m = normalizedModels([{ id: b.model_id, kind: b.kind, temperature: b.temperature, max_tokens: b.max_tokens }])
+  if (m.error) return badRequest(m.error)
+  provider.models.push(m.entries[0])
+  return created(modelChains())
+} })
+
+// 链内重排：kind + 有序 id 数组（须恰好覆盖该 kind 全部条目）
+routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/models\/order$/, handler: (url, body) => {
+  const b = JSON.parse(body || '{}')
+  const chain = modelChains()[b.kind]
+  if (!chain) return badRequest('kind 需为 chat 或 embedding')
+  const ids = (b.ids ?? []).map((x) => String(x))
+  if (ids.length !== chain.length || !ids.every((id) => chain.some((r) => String(r.id) === id)) || new Set(ids).size !== ids.length) {
+    return badRequest('ids 必须恰好包含该类型的全部模型条目')
+  }
+  const byId = Object.fromEntries(chain.map((r) => [String(r.id), r]))
+  for (const p of modelProviders) {
+    p.models = p.models.filter((m) => m.kind !== b.kind)
+  }
+  for (const id of ids) {
+    const row = byId[id]
+    const provider = modelProviders.find((p) => p.id === row.provider_id)
+    provider.models.push({ id: row.model_id, kind: row.kind, temperature: row.temperature, max_tokens: row.max_tokens })
+  }
+  return ok(modelChains())
+} })
+
+routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/models\/[^/]+$/, handler: (url, body) => {
+  const rowId = decodeURIComponent(url.split('/').pop())
+  const target = modelChains()[Object.keys(modelChains())].find?.(() => false)
+  let hit = null
+  for (const kind of ['chat', 'embedding']) {
+    const row = modelChains()[kind].find((r) => String(r.id) === rowId)
+    if (row) { hit = { row, kind }; break }
+  }
+  if (!hit) return notFound('模型条目不存在')
+  const b = JSON.parse(body || '{}')
+  const provider = modelProviders.find((p) => p.id === hit.row.provider_id)
+  const entry = provider.models.find((m) => m.id === hit.row.model_id && m.kind === hit.kind)
+  if (!entry) return notFound('模型条目不存在')
+  const modelId = String(b.model_id ?? hit.row.model_id).trim() || hit.row.model_id
+  if (modelId !== entry.id) {
+    if (provider.models.some((m) => m.kind === entry.kind && m.id === modelId)) return badRequest('该供应商已有同名同类型模型条目')
+    entry.id = modelId
+  }
+  if (b.temperature !== undefined) entry.temperature = b.temperature === '' ? null : Number(b.temperature)
+  if (b.max_tokens !== undefined) entry.max_tokens = b.max_tokens === '' ? null : Number(b.max_tokens)
+  return ok(modelChains())
+} })
+
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/admin\/models\/[^/]+$/, handler: (url) => {
+  const rowId = decodeURIComponent(url.split('/').pop())
+  for (const p of modelProviders) {
+    const i = p.models.findIndex((m) => `${p.id}:${m.id}:${m.kind}` === rowId)
+    if (i >= 0) {
+      p.models.splice(i, 1)
+      return noContent()
+    }
+  }
+  return notFound('模型条目不存在')
+} })
 
 // 获取模型列表：真实实现为服务端持地址+秘钥调供应商 models 接口；mock 按协议返回预置列表。
 // 已保存过秘钥的供应商可只传 provider_id（服务端用存储秘钥），否则必须带 api_key。
@@ -1380,22 +1433,9 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/model-providers$/, ha
     base_url: b.base_url,
     has_key: true,
     models: m.entries,
-    default_model: b.default_model || '',
   }
   modelProviders.push(item)
   return created(item)
-} })
-
-// 排序 = 故障切换链顺序；ids 必须恰好包含全部供应商（无未知、无重复）
-routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/model-providers\/order$/, handler: (url, body) => {
-  const b = JSON.parse(body || '{}')
-  if (!Array.isArray(b.ids)) return badRequest('ids 必填（数组）')
-  const ids = b.ids.map(Number)
-  const okIds = ids.every((id) => modelProviders.some((p) => p.id === id))
-  if (!okIds || new Set(ids).size !== modelProviders.length) return badRequest('ids 必须恰好包含全部供应商')
-  const sorted = ids.map((id) => modelProviders.find((p) => p.id === id))
-  modelProviders.splice(0, modelProviders.length, ...sorted)
-  return ok(modelProviders)
 } })
 
 // 编辑：api_key 不传 = 不修改（只写不读）
@@ -1417,7 +1457,6 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/model-providers\/\d+$/
     if (m.error) return badRequest(m.error)
     item.models = m.entries
   }
-  if (b.default_model !== undefined) item.default_model = b.default_model
   return ok(item)
 } })
 
@@ -1435,29 +1474,6 @@ routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/admin\/model-providers\/\d
   if (i < 0) return notFound('供应商不存在')
   modelProviders.splice(i, 1)
   return noContent()
-} })
-// 语义检索（嵌入模型）：provider_id = 0 清空（关闭语义检索），否则必须给模型名且供应商为 OpenAI Chat 协议
-routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/embedding-config$/, handler: () => ok(embeddingConfig) })
-routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/embedding-config$/, handler: (url, body) => {
-  let b
-  try {
-    b = JSON.parse(body || '{}')
-  } catch {
-    return badRequest('请求格式错误')
-  }
-  const providerId = Number(b.provider_id || 0)
-  let model = String(b.model ?? '').trim()
-  if (providerId === 0) {
-    model = ''
-  } else {
-    if (!model) return badRequest('model 必填')
-    const p = modelProviders.find((x) => x.id === providerId)
-    if (!p) return badRequest('供应商不存在')
-    if (p.api_type !== 'openai-chat') return badRequest('嵌入模型仅支持 OpenAI Chat 协议的供应商')
-  }
-  embeddingConfig.provider_id = providerId
-  embeddingConfig.model = model
-  return ok({ ...embeddingConfig })
 } })
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/system-prompt$/, handler: () => ok(systemPrompt) })
 routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/system-prompt$/, handler: (url, body) => {
@@ -1570,7 +1586,7 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/tokens$/, handler: (u
   if (!['readonly', 'readwrite'].includes(b.tier)) return badRequest('tier 仅支持 readonly / readwrite')
   const bound = adminUsers.find((u) => u.nickname === b.user || u.username === b.user)
   if (!bound) return badRequest('绑定用户不存在')
-  // PAT 仅绑定情侣用户（girl/boy）；admin 仅后台操作，不签发外部令牌（DESIGN §8.2）
+ // PAT 仅绑定情侣用户（girl/boy）；admin 仅后台操作，不签发外部令牌
   if (bound.role === 'admin') return badRequest('PAT 仅可绑定情侣用户（girl/boy），admin 不签发令牌')
   const item = { id: ++seq.pat, name: b.name, user: b.user, tier: b.tier, createdAt: new Date().toISOString().slice(0, 10), status: 'active' }
   tokens.push(item)
@@ -1584,11 +1600,11 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/tokens\/\d+\/revoke$/
 } })
 
 
-// ---------- 上游模型服务模拟（L2 联调） ----------
+// ---------- 上游模型服务模拟（联调） ----------
 // 供应商 base_url 指向 http://localhost:8787/upstream/<proto>，服务端在 base 后拼协议路径
 // （openai-chat: /chat/completions · openai-responses: /responses · anthropic: /v1/messages ·
-//  gemini: /v1beta/models/{model}:generateContent）。启发式响应：消息含「记」→ create_post
-// tool_call；含「相册」→ create_album；否则文本回复。开发态不校验 Key。
+//  gemini: /v1beta/models/{model}:generateContent）。启发式响应：消息含「记」→ propose_post
+// tool_call；含「相册」→ propose_album；否则文本回复。开发态不校验 Key。
 
 // 从各协议请求体提取最后一条真实用户输入（tool_result / functionResponse 载荷无文本，天然跳过）
 // 与工具名清单。
@@ -1630,11 +1646,11 @@ function parseUpstreamIntent(body, apiType) {
 // 启发式决定回复：写工具候选优先
 function decideUpstreamReply(lastUser, toolNames) {
   const has = (n) => toolNames.includes(n)
-  if (lastUser.includes('相册') && has('create_album')) {
-    return { tool: 'create_album', args: { name: '旅行' } }
+  if (lastUser.includes('相册') && has('propose_album')) {
+    return { tool: 'propose_album', args: { name: '旅行' } }
   }
-  if (lastUser.includes('记') && has('create_post')) {
-    return { tool: 'create_post', args: { content: String(lastUser).slice(0, 50), mood: '开心' } }
+  if (lastUser.includes('记') && has('propose_post')) {
+    return { tool: 'propose_post', args: { content: String(lastUser).slice(0, 50), mood: '开心' } }
   }
   return { text: '（mock 上游）收到：' + String(lastUser || '').slice(0, 40) }
 }
@@ -1663,7 +1679,7 @@ function upstreamChatHandler(apiType) {
   }
 }
 
-// models 列表（fetch-models 的上游形状；AD1 联调用）
+// models 列表（fetch-models 的上游形状； 联调用）
 const upstreamModels = (apiType) => {
   const list = API_PROTOCOLS[apiType] || []
   if (apiType === 'gemini') return ok({ models: list.map((m) => ({ name: 'models/' + m })) })
