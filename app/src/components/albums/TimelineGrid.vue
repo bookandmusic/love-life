@@ -76,7 +76,7 @@ function isSelected(id: number) {
           >
             <img :src="fullUrl(mediaUrl(m).thumb)" loading="lazy" class="ph" alt="" />
             <span v-if="selectMode" class="pick-mark" :class="{ on: isSelected(m.id) }">
-              <Check v-if="isSelected(m.id)" :size="13" stroke-width="3" />
+              <Check v-if="isSelected(m.id)" :size="13" stroke-width="2.5" />
             </span>
             <span v-if="m.kind === 'video'" class="video-mark">
               <Play :size="9" fill="currentColor" />

@@ -395,7 +395,7 @@ defineExpose({ focus, attachMap, layout })
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 4px 16px 12px;
+  padding: 4px 0 12px;
 }
 .map-container {
   flex: 1;

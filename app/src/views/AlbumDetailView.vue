@@ -279,7 +279,7 @@ onMounted(load)
                 <img
                   :src="fullUrl(mediaUrl(m).thumb)"
                   class="ph"
-                  :class="{ picked: picked.includes(m.id) }"
+                  :class="{ picked: picked.includes(m.id), locked: isLocked(m) }"
                   loading="lazy"
                   alt=""
                   @click="isLocked(m) ? undefined : togglePick(m.id)"
@@ -333,9 +333,13 @@ onMounted(load)
   height: 32px;
 }
 
-/* F2 选图器已归属置灰 */
+/* F2 选图器已归属置灰：不可选（点击已在模板里拦掉），并降透明度示意 */
 .ph-wrap {
   position: relative;
+}
+.ph.locked {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 .ph,
 .picked {
@@ -381,7 +385,7 @@ onMounted(load)
   width: 100%;
   color: var(--primary-deep);
   background: var(--surface);
-  border: 1px dashed rgba(240, 98, 146, 0.5);
+  border: 1px dashed color-mix(in srgb, var(--primary-deep) 50%, transparent);
   border-radius: 4px;
   cursor: pointer;
 }

@@ -113,7 +113,7 @@ function monthLabel(key: string): string {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 143, 171, 0.14);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
   color: var(--primary-deep);
 }
 
@@ -142,7 +142,7 @@ function monthLabel(key: string): string {
   color: var(--muted-ink);
 }
 :root[data-theme='dark'] .ac-ph {
-  background: rgba(255, 143, 171, 0.22);
+  background: color-mix(in srgb, var(--primary) 22%, transparent);
 }
 .ac-empty-wrap {
   grid-column: 1 / -1;

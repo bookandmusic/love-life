@@ -146,7 +146,7 @@ function addClick(fn: () => void) {
   border: none;
   cursor: pointer;
   z-index: 20;
-  box-shadow: 0 6px 16px rgba(240, 98, 146, 0.35);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--primary-deep) 35%, transparent);
   display: flex;
   align-items: center;
   justify-content: center;

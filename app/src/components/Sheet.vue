@@ -103,7 +103,7 @@ watch(() => props.show, (v) => {
   color: var(--ink);
 }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-.btn.primary { background: var(--primary, #ff8fab); color: #fff; }
+.btn.primary { background: var(--primary); color: #fff; }
 .btn.danger  { background: var(--danger,  #e0494b); color: #fff; }
 
 /* 桌面档：弹窗从「应用卡片的下边缘」弹出——遮罩留出与卡片相同的外距，

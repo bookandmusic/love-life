@@ -6,7 +6,7 @@ import AppToast from '../components/AppToast.vue'
 import { useViewer } from '../composables/useViewer'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
-import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
+import { CONSEQUENCE_ALBUM, RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
 import { useAuth } from '../stores/auth'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
@@ -120,7 +120,7 @@ function onAlbumClick(a: AlbumItem, e: MouseEvent) {
 }
 function albumDeleteMsg(a: AlbumItem) {
   // 空相册没有内容可看，删除后果只有相册本身（有内容时的后果文案依客户端设计「删除交互统一规范」）
-  const extra = a.item_count > 0 ? '照片本身不受影响（回到未归属状态）。' : ''
+  const extra = a.item_count > 0 ? CONSEQUENCE_ALBUM : ''
   return recycleMsg(a.name, extra + peerNotice(auth.user?.id, a.created_by))
 }
 async function confirmDeleteAlbum() {

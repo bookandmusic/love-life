@@ -14,7 +14,7 @@ import EmptyState from '../components/EmptyState.vue'
 import { useLongPress } from '../composables/useLongPress'
 import { ensureTileGrant } from '../utils/mapTiles'
 import { KEYS, onceHint } from '../utils/storage'
-import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
+import { CONSEQUENCE_POST_WITH_PLACE, RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice } from '../utils/deleteCopy'
 import { useAuth } from '../stores/auth'
 
 defineOptions({ name: 'MapView' })
@@ -315,7 +315,7 @@ async function confirmDeletePoint() {
       v-if="deletingPoint"
       v-model:show="showDeletePoint"
       :title="RECYCLE_TITLE"
-      :message="recycleMsg(deletingPoint.name, '动态里的地点名仍保留为快照。' + peerNotice(auth.user?.id, deletingPoint.created_by))"
+      :message="recycleMsg(deletingPoint.name, CONSEQUENCE_POST_WITH_PLACE + peerNotice(auth.user?.id, deletingPoint.created_by))"
       :confirm-text="RECYCLE_CONFIRM"
       :confirm-danger="true"
       @confirm="confirmDeletePoint"
@@ -336,7 +336,6 @@ async function confirmDeletePoint() {
   flex-shrink: 0;
   align-self: stretch;
   width: max-content;
-  margin-left: 16px;
 }
 .seg button {
   border: none;
@@ -466,10 +465,10 @@ async function confirmDeletePoint() {
 }
 .point-row.hl {
   border-color: var(--primary);
-  background: rgba(255, 143, 171, 0.08);
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
 }
 :root[data-theme='dark'] .point-row.hl {
-  background: rgba(255, 143, 171, 0.12);
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 .pr-icon {
   width: 44px;
@@ -512,7 +511,7 @@ async function confirmDeletePoint() {
   font-family: inherit;
 }
 .s-input + .s-input { margin-top: 8px; }
-.s-input:focus { border-color: var(--primary, #ff8fab); }
+.s-input:focus { border-color: var(--primary); }
 .s-textarea { resize: none; }
 .s-err { font-size: 13px; color: var(--danger); margin: 0; }
 

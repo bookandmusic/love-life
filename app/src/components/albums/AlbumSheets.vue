@@ -142,7 +142,7 @@ const emit = defineEmits<{
   cursor: pointer;
 }
 .create-input + .create-input { margin-top: 8px; }
-.create-input:focus { border-color: var(--primary, #ff8fab); }
+.create-input:focus { border-color: var(--primary); }
 .pk-list { display: flex; flex-direction: column; gap: 6px; max-height: 40vh; overflow-y: auto; }
 .pk-row:disabled { opacity: 0.5; }
 .pk-ic { color: var(--primary-deep); display: flex; }

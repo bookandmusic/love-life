@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { AlertTriangle, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Music, Pause, Play, Trash2, Video, X } from 'lucide-vue-next'
+import { AlertTriangle, ChevronLeft, ChevronRight, Download, FolderMinus, Image as ImageIcon, Music, Pause, Play, Video, X } from 'lucide-vue-next'
 import { fullUrl } from '../api/client'
 import { mediaUrl, refreshMediaUrl } from '../utils/mediaUrls'
 import { mediaDurationText, mediaKindLabel } from '../utils/mediaKind'
@@ -291,7 +291,7 @@ const transformStyle = computed(() => ({
 
         <template v-else-if="cur.kind === 'audio'">
           <div class="mv-audio">
-            <div class="mv-audio-cover"><Music :size="40" stroke-width="1.3" /></div>
+            <div class="mv-audio-cover"><Music :size="40" stroke-width="1.7" /></div>
             <div class="mv-audio-title">录音</div>
             <div class="mv-audio-meta">
               <span v-if="cur.taken_at">{{ cur.taken_at }}</span>
@@ -346,8 +346,8 @@ const transformStyle = computed(() => ({
             查看动态
           </button>
           <!-- 相册模式：查看所属动态与移出当前相册可并存（两者不是互斥选择） -->
-          <button v-if="mode === 'album'" class="pv-btn danger" @click="emit('remove', cur.id)">
-            <Trash2 :size="15" stroke-width="2" /> 移出当前相册
+          <button v-if="mode === 'album'" class="pv-btn" @click="emit('remove', cur.id)">
+            <FolderMinus :size="15" stroke-width="2" /> 移出当前相册
           </button>
         </div>
         <p class="mv-note" :class="{ saved: saveState === 'saved' }">
@@ -520,7 +520,7 @@ const transformStyle = computed(() => ({
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, rgba(255, 143, 171, 0.55), rgba(120, 140, 255, 0.5));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--primary) 55%, transparent), rgba(120, 140, 255, 0.5));
   color: #fff;
 }
 .mv-audio-title { font-size: 16px; font-weight: 600; color: #fff; }
@@ -581,9 +581,6 @@ const transformStyle = computed(() => ({
   -webkit-backdrop-filter: blur(20px);
   box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
   cursor: pointer;
-}
-.pv-btn.danger {
-  color: #ff6b6b;
 }
 .mv-nav {
   position: absolute;

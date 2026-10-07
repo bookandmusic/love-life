@@ -17,7 +17,7 @@ import { useAuth } from '../stores/auth'
 import { usePostInteractions } from '../composables/postInteractions'
 import { useLongPress } from '../composables/useLongPress'
 import { KEYS, onceHint } from '../utils/storage'
-import { RECYCLE_CONFIRM, RECYCLE_TITLE, RECYCLE_TOAST, peerNotice, recycleMsg } from '../utils/deleteCopy'
+import { CONSEQUENCE_POST, RECYCLE_CONFIRM, RECYCLE_TITLE, RECYCLE_TOAST, peerNotice, recycleMsg } from '../utils/deleteCopy'
 
 defineOptions({ name: 'PostsView' })
 
@@ -196,7 +196,7 @@ function askDeleteComment(c: CommentItem) {
   showDeleteComment.value = true
 }
 function postDeleteMsg(p: PostItem) {
-  return recycleMsg('这条动态', '动态里的照片与评论会一并移入回收站。' + peerNotice(auth.user?.id, p.author_id))
+  return recycleMsg('这条动态', CONSEQUENCE_POST + peerNotice(auth.user?.id, p.author_id))
 }
 function commentDeleteMsg(c: CommentItem) {
   return recycleMsg(`${c.author}：${c.content.slice(0, 20)}…`, peerNotice(auth.user?.id, c.author_id))
@@ -532,12 +532,12 @@ watch(() => route.query.focus, () => {
   padding: 4px 10px;
   border-radius: 999px;
   font-weight: 600;
-  background: rgba(255, 143, 171, 0.14);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
   color: var(--primary-deep);
 }
 :root[data-theme='dark'] .mood {
-  background: rgba(255, 143, 171, 0.18);
-  color: #ffb4c2;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  color: var(--primary-deep);
 }
 .p-text {
   padding: 8px 14px 0;

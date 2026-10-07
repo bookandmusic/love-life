@@ -258,12 +258,12 @@ onActivated(() => {
   border-radius: 20px;
   padding: 24px 22px 20px;
   margin-bottom: 16px;
-  background: linear-gradient(150deg, rgba(255, 143, 171, 0.18), rgba(255, 143, 171, 0.04) 55%, transparent);
+  background: linear-gradient(150deg, color-mix(in srgb, var(--primary) 18%, transparent), color-mix(in srgb, var(--primary) 4%, transparent) 55%, transparent);
   box-shadow: var(--shadow);
   border: 1px solid var(--rule);
 }
 :root[data-theme='dark'] .hero {
-  background: linear-gradient(150deg, rgba(255, 143, 171, 0.16), rgba(255, 143, 171, 0.03) 55%, transparent);
+  background: linear-gradient(150deg, color-mix(in srgb, var(--primary) 16%, transparent), color-mix(in srgb, var(--primary) 3%, transparent) 55%, transparent);
 }
 .hero-top {
   display: flex;
@@ -403,13 +403,13 @@ onActivated(() => {
   display: flex;
   align-items: center;
   justify-content: center;
- /* 着色点（非交互）→ 暖粉，与 「暖粉只用于着色点/FAB/选中」一致；
+ /* 着色点（非交互）→ 强调色，与「强调色只用于着色点/FAB/选中」一致；
      操作类文字/图标控件才用 --tint（蓝） */
-  background: rgba(255, 143, 171, 0.18);
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
   color: var(--primary-deep);
 }
 :root[data-theme='dark'] .u-ic {
-  background: rgba(255, 143, 171, 0.26);
+  background: color-mix(in srgb, var(--primary) 26%, transparent);
 }
 .u-name {
   font-size: 15px;

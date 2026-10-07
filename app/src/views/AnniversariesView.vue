@@ -428,8 +428,8 @@ watch(
               <em class="type-tag" :class="a.meta.kind === 'lunar' ? 'tg-lunar' : 'tg-solar'">{{ a.meta.kind === 'lunar' ? '农历' : '阳历' }}</em>
             </div>
             <div class="meta">
-              <span class="meta-line next">{{ a.meta.next }}</span>
               <span class="meta-line anniv">{{ a.meta.anniv }}</span>
+              <span class="meta-line next">{{ a.meta.next }}</span>
               <button class="meta-line remind" @pointerdown.stop @click="askRemind(a)">
                 <Bell :size="12" stroke-width="2" />
                 {{ a.remind_days_before === 0 ? '当天提醒' : `提前 ${a.remind_days_before} 天提醒` }}

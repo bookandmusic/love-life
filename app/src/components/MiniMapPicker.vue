@@ -168,7 +168,7 @@ watch(
           draggable="false"
         />
       </template>
-      <div v-if="markerStyle" class="mm-pin" :style="markerStyle"><MapPin :size="22" fill="currentColor" stroke-width="1.5" /></div>
+      <div v-if="markerStyle" class="mm-pin" :style="markerStyle"><MapPin :size="22" fill="currentColor" stroke-width="1.7" /></div>
       <div v-if="!noTileSource" class="mm-hint">点击选点 · 拖动平移</div>
       <MapNoSource v-if="noTileSource" />
     </div>

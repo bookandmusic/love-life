@@ -18,7 +18,7 @@ defineEmits<{ (e: 'action'): void }>()
 <template>
   <div class="empty-state" :class="{ compact }">
     <span v-if="icon" class="es-ic">
-      <component :is="icon" :size="compact ? 26 : 34" stroke-width="1.2" />
+      <component :is="icon" :size="compact ? 26 : 34" stroke-width="1.7" />
     </span>
     <p class="es-title">{{ title }}</p>
     <p v-if="sub" class="es-sub">{{ sub }}</p>

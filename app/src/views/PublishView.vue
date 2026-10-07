@@ -380,13 +380,13 @@ async function finalize() {
   box-shadow: var(--shadow);
 }
 .chip.on {
-  background: rgba(255, 143, 171, 0.14);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
   color: var(--primary-deep);
   font-weight: 600;
 }
 :root[data-theme='dark'] .chip.on {
-  background: rgba(255, 143, 171, 0.18);
-  color: #ffb4c2;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  color: var(--primary-deep);
 }
 .custom {
   border: none;
@@ -402,14 +402,14 @@ async function finalize() {
   color: var(--muted-ink);
 }
 .custom.on {
-  background: rgba(255, 143, 171, 0.14);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
   color: var(--primary-deep);
   font-weight: 600;
   box-shadow: none;
 }
 :root[data-theme='dark'] .custom.on {
-  background: rgba(255, 143, 171, 0.18);
-  color: #ffb4c2;
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+  color: var(--primary-deep);
 }
 
 /* 媒体网格：每个方格 + 末尾「添加」格 */

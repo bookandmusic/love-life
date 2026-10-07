@@ -20,6 +20,11 @@ export const REMOVE_TITLE = '移出当前相册'
 export const REMOVE_CONFIRM = '移出'
 export const REMOVE_TOAST = '已移出相册'
 
+// 各类型的「删除后果」文案（同属单一来源；页面只拼接，不再自带字面量）
+export const CONSEQUENCE_POST = '动态里的照片与评论会一并移入回收站。'
+export const CONSEQUENCE_POST_WITH_PLACE = '动态里的地点名仍保留为快照。'
+export const CONSEQUENCE_ALBUM = '照片本身不受影响（回到未归属状态）。'
+
 export function removeMsg(albumName: string): string {
   return `把这张照片移出「${albumName}」？只是移出相册，照片本身不会删除（仍在时间轴）。`
 }
