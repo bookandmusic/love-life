@@ -17,7 +17,6 @@ const spaceStore = useSpace()
 
 type PostItem = Pick<Post, 'id' | 'content' | 'mood' | 'location_name' | 'created_at' | 'media'>
 
-const posts = ref<PostItem[]>([])
 // 那年今日：服务端按同月同日过滤后再分页，避免只在最新 50 条里找
 const memories = ref<PostItem[]>([])
 const loading = ref(false)
@@ -35,7 +34,13 @@ function memoryTitle(m: PostItem): string {
   return t.slice(0, 24) || '一条回忆'
 }
 
-// 回忆精选：随机抽 1 张有图的「杂志封面」+ 若干无图的「文字回忆」
+// 回忆精选的两份分层池（服务端已按「有媒体 / 无媒体」随机抽好）；
+// 抽到的这批用于挑选展示，刷新时由 load() 重新抽。
+const mediaPosts = ref<PostItem[]>([])
+const textPosts = ref<PostItem[]>([])
+// 是否已成功取过数据：冷启动判定用它，不再拿「当前有没有数据」代替
+// （抽样池可以为空，用长度判定会导致每次刷新都亮骨架屏）
+const loaded = ref(false)
 const shuffleTick = ref(0)
 function shuffle<T>(arr: T[]): T[] {
   void shuffleTick.value // 依赖「换一批」的计数：值本身不用，但必须读，否则 computed 不再重算
@@ -47,13 +52,10 @@ function shuffle<T>(arr: T[]): T[] {
   return a
 }
 const coverMemory = computed(() => {
-  const withImg = posts.value.filter((p) => p.media.length > 0)
+  const withImg = mediaPosts.value.filter((p) => p.media.length > 0)
   return withImg.length ? shuffle(withImg)[0] : null
 })
-const textMemories = computed(() => {
-  const noImg = posts.value.filter((p) => p.media.length === 0)
-  return shuffle(noImg).slice(0, 3)
-})
+const textMemories = computed(() => shuffle(textPosts.value).slice(0, 3))
 function refreshMemories() {
   shuffleTick.value++
 }
@@ -100,27 +102,35 @@ const upcoming = computed(() => {
 // 全新部署空态：无动态 + 无纪念日 + 无相册，三者皆空才算首启。
 // 用计数而不是 next_anniversary.name：纪念日存在但日期全部无效时名称也是空，
 // 旧判定会把有数据的空间误显示成空态。
-// 不可放宽为 posts.length === 0：否则「有相册/纪念日但没发过动态」的空间会被空态整页遮挡，
+// 不可放宽为「动态池为空」：否则「有相册/纪念日但没发过动态」的空间会被空态整页遮挡，
 // 回忆精选（常驻兜底卡）与那年今日全不渲染，违反「首页永不空态」。
 const totallyEmpty = computed(() => {
   const sp = spaceStore.space
-  return sp !== null && posts.value.length === 0 && sp.anniversary_count === 0 && sp.album_count === 0
+  // 两份分层池一空即「没有动态可展示」：有图 / 无图两层都空，说明动态池为空
+  const noPosts = mediaPosts.value.length === 0 && textPosts.value.length === 0
+  return sp !== null && noPosts && sp.anniversary_count === 0 && sp.album_count === 0
 })
 
 async function load() {
   // 静默刷新：仅冷启动（无数据）时亮骨架屏；已有数据时后台重取、失败不打扰旧内容
-  const cold = posts.value.length === 0
+  const cold = loaded.value === false
+  loaded.value = true
   if (cold) {
     loading.value = true
     error.value = ''
   }
   try {
-    const [, p, m] = await Promise.all([
+    // 回忆精选：服务端在**全量历史池**里随机取（只取最新 50 条会让更早的回忆抽不到），
+    // 且**分层**取——封面卡要有图的、文字回忆要没图的，否则随机样本可能整批没照片、封面卡时有时无
+    // （PRODUCT「首页」：回忆精选是常驻兜底卡）。
+    const [, cover, text, m] = await Promise.all([
       spaceStore.load(true),
-      api<{ items: PostItem[] }>('/api/v1/posts?page=1&page_size=50'),
+      api<{ items: PostItem[] }>('/api/v1/posts?page=1&page_size=20&sample=1&media=1'),
+      api<{ items: PostItem[] }>('/api/v1/posts?page=1&page_size=20&sample=1&media=0'),
       api<{ items: PostItem[] }>('/api/v1/posts?memories=1&page=1&page_size=50'),
     ])
-    posts.value = p.items
+    mediaPosts.value = cover.items
+    textPosts.value = text.items
     memories.value = m.items
   } catch (e) {
     if (cold) error.value = errText(e, '加载失败')

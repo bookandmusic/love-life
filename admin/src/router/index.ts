@@ -56,6 +56,9 @@ const router = createRouter({
         { path: 'users', redirect: '/space' },
         { path: 'members', redirect: '/space' },
         { path: 'security', redirect: '/space' },
+        // 未知路径统一落到仪表盘：没有兜底时直开拼错/历史遗留路径是整页白屏
+        // （ARCHITECTURE「后台管理页面实现」：旧路径全部 redirect 到新路径）
+        { path: ':pathMatch(.*)*', redirect: '/dashboard' },
       ],
     },
   ],

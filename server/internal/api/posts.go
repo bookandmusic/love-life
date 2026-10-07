@@ -248,7 +248,22 @@ func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
 	// 那年今日：只取历年在今天同月同日发布的动态，不含当年；
 	// 过滤在分页之前（契约同 mock），故 total 为过滤后总数。
 	memories := r.URL.Query().Get("memories") == "1"
-	posts, total, err := a.db.ListPosts(r.Context(), page, pageSize, memories)
+	// sample=1：在**全量候选**里随机取（首页「回忆精选」用；见 store.ListPostsSampled）
+	sample := r.URL.Query().Get("sample") == "1"
+	// media=1 / media=0：只看带媒体 / 不带媒体——首页据此刻意分层抽样，保证封面卡那层非空
+	var hasMedia *bool
+	switch r.URL.Query().Get("media") {
+	case "1":
+		v := true
+		hasMedia = &v
+	case "0":
+		v := false
+		hasMedia = &v
+	}
+	posts, total, err := a.db.ListPostsSampled(r.Context(), page, pageSize, memories, sample, hasMedia)
+	if sample && page > 1 {
+		page = 1 // 抽样路径不翻页（每次都重抽），响应如实回 page=1
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return

@@ -12,15 +12,16 @@ const fabOpen = ref(false)
 // 组件名靠 <script setup> 按文件名自动推断（各 view 另加 defineOptions 兜底）。
 const tabViews = ['HomeView', 'PostsView', 'AlbumsView', 'AnniversariesView', 'MapView']
 
-// 整页表单（记动态/动态详情/相册详情）隐藏全部外壳；?new=1 的添加表单同理（iOS 模态不露 TabBar/FAB）
+// 整页表单（记动态/相册详情）隐藏全部外壳；?new=1 的添加表单同理（iOS 模态不露 TabBar/FAB）。
+// 动态详情页已整体移除（PRODUCT「动态」），故不再有 /posts/<id> 这一形态
 const chromeHidden = computed(() =>
-  route.path.startsWith('/publish') || /\/posts\/\d+/.test(route.path) || /\/albums\/\d+/.test(route.path) ||
+  route.path.startsWith('/publish') || /\/albums\/\d+/.test(route.path) ||
   ((route.path === '/map' || route.path === '/anniversaries') && route.query.new === '1'),
 )
 
 const addItems = [
-  { label: '动态', icon: PenLine, color: 'var(--primary)', action: () => router.push('/publish') },
-  { label: '地点', icon: MapPin, color: 'var(--sem-green)', action: () => router.push('/map?new=1') },
+  { label: '记动态', icon: PenLine, color: 'var(--primary)', action: () => router.push('/publish') },
+  { label: '添加地点', icon: MapPin, color: 'var(--sem-green)', action: () => router.push('/map?new=1') },
   { label: '纪念日', icon: Cake, color: 'var(--sem-gold)', action: () => router.push('/anniversaries?new=1') },
   { label: '相册', icon: FolderPlus, color: 'var(--sem-purple)', action: () => router.push('/albums?new=1') },
 ]

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Bell, ChevronRight, Cake, Gift, CalendarDays, Moon } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
@@ -37,6 +37,8 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuth()
 const items = ref<Anniv[]>([])
+// ?focus=<id>：从通知跳来时定位并短暂高亮该卡片（与动态时间轴 / 地图同款做法）
+const hlId = ref<number | null>(null)
 const error = ref('')
 const loading = ref(false)
 const saving = ref(false)
@@ -312,13 +314,41 @@ interface AnnivRowMeta {
 }
 
 
+// ?focus=<id> 定位高亮：列表一次全量加载，命中与否都在本轮判定，无需翻页
+async function applyFocus() {
+  const id = Number(route.query.focus)
+  if (!id) return
+  if (!items.value.length) await load()
+  await nextTick()
+  const el = document.getElementById(`anniv-${id}`)
+  if (!el) {
+    // 静默失败会让用户以为「跳转没反应」：明确说一句（与动态页同口径）
+    toast.value = '未找到该条，可能已删除'
+    return
+  }
+  el.scrollIntoView({ block: 'center' })
+  hlId.value = id
+  window.setTimeout(() => {
+    hlId.value = null
+  }, 2400)
+}
+
 onActivated(async () => {
   await load()
   // 以 query 为真源回写表单开合（修复：经 TabBar 而非 closeForm 离开时，回来不应停在表单态）
   newForm.value = route.query.new === '1'
   // 长按是隐形手势：首次进入提示一次（本地记住）
   if (onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按纪念日可移入回收站'
+  await applyFocus()
 })
+
+// KeepAlive 下失活组件 watcher 仍响应全局路由：限定本页路径，避免他 tab 的 ?focus 泄漏
+watch(
+  () => route.query.focus,
+  () => {
+    if (route.path === '/anniversaries') void applyFocus()
+  },
+)
 </script>
 
 <template>
@@ -378,9 +408,10 @@ onActivated(async () => {
 
         <div
           v-for="a in rows"
+          :id="`anniv-${a.id}`"
           :key="a.id"
           class="row pressable"
-          :class="{ pressing: pressing === a.id }"
+          :class="{ hl: hlId === a.id, pressing: pressing === a.id }"
           @pointerdown="pressDown($event, a.id, () => askRemove(a))"
           @pointermove="pressMove"
           @pointerup="pressUp"
@@ -513,6 +544,10 @@ onActivated(async () => {
 }
 .row:active {
   opacity: 0.9;
+}
+/* ?focus=<id> 定位高亮（与动态时间轴 / 地图点位列表同一套语言） */
+.row.hl {
+  box-shadow: 0 0 0 2px var(--primary), var(--shadow);
 }
 .icon.far {
   opacity: 0.55;

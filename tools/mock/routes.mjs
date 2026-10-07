@@ -284,7 +284,17 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/posts$/, handler: (url, body,
       return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}` === todayMMDD && d.getFullYear() < today.getFullYear()
     })
   }
+  // media=1/0：只看带媒体 / 不带媒体（首页回忆精选分层抽样用，向真实后端对齐）
+  if (q.media === '1' || q.media === '0') {
+    const want = q.media === '1'
+    sorted = sorted.filter((p) => (timelineMedia.some((m) => m.post_id === p.id) === want))
+  }
   const total = sorted.length
+  // sample=1：在**全量候选**里随机取（不分页；首页「回忆精选」用，向真实后端对齐）
+  if (q.sample === '1') {
+    sorted = [...sorted].sort(() => Math.random() - 0.5)
+    return ok({ items: sorted.slice(0, pageSize).map((p) => postOut(p, uid)), total, page: 1 })
+  }
   const pageItems = sorted.slice((page - 1) * pageSize, page * pageSize)
   return ok({ items: pageItems.map((p) => postOut(p, uid)), total })
 }})

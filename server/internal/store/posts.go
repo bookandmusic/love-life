@@ -115,19 +115,43 @@ func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 // 「同月同日历史回忆」）；过滤发生在分页之前，total 为过滤后总数（契约同 mock）。
 // 月/年判定按部署者本地时区（库内 created_at 为 UTC，见 timeutil.go 时间口径）。
 func (d *DB) ListPosts(ctx context.Context, page, pageSize int, memories bool) ([]*Post, int, error) {
+	return d.ListPostsSampled(ctx, page, pageSize, memories, false, nil)
+}
+
+// ListPostsSampled 同 ListPosts，另有两点可选：
+//   - sample=true：在**全量候选**里随机取（而非取最新一页）。首页「回忆精选」用它——文档要求
+//     从**历史照片 / 动态池**随机抽取，只取最新 50 条会让更早的历史永远抽不到（池子随记录增长而失真）。
+//   - hasMedia：只看带媒体 / 不带媒体的动态。首页要用它**分层抽样**：封面卡取「有媒体」那层、
+//     文字回忆取「无媒体」那层——否则随机样本可能整批没有照片，封面卡就会时有时无
+//     （PRODUCT「首页」：回忆精选是**常驻兜底卡**）。
+//
+// 随机在 SQL 侧做，避免把全量拉到内存再洗牌。
+func (d *DB) ListPostsSampled(ctx context.Context, page, pageSize int, memories, sample bool, hasMedia *bool) ([]*Post, int, error) {
 	// 两个查询共用 WHERE，故一律用 p. 限定列名（users 也有 created_at，不限定会 ambiguous）
 	where := ` WHERE p.deleted_at IS NULL`
 	if memories {
 		where += ` AND strftime('%m-%d', p.created_at, 'localtime') = strftime('%m-%d', 'now', 'localtime')` +
 			` AND strftime('%Y', p.created_at, 'localtime') < strftime('%Y', 'now', 'localtime')`
 	}
+	if hasMedia != nil {
+		sub := `EXISTS (SELECT 1 FROM media m WHERE m.post_id = p.id AND m.deleted_at IS NULL)`
+		if !*hasMedia {
+			sub = `NOT ` + sub
+		}
+		where += ` AND ` + sub
+	}
 	var total int
 	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM posts p`+where).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	offset := (page - 1) * pageSize
+	// 随机抽样：ORDER BY RANDOM() 在候选集上取前 pageSize 条（单空间自用规模，代价可接受）。
+	// 抽样路径下 page 无意义（每次都重抽），故固定 offset=0，响应也回 page=1，不假装能翻页。
+	order, offset := ` ORDER BY p.id DESC LIMIT ? OFFSET ?`, (page-1)*pageSize
+	if sample {
+		order, offset = ` ORDER BY RANDOM() LIMIT ? OFFSET ?`, 0
+	}
 	rows, err := d.QueryContext(ctx, `
-		SELECT `+postColumns+` FROM posts p JOIN users u ON u.id = p.author_id`+where+` ORDER BY p.id DESC LIMIT ? OFFSET ?`, pageSize, offset)
+		SELECT `+postColumns+` FROM posts p JOIN users u ON u.id = p.author_id`+where+order, pageSize, offset)
 	if err != nil {
 		return nil, 0, err
 	}

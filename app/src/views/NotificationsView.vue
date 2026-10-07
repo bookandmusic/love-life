@@ -108,7 +108,8 @@ function targetRoute(n: NotifItem): string | null {
     case 'album':
       return `/albums/${n.target_id}`
     case 'anniversary':
-      return '/anniversaries'
+      // 定位到具体纪念日卡片并短暂高亮（与动态 / 地图同款；PRODUCT「通知中心」交互）
+      return `/anniversaries?focus=${n.target_id}`
     case 'map_point':
       return `/map?focus=${n.target_id}` // 定位到具体点位（列表页无锚点，只能到地图居中高亮）
     default:
