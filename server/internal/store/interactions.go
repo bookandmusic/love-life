@@ -245,17 +245,7 @@ func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
 }
 
 func (d *DB) SoftDeleteComment(ctx context.Context, id int64, actorType string, actorID int64) error {
-	res, err := d.ExecContext(ctx,
-		`UPDATE comments SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
-		actorID, actorType, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return softDeleteKind(ctx, d, "comment", id, actorType, actorID)
 }
 
 // ListFavoritePostsPaged 我收藏的动态（list_favorites）：收藏时间倒序 + 总数，

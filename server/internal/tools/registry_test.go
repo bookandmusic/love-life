@@ -495,6 +495,19 @@ func TestProposeDelete(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("删除通知 = %d, want 1", n)
 	}
+	// 批量删除走整批事务：一次执行删多条，通知逐条发出（回滚守卫在 store 侧）
+	q1 := seedPostAt(t, db, "批量一", "2026-08-11 10:00:00")
+	q2 := seedPostAt(t, db, "批量二", "2026-08-12 10:00:00")
+	exec(t, "propose_delete", d, 2, map[string]any{"kind": "post", "ids": []any{float64(q1), float64(q2)}})
+	var batchN int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM posts WHERE id IN (?, ?) AND deleted_at IS NOT NULL`, q1, q2).Scan(&batchN)
+	if batchN != 2 {
+		t.Fatalf("批量删除 = %d 条，want 2", batchN)
+	}
+	_ = db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type='post_deleted' AND recipient_id=1`).Scan(&n)
+	if n != 3 {
+		t.Fatalf("批量删除通知累计 = %d, want 3", n)
+	}
 	// 不存在 → 前置报错（不出注定失败的卡）
 	if _, err := findTool(t, "propose_delete").Invoke(ctx, d, 1, map[string]any{"kind": "post", "id": float64(999999)}, ModePropose); err == nil {
 		t.Fatal("不存在的动态应报错")

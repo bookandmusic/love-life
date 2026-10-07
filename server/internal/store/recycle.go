@@ -78,16 +78,32 @@ type recycleSource struct {
 	alias   string
 	summary string // 无别名前缀的 SELECT 表达式
 	listed  bool
+	// kind 删除（软删）侧的类型名；空串 = 不可按类型单独删除（媒体只随动态级联）。
+	// 表清单只此一份：软删按 kind 反查这里，避免第二份「哪些表可回收」的登记漂移。
+	kind string
 }
 
 // 摘要口径对齐 mock fixtures：动态/评论取正文，照片取文件名，相册/纪念日/点位取名称。
 var recycleSources = []recycleSource{
-	{"动态", "posts", "p", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true},
-	{"评论", "comments", "c", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true},
-	{"照片", "media", "m", `COALESCE(NULLIF(file_path, ''), '')`, false},
-	{"相册", "albums", "a", `name`, true},
-	{"纪念日", "anniversaries", "an", `name`, true},
-	{"地图点位", "map_points", "mp", `name`, true},
+	{"动态", "posts", "p", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true, "post"},
+	{"评论", "comments", "c", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true, "comment"},
+	{"照片", "media", "m", `COALESCE(NULLIF(file_path, ''), '')`, false, ""},
+	{"相册", "albums", "a", `name`, true, "album"},
+	{"纪念日", "anniversaries", "an", `name`, true, "anniversary"},
+	{"地图点位", "map_points", "mp", `name`, true, "place"},
+}
+
+// recycleTableByKind 软删 kind → 表名（未登记即不可按类型单独删除，返回空串）。
+func recycleTableByKind(kind string) string {
+	if kind == "" {
+		return ""
+	}
+	for i := range recycleSources {
+		if recycleSources[i].kind == kind {
+			return recycleSources[i].table
+		}
+	}
+	return ""
 }
 
 func recycleSourceByLabel(label string) (int, *recycleSource) {

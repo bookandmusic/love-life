@@ -91,17 +91,7 @@ func (d *DB) UpdateAnniversaryReminder(ctx context.Context, id int64, daysBefore
 }
 
 func (d *DB) SoftDeleteAnniversary(ctx context.Context, id int64, actorType string, actorID int64) error {
-	res, err := d.ExecContext(ctx,
-		`UPDATE anniversaries SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
-		actorID, actorType, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
+	return softDeleteKind(ctx, d, "anniversary", id, actorType, actorID)
 }
 
 // NextOccurrence 下一次日期（含今天）：solar 按公历逐年重复；lunar 由农历日期换算

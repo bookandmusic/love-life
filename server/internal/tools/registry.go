@@ -1988,7 +1988,8 @@ func proposeAlbumTool() *Tool {
 				return nil, err
 			}
 			if mode == ModeExecute {
-				albumID, err := d.DB.CreateAlbum(ctx, name, str(args, "description"), userID)
+				// 建册与首批媒体同事务：加媒体失败则相册也不落，不留「已建册但媒体没进」的半成品
+				albumID, err := d.DB.CreateAlbumWithItems(ctx, name, str(args, "description"), userID, mediaIDs)
 				if err != nil {
 					return nil, err
 				}
@@ -1996,16 +1997,7 @@ func proposeAlbumTool() *Tool {
 				snapshot, _ := json.Marshal(map[string]any{"name": name, "operator": operator, "via": "ai"})
 				d.notifyPartners(ctx, userID, "album_created", "album", albumID, string(snapshot),
 					"相册上新", operator+"（AI）创建了相册「"+name+"」")
-				added := 0
-				if len(mediaIDs) > 0 {
-					if aerr := d.DB.AddAlbumItems(ctx, albumID, userID, mediaIDs); aerr != nil {
-						// 执行期失败即失败（不留「已建册但媒体没进」的假成功）：相册已建属既成事实，
-						// 如实回错，历史按 failed 回显并可追溯原因。
-						return nil, aerr
-					}
-					added = len(mediaIDs)
-				}
-				return &ToolResult{ModelText: fmt.Sprintf("相册「%s」已创建（#%d，%d 条媒体）。", name, albumID, added),
+				return &ToolResult{ModelText: fmt.Sprintf("相册「%s」已创建（#%d，%d 条媒体）。", name, albumID, len(mediaIDs)),
 					UserText: fmt.Sprintf("相册「%s」已创建", name), Record: &RecordRef{Kind: "album", ID: albumID}}, nil
 			}
 			mediaIDs, warnings := filterUnowned(ctx, d, mediaIDs)
@@ -2076,20 +2068,11 @@ func proposeAlbumMembersTool() *Tool {
 				return nil, fmt.Errorf("相册不存在")
 			}
 			if mode == ModeExecute {
-				added, removed := 0, 0
-				if len(addIDs) > 0 {
-					if aerr := d.DB.AddAlbumItems(ctx, albumID, userID, addIDs); aerr != nil {
-						return nil, aerr
-					}
-					added = len(addIDs)
+				// 增与删同事务：加入的预检失败时移出也不落（一次确认 = 一个原子步）
+				if err := d.DB.UpdateAlbumMembers(ctx, albumID, userID, addIDs, removeIDs); err != nil {
+					return nil, err
 				}
-				if len(removeIDs) > 0 {
-					if rerr := d.DB.RemoveAlbumItems(ctx, albumID, removeIDs); rerr != nil {
-						return nil, rerr
-					}
-					removed = len(removeIDs)
-				}
-				return &ToolResult{ModelText: fmt.Sprintf("相册「%s」已更新：加入 %d 条、移出 %d 条。", album.Text, added, removed),
+				return &ToolResult{ModelText: fmt.Sprintf("相册「%s」已更新：加入 %d 条、移出 %d 条。", album.Text, len(addIDs), len(removeIDs)),
 					UserText: "相册已更新", Record: &RecordRef{Kind: "album", ID: albumID}}, nil
 			}
 			addIDs, warnings := filterUnowned(ctx, d, addIDs)
@@ -2704,11 +2687,19 @@ func proposeDeleteTool() *Tool {
 			}
 
 			if mode == ModeExecute {
-				// 任一条失败即整批报错回滚（回写 failed 并记原因由 resolve 层处理）
+				// 站内通知要删除前的快照（Get* 一律只取未软删记录），故先取快照再整批事务删除
+				notices := make([]store.DeletedNotice, 0, len(ids))
 				for _, id := range ids {
-					if err := d.softDeleteByKind(ctx, userID, kind, id); err != nil {
-						return nil, fmt.Errorf("删除 %s #%d 失败：%w", deleteKindLabel(kind), id, err)
+					if n, ok := d.deletedNotice(ctx, userID, kind, id); ok {
+						notices = append(notices, n)
 					}
+				}
+				// 一个事务内逐条软删：任一条失败整批回滚，不留半删状态
+				if err := d.DB.SoftDeleteBatch(ctx, kind, ids, store.ActorTypeAI, userID); err != nil {
+					return nil, fmt.Errorf("删除%s失败：%w", deleteKindLabel(kind), err)
+				}
+				for _, n := range notices {
+					_ = d.DB.NotifyContentDeleted(ctx, n)
 				}
 				return &ToolResult{ModelText: fmt.Sprintf("%d 条%s已删除（进回收站）。", len(ids), deleteKindLabel(kind)),
 					UserText: fmt.Sprintf("%d 条%s已移入回收站", len(ids), deleteKindLabel(kind))}, nil
@@ -2771,80 +2762,62 @@ func deleteKindLabel(kind string) string {
 	return kind
 }
 
-// softDeleteByKind 按 kind 软删除 + 通知口径对齐 REST（删对方内容 → 站内通知作者/创建者）。
-func (d *Deps) softDeleteByKind(ctx context.Context, userID int64, kind string, id int64) error {
+// deletedNotice 取「删除后要发给对方」的站内通知（口径对齐 REST：删对方内容 → 通知作者/创建者）。
+// 读的是删除前的记录（Get* 只返回未软删行），故须在软删之前调用；读不到即无通知，不阻断删除。
+func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id int64) (store.DeletedNotice, bool) {
 	switch kind {
 	case "post":
 		p, err := d.DB.GetPost(ctx, id)
 		if err != nil {
-			return fmt.Errorf("动态不存在")
+			return store.DeletedNotice{}, false
 		}
-		if err := d.DB.SoftDeletePost(ctx, id, store.ActorTypeAI, userID); err != nil {
-			return err
-		}
-		_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+		return store.DeletedNotice{
 			CreatorID: p.AuthorID, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
 			EventType: "post_deleted", TargetType: "post", TargetID: id,
 			Extra: map[string]any{"content": textutil.Trunc(p.Content, 50)},
-		})
+		}, true
 	case "comment":
 		c, err := d.DB.GetComment(ctx, id)
 		if err != nil {
-			return fmt.Errorf("评论不存在")
+			return store.DeletedNotice{}, false
 		}
-		if err := d.DB.SoftDeleteComment(ctx, id, "ai", userID); err != nil {
-			return err
-		}
-		_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+		return store.DeletedNotice{
 			CreatorID: c.AuthorID, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
 			EventType: "comment_deleted", TargetType: "comment", TargetID: id,
 			Extra: map[string]any{"content": textutil.Trunc(c.Content, 50)},
-		})
+		}, true
 	case "album":
 		al, err := d.DB.GetAlbum(ctx, id)
-		if err != nil {
-			return fmt.Errorf("相册不存在")
+		if err != nil || !al.CreatedBy.Valid {
+			return store.DeletedNotice{}, false
 		}
-		if err := d.DB.SoftDeleteAlbum(ctx, id, store.ActorTypeAI, userID); err != nil {
-			return err
-		}
-		if al.CreatedBy.Valid {
-			_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
-				CreatorID: al.CreatedBy.Int64, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
-				EventType: "album_deleted", TargetType: "album", TargetID: id,
-				Extra: map[string]any{"name": al.Name},
-			})
-		}
+		return store.DeletedNotice{
+			CreatorID: al.CreatedBy.Int64, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+			EventType: "album_deleted", TargetType: "album", TargetID: id,
+			Extra: map[string]any{"name": al.Name},
+		}, true
 	case "anniversary":
 		a, err := d.DB.GetAnniversary(ctx, id)
 		if err != nil {
-			return fmt.Errorf("纪念日不存在")
+			return store.DeletedNotice{}, false
 		}
-		if err := d.DB.SoftDeleteAnniversary(ctx, id, store.ActorTypeAI, userID); err != nil {
-			return err
-		}
-		_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+		return store.DeletedNotice{
 			CreatorID: a.CreatedBy, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
 			EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
 			Extra: map[string]any{"name": a.Name},
-		})
+		}, true
 	case "place":
 		p, err := d.DB.GetPoint(ctx, id)
 		if err != nil {
-			return fmt.Errorf("地点不存在")
+			return store.DeletedNotice{}, false
 		}
-		if err := d.DB.SoftDeletePoint(ctx, id, store.ActorTypeAI, userID); err != nil {
-			return err
-		}
-		_ = d.DB.NotifyContentDeleted(ctx, store.DeletedNotice{
+		return store.DeletedNotice{
 			CreatorID: p.CreatedBy, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
 			EventType: "map_point_deleted", TargetType: "map_point", TargetID: id,
 			Extra: map[string]any{"name": p.Name},
-		})
-	default:
-		return fmt.Errorf("未知类型: %s", kind)
+		}, true
 	}
-	return nil
+	return store.DeletedNotice{}, false
 }
 
 // expandMediaArgs 展开 propose_album 的 source / media_ids（二选一，展开后自包含）。

@@ -26,7 +26,12 @@ type MonthGroup struct {
 }
 
 func (d *DB) CreateAlbum(ctx context.Context, name, description string, createdBy int64) (int64, error) {
-	res, err := d.ExecContext(ctx,
+	return createAlbumTx(ctx, d, name, description, createdBy)
+}
+
+// createAlbumTx 建册的事务体（执行口可为直连或外层事务）。
+func createAlbumTx(ctx context.Context, ex sqlExec, name, description string, createdBy int64) (int64, error) {
+	res, err := ex.ExecContext(ctx,
 		`INSERT INTO albums (name, description, created_by) VALUES (?, ?, ?)`,
 		name, description, createdBy)
 	if err != nil {
@@ -104,20 +109,10 @@ func (d *DB) ListMonthGroups(ctx context.Context) ([]MonthGroup, error) {
 }
 
 // SoftDeleteAlbum 仅手动相册可删（月）；
-// 同时释放媒体归属（对齐 mock「删除相册→媒体回未归属」，关系数据不进回收站）。
+// 同时释放媒体归属（对齐 mock「删除相册→媒体回未归属」，关系数据不进回收站），
+// 且更新与释放同事务——只落一半会留下「已软删但归属仍被占用」的相册。
 func (d *DB) SoftDeleteAlbum(ctx context.Context, id int64, actorType string, actorID int64) error {
-	res, err := d.ExecContext(ctx,
-		`UPDATE albums SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
-		actorID, actorType, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	_, err = d.ExecContext(ctx, `DELETE FROM album_items WHERE album_id = ?`, id)
-	return err
+	return d.softDeleteKindTx(ctx, "album", id, actorType, actorID)
 }
 
 // CountAlbumItems 手动相册中未删媒体数（addPhotos/removePhotos 返回 item_count 用）。
@@ -148,6 +143,17 @@ func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs 
 		return err
 	}
 	defer tx.Rollback()
+	if err := addAlbumItemsTx(ctx, tx, albumID, userID, mediaIDs); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// addAlbumItemsTx 加入相册的事务体（由调用方决定事务边界：单次加入，或建册 / 整理相册的同一事务）。
+func addAlbumItemsTx(ctx context.Context, tx *sql.Tx, albumID, userID int64, mediaIDs []int64) error {
+	if len(mediaIDs) == 0 {
+		return nil
+	}
 	for _, mid := range mediaIDs {
 		// 媒体必须来自动态媒体池且所属动态未软删（媒体无独立软删，随动态进回收站：以 post.deleted_at 为准）
 		var pd sql.NullString
@@ -184,15 +190,60 @@ func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs 
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO album_items (album_id, media_id, added_by) VALUES `+sb.String(), args...); err != nil {
 		return err
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (d *DB) RemoveAlbumItems(ctx context.Context, albumID int64, mediaIDs []int64) error {
+	return removeAlbumItemsTx(ctx, d, albumID, mediaIDs)
+}
+
+// removeAlbumItemsTx 移出相册的事务体（执行口可为直连或外层事务）。
+func removeAlbumItemsTx(ctx context.Context, ex sqlExec, albumID int64, mediaIDs []int64) error {
 	ph := placeholders(len(mediaIDs))
-	args := int64Args(mediaIDs)
-	args = append([]any{albumID}, args...)
-	_, err := d.ExecContext(ctx, `DELETE FROM album_items WHERE album_id = ? AND media_id IN (`+ph+`)`, args...)
+	args := append([]any{albumID}, int64Args(mediaIDs)...)
+	_, err := ex.ExecContext(ctx, `DELETE FROM album_items WHERE album_id = ? AND media_id IN (`+ph+`)`, args...)
 	return err
+}
+
+// CreateAlbumWithItems 建册 + 首批媒体加入同一事务：加媒体失败则相册也不落，
+// 不留「已建册但没有媒体」的半成品（AI 一次确认 = 一个原子步）。
+func (d *DB) CreateAlbumWithItems(ctx context.Context, name, description string, createdBy int64, mediaIDs []int64) (int64, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+	albumID, err := createAlbumTx(ctx, tx, name, description, createdBy)
+	if err != nil {
+		return 0, err
+	}
+	if err := addAlbumItemsTx(ctx, tx, albumID, createdBy, mediaIDs); err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return albumID, nil
+}
+
+// UpdateAlbumMembers 相册增删成员同一事务：加入的预检失败时移出也不落（一次确认 = 一个原子步）。
+func (d *DB) UpdateAlbumMembers(ctx context.Context, albumID, userID int64, addIDs, removeIDs []int64) error {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if len(addIDs) > 0 {
+		if err := addAlbumItemsTx(ctx, tx, albumID, userID, addIDs); err != nil {
+			return err
+		}
+	}
+	if len(removeIDs) > 0 {
+		if err := removeAlbumItemsTx(ctx, tx, albumID, removeIDs); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ListAlbumMedia 相册内媒体（未删除、按加入倒序）。
