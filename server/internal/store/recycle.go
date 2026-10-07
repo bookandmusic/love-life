@@ -370,7 +370,7 @@ func recycleLabelOf(table string) string {
 // 会在 foreign_keys(1) 下触发外键失败并回滚整轮。
 // 返回各类型条数与待物理删除的媒体路径（主文件 + 缩略图）；文件删除由调用方负责。
 func (d *DB) PurgeExpiredRecycle(ctx context.Context, cutoff time.Time) (*PurgeResult, error) {
-	ts := cutoff.UTC().Format("2006-01-02 15:04:05")
+	ts := FormatDBTime(cutoff)
 	res := &PurgeResult{ByType: map[string]int64{}}
 
 	tx, err := d.BeginTx(ctx, nil)

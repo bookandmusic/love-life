@@ -304,6 +304,8 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 >
 > **时间口径**：库内时间列一律存 **UTC**（`datetime('now')`）；**用户可见的「日期」按部署者本地时区判定**（进程 TZ，可用 `TZ=Asia/Shanghai` 覆盖；实现 `store/timeutil.go`）。适用：那年今日同月同日匹配、按月分组的归属、另存文件名日期、仪表盘「今天/昨天」。例外：EXIF `taken_at` 是相机墙钟时间、无时区信息，原样存用不参与换算。
 >
+> **写入形态与历史兼容**：写入一律用 `datetime` 形态（`YYYY-MM-DD HH:MM:SS`，与 `datetime('now')` 同形，实现 `store.FormatDBTime`）——**不得写 RFC3339**：SQL 里的时间比较是**字符串比较**，RFC3339 的第 11 位 `'T'` 大于空格的 `' '`，会让「已过期」恒判为「未过期」（曾致同日过期提案仍算待确认、删会话被误拒 409）。**读侧与比较侧必须容忍存量 RFC3339 行**：解析走 `store.ParseDBTime`（两种形态都接受），涉及这些列的比较用 `datetime(列)` 归一化。历史库升级时执行一次 `server/migrations/fix-time-format.sql` 把存量行归一化（幂等，可重复执行）。
+>
 > **外键**：连接串启用 `_pragma=foreign_keys(1)`，FK 在库层强制（不是仅应用层约定）。
 
 ### 8.1 账号与配置

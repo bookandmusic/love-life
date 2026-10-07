@@ -111,6 +111,16 @@ docker run -d \
 
 </details>
 
+### 升级既有部署（可选）
+
+既有数据库若来自更早版本，部分时间列可能残留 RFC3339 形态（与库内 `datetime` 形态混存）。程序已兼容两种形态，**不执行也不影响正确性**；若想让库内形态统一，可用宿主机上的 sqlite 客户端对挂载出来的库文件执行归一化脚本（幂等，可重复跑；镜像内不含 sqlite 命令行，故在宿主机执行）：
+
+```bash
+sqlite3 data/love-life.db < server/migrations/fix-time-format.sql
+```
+
+脚本末尾会逐列列出 RFC3339 残留计数，全为 0 即已归一化（口径见 [docs/design/ARCHITECTURE.md](docs/design/ARCHITECTURE.md) 的「数据模型」）。
+
 ## 📱 手机 APP
 
 - APK 不在本地打包：推 `v*` tag 时由 [GitHub Actions](.github/workflows/android-build.yml) 构建并签名，产物见 [Releases](https://github.com/bookandmusic/love-life/releases)

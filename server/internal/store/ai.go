@@ -232,7 +232,7 @@ func (d *DB) CountPendingProposals(ctx context.Context, userID, sessionID int64)
 	var n int64
 	err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM confirm_actions ca
 		JOIN chat_messages m ON m.card_id = ca.id
-		WHERE ca.user_id = ? AND m.session_id = ? AND ca.status = 'pending' AND ca.expires_at > datetime('now')`,
+		WHERE ca.user_id = ? AND m.session_id = ? AND ca.status = 'pending' AND datetime(ca.expires_at) > datetime('now')`,
 		userID, sessionID).Scan(&n)
 	return n, err
 }
@@ -267,7 +267,7 @@ type ConfirmAction struct {
 func (d *DB) CreateConfirmAction(ctx context.Context, userID int64, toolName, paramsJSON, previewJSON string) (int64, error) {
 	res, err := d.ExecContext(ctx,
 		`INSERT INTO confirm_actions (user_id, tool_name, params_json, preview_json, expires_at) VALUES (?, ?, ?, ?, ?)`,
-		userID, toolName, paramsJSON, previewJSON, time.Now().UTC().Add(15*time.Minute).Format(time.RFC3339))
+		userID, toolName, paramsJSON, previewJSON, FormatDBTime(time.Now().Add(15*time.Minute)))
 	if err != nil {
 		return 0, err
 	}
@@ -286,7 +286,7 @@ func (d *DB) GetConfirmAction(ctx context.Context, id int64) (*ConfirmAction, er
 	if err != nil {
 		return nil, err
 	}
-	if a.ExpiresAt, err = time.Parse(time.RFC3339, expires); err != nil {
+	if a.ExpiresAt, err = ParseDBTime(expires); err != nil {
 		return nil, err
 	}
 	return &a, nil
@@ -318,7 +318,7 @@ func (d *DB) ListConfirmActionsByIDs(ctx context.Context, ids []int64) (map[int6
 		if err := rows.Scan(&a.ID, &a.UserID, &a.ToolName, &a.ParamsJSON, &a.PreviewJSON, &a.Status, &expires, &a.ResolvedAt, &a.CreatedAt); err != nil {
 			return nil, err
 		}
-		if a.ExpiresAt, err = time.Parse(time.RFC3339, expires); err != nil {
+		if a.ExpiresAt, err = ParseDBTime(expires); err != nil {
 			return nil, err
 		}
 		result[a.ID] = &a
@@ -347,18 +347,18 @@ func (d *DB) ResolveConfirmAction(ctx context.Context, id int64, to string) erro
 		// confirmed→failed 回写（2026-09-21）：确认已消耗，仅纠正终态——执行失败的历史回显不能是「已执行」
 		if a.Status == "confirmed" && to == "failed" {
 			_, err = d.ExecContext(ctx, `UPDATE confirm_actions SET status='failed', resolved_at=? WHERE id=? AND status='confirmed'`,
-				time.Now().UTC().Format(time.RFC3339), id)
+				FormatDBTime(time.Now()), id)
 			return err
 		}
 		return ErrConfirmResolved
 	}
 	if time.Now().After(a.ExpiresAt) && to != "expired" {
 		_, _ = d.ExecContext(ctx, `UPDATE confirm_actions SET status='expired', resolved_at=? WHERE id=?`,
-			time.Now().UTC().Format(time.RFC3339), id)
+			FormatDBTime(time.Now()), id)
 		return ErrConfirmExpired
 	}
 	_, err = d.ExecContext(ctx, `UPDATE confirm_actions SET status=?, resolved_at=? WHERE id=? AND status='pending'`,
-		to, time.Now().UTC().Format(time.RFC3339), id)
+		to, FormatDBTime(time.Now()), id)
 	return err
 }
 

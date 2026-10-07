@@ -17,7 +17,7 @@ type RefreshToken struct {
 func (d *DB) SaveRefreshToken(ctx context.Context, userID int64, tokenHash string, expiresAt time.Time) error {
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)`,
-		userID, tokenHash, expiresAt.UTC().Format(time.RFC3339))
+		userID, tokenHash, FormatDBTime(expiresAt))
 	return err
 }
 
@@ -32,7 +32,7 @@ func (d *DB) GetRefreshToken(ctx context.Context, tokenHash string) (*RefreshTok
 	if err != nil {
 		return nil, err
 	}
-	t.ExpiresAt, err = time.Parse(time.RFC3339, expires)
+	t.ExpiresAt, err = ParseDBTime(expires)
 	if err != nil {
 		return nil, err
 	}
@@ -45,6 +45,6 @@ func (d *DB) DeleteRefreshToken(ctx context.Context, tokenHash string) error {
 }
 
 func (d *DB) DeleteExpiredRefreshTokens(ctx context.Context) error {
-	_, err := d.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE expires_at < ?`, time.Now().UTC().Format(time.RFC3339))
+	_, err := d.ExecContext(ctx, `DELETE FROM refresh_tokens WHERE datetime(expires_at) < ?`, FormatDBTime(time.Now()))
 	return err
 }

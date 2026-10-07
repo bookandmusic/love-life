@@ -88,13 +88,13 @@ func (d *DB) UnreadNotificationCount(ctx context.Context, recipientID int64) (in
 func (d *DB) MarkNotificationRead(ctx context.Context, id, recipientID int64) error {
 	_, err := d.ExecContext(ctx,
 		`UPDATE notifications SET is_read = 1, read_at = ? WHERE id = ? AND recipient_id = ?`,
-		time.Now().UTC().Format(time.RFC3339), id, recipientID)
+		FormatDBTime(time.Now()), id, recipientID)
 	return err
 }
 
 func (d *DB) MarkAllNotificationsRead(ctx context.Context, recipientID int64) error {
 	_, err := d.ExecContext(ctx,
 		`UPDATE notifications SET is_read = 1, read_at = ? WHERE recipient_id = ? AND is_read = 0`,
-		time.Now().UTC().Format(time.RFC3339), recipientID)
+		FormatDBTime(time.Now()), recipientID)
 	return err
 }

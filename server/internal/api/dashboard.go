@@ -21,14 +21,8 @@ func humanizeTime(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	var t time.Time
-	for _, layout := range []string{"2006-01-02 15:04:05", time.RFC3339} {
-		if parsed, err := time.ParseInLocation(layout, raw, time.UTC); err == nil {
-			t = parsed
-			break
-		}
-	}
-	if t.IsZero() {
+	t, err := store.ParseDBTime(raw)
+	if err != nil {
 		return raw
 	}
 	days := int(time.Since(t.Local()).Hours() / 24)

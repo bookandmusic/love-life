@@ -175,6 +175,6 @@ func (d *DB) AnniversaryReminderSentToday(ctx context.Context, anniversaryID int
 	var n int
 	err := d.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM notifications WHERE event_type = 'anniversary_reminder' AND target_id = ? AND date(created_at) = date(?)`,
-		anniversaryID, now.UTC().Format("2006-01-02 15:04:05")).Scan(&n)
+		anniversaryID, FormatDBTime(now)).Scan(&n)
 	return n > 0, err
 }

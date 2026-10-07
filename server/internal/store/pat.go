@@ -116,7 +116,7 @@ func (d *DB) ListPATs(ctx context.Context) ([]*PersonalAccessToken, error) {
 func (d *DB) RevokePAT(ctx context.Context, id int64) (*PersonalAccessToken, error) {
 	res, err := d.ExecContext(ctx,
 		`UPDATE personal_access_tokens SET status = 'revoked', revoked_at = ? WHERE id = ?`,
-		time.Now().UTC().Format(time.RFC3339), id)
+		FormatDBTime(time.Now()), id)
 	if err != nil {
 		return nil, err
 	}
@@ -137,6 +137,6 @@ func (d *DB) AuthenticatePAT(ctx context.Context, plain string) (*PersonalAccess
 	}
 	_, _ = d.ExecContext(ctx,
 		`UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?`,
-		time.Now().UTC().Format(time.RFC3339), t.ID)
+		FormatDBTime(time.Now()), t.ID)
 	return t, nil
 }
