@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -32,7 +34,7 @@ func TestSpaceAndProfile(t *testing.T) {
 	if space.DaysTogether != nil {
 		t.Fatal("未设恋爱开始日时 days_together 应为 null")
 	}
-	// S5：全新库计数为 0（APP 首页据此判定「全新部署空态」，不依赖 next_anniversary.name）
+	// 全新库计数为 0（APP 首页据此判定「全新部署空态」，不依赖 next_anniversary.name）
 	if space.AnniversaryCount != 0 || space.AlbumCount != 0 {
 		t.Fatalf("空库计数应为 0: anniv=%d album=%d", space.AnniversaryCount, space.AlbumCount)
 	}
@@ -72,16 +74,16 @@ func TestSpaceAndProfile(t *testing.T) {
 		t.Fatalf("建相册后 album_count 应为 1: %d", space.AlbumCount)
 	}
 
-	// 个人资料与 AI 偏好（ai_style 合法性 = 风格库中存在，AD2）
+	// AI 偏好（ai_style 合法性 = 风格库中存在）；昵称 / 生日由后台维护，/me 不再接收
 	res = doJSON(t, "PATCH", ts.URL+"/api/v1/me", girlToken, map[string]any{
-		"ai_style": "不存在的风格", "chat_retention_days": 90,
+		"ai_style": "不存在的风格",
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("update me with unknown style: want 400, got %d", res.StatusCode)
 	}
 	res = doJSON(t, "PATCH", ts.URL+"/api/v1/me", girlToken, map[string]any{
-		"nickname": "小美", "ai_style": "幽默", "chat_retention_days": 90,
+		"nickname": "小美", "ai_style": "幽默",
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
@@ -90,26 +92,35 @@ func TestSpaceAndProfile(t *testing.T) {
 	res = doJSON(t, "GET", ts.URL+"/api/v1/auth/me", girlToken, nil)
 	var me struct {
 		Nickname string `json:"nickname"`
+		AIStyle  string `json:"ai_style"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&me)
 	res.Body.Close()
-	if me.Nickname != "小美" {
-		t.Fatalf("nickname after patch: %+v", me)
+	if me.AIStyle != "幽默" {
+		t.Fatalf("ai_style after patch: %+v", me)
 	}
-
-	// 缺省字段不覆盖（D7 回归：APP 设置页只发偏好字段，不得清空昵称）
+	if me.Nickname == "小美" {
+		t.Fatal("PATCH /me 不得再改昵称（资料由后台维护）——nickname 字段应被忽略")
+	}
+	// 非 ai_style 字段一律忽略（含已拆除的字段名）
 	res = doJSON(t, "PATCH", ts.URL+"/api/v1/me", girlToken, map[string]any{
-		"ai_style": "简洁", "chat_retention_days": 30,
+		"ai_style": "简洁", "nickname": "小美", "birthday": "2000-01-01",
 	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("update me prefs only: %d", res.StatusCode)
 	}
 	res = doJSON(t, "GET", ts.URL+"/api/v1/auth/me", girlToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&me)
+	raw, _ := io.ReadAll(res.Body)
 	res.Body.Close()
-	if me.Nickname != "小美" {
-		t.Fatalf("nickname must survive pref-only patch: %+v", me)
+	for _, gone := range []string{"chat_retention_days", "birthday"} {
+		if strings.Contains(string(raw), gone) {
+			t.Fatalf("/me 不得再下发 %s：%s", gone, raw)
+		}
+	}
+	_ = json.Unmarshal(raw, &me)
+	if me.AIStyle != "简洁" || me.Nickname != "她" {
+		t.Fatalf("pref-only patch: %+v", me)
 	}
 
 	// 非法枚举拒绝

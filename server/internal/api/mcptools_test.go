@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// AD4：工具清单形状 + 启停 + 契约错误文案
+// 工具清单形状 + 启停 + 契约错误文案
 func TestMcpToolsListAndPatch(t *testing.T) {
 	ts, adminToken, girlToken := newPostTestEnv(t)
 
@@ -20,7 +20,7 @@ func TestMcpToolsListAndPatch(t *testing.T) {
 	var list []map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&list)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(list) != 26 {
+	if res.StatusCode != http.StatusOK || len(list) != 16 {
 		t.Fatalf("list: %d len=%d", res.StatusCode, len(list))
 	}
 	first := list[0]
@@ -34,11 +34,11 @@ func TestMcpToolsListAndPatch(t *testing.T) {
 	}
 
 	// 停用
-	res = doJSON(t, "PATCH", ts.URL+"/api/v1/admin/mcp-tools/search_posts", adminToken, map[string]any{"enabled": false})
+	res = doJSON(t, "PATCH", ts.URL+"/api/v1/admin/mcp-tools/find_posts", adminToken, map[string]any{"enabled": false})
 	var patched map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&patched)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || patched["enabled"] != false || patched["name"] != "search_posts" {
+	if res.StatusCode != http.StatusOK || patched["enabled"] != false || patched["name"] != "find_posts" {
 		t.Fatalf("patch: %d %+v", res.StatusCode, patched)
 	}
 
@@ -47,13 +47,13 @@ func TestMcpToolsListAndPatch(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&list)
 	res.Body.Close()
 	for _, it := range list {
-		if it["name"] == "search_posts" && it["enabled"] != false {
+		if it["name"] == "find_posts" && it["enabled"] != false {
 			t.Fatalf("disable not persisted: %+v", it)
 		}
 	}
 
 	// 缺 enabled → 400 契约文案
-	res = doJSON(t, "PATCH", ts.URL+"/api/v1/admin/mcp-tools/search_posts", adminToken, map[string]any{})
+	res = doJSON(t, "PATCH", ts.URL+"/api/v1/admin/mcp-tools/find_posts", adminToken, map[string]any{})
 	var e map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&e)
 	res.Body.Close()

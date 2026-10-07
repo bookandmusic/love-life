@@ -54,9 +54,12 @@ func TestListPostsOnMonthDayLocalTZ(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	hits, err := db.ListPostsOnMonthDay(ctx, 50, 10)
+	hits, total, err := db.ListPostsOnMonthDay(ctx, 50, 10)
 	if err != nil {
 		t.Fatalf("list: %v", err)
+	}
+	if total != len(hits) {
+		t.Fatalf("total = %d, want %d（计数与列表同 WHERE 下推）", total, len(hits))
 	}
 	if len(hits) != 1 || hits[0].Content != "local-today" {
 		t.Fatalf("hits = %+v, want only local-today (local TZ semantics)", hits)

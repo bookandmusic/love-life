@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -23,6 +25,14 @@ func findTool(t *testing.T, name string) *Tool {
 	return nil
 }
 
+// withSink 注入结果集端口（chat 层实际职责：绑会话；工具单测自备一个会话 id=0 的）。
+func withSink(ctx context.Context, db *store.DB) context.Context {
+	ctx = WithSessionID(ctx, 0)
+	return WithResultSink(ctx, func(kind string, ids []int64, groups []store.ResultGroup) (string, error) {
+		return db.SaveResultSet(ctx, 0, kind, ids, groups)
+	})
+}
+
 func newToolDB(t *testing.T) *store.DB {
 	t.Helper()
 	db, err := store.Open(t.TempDir())
@@ -30,7 +40,6 @@ func newToolDB(t *testing.T) *store.DB {
 		t.Fatalf("open store: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	// created_by 外键引用 users(id)
 	hash, _ := auth.HashPassword("pw")
 	if _, err := db.CreateUser(t.Context(), &store.User{Username: "girl", PasswordHash: hash, Role: "girl"}); err != nil {
 		t.Fatalf("create user: %v", err)
@@ -38,560 +47,603 @@ func newToolDB(t *testing.T) *store.DB {
 	return db
 }
 
-// create_map_point：创建 / 同名复用 / 审计落库 / 仅新建通知另一方；delete_map_point：软删 / 二次删报错。
-func TestMapPointTools(t *testing.T) {
-	db := newToolDB(t)
-	d := &Deps{DB: db, DP: notify.New(db)}
-	ctx := t.Context()
-	// 收件人：newToolDB 只建了 girl(1)，补 boy(2) 才能观察「通知另一方」
-	hash, _ := auth.HashPassword("pw")
-	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
-		t.Fatalf("create boy: %v", err)
-	}
-
-	create := findTool(t, "create_map_point")
-	res, err := create.Exec(ctx, d, 1, map[string]any{"name": "杭州·西湖", "latitude": 30.2467, "longitude": 120.4599, "visit_date": "2026-09-03", "description": "湖边散步"})
+func exec(t *testing.T, name string, d *Deps, userID int64, args map[string]any) *ToolResult {
+	t.Helper()
+	out, err := findTool(t, name).Invoke(withSink(t.Context(), d.DB), d, userID, args, ModeExecute)
 	if err != nil {
-		t.Fatalf("create: %v", err)
+		t.Fatalf("%s exec: %v", name, err)
 	}
-	data := res.Data.(map[string]any)
-	if data["created"] != true || data["point_id"].(int64) == 0 {
-		t.Fatalf("create data: %+v", data)
-	}
-	pointID := data["point_id"].(int64)
+	return out
+}
 
-	// 新建 → 另一方收到 map_point_created，快照含真实 operator 与 via 标记
-	assertMapPointNotif(t, db, 1)
-
-	// 同名复用
-	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "杭州·西湖", "latitude": 1.0, "longitude": 1.0})
+func propose(t *testing.T, name string, d *Deps, userID int64, args map[string]any) *ToolResult {
+	t.Helper()
+	out, err := findTool(t, name).Invoke(withSink(t.Context(), d.DB), d, userID, args, ModePropose)
 	if err != nil {
-		t.Fatalf("reuse: %v", err)
+		t.Fatalf("%s propose: %v", name, err)
 	}
-	data = res.Data.(map[string]any)
-	if data["created"] != false || data["point_id"].(int64) != pointID {
-		t.Fatalf("reuse data: %+v (want id=%d)", data, pointID)
-	}
-	// 复用不重复通知
-	assertMapPointNotif(t, db, 1)
+	return out
+}
 
-	// name 空 → 报错
-	if _, err = create.Exec(ctx, d, 1, map[string]any{}); err == nil {
-		t.Fatal("empty name: want error")
+// 注册表形状：16 个工具（读 7 / 提案 8 / 删除 1），ProgressLabel 齐备，
+// 删除类仅 propose_delete 且 AppOnly；提案类 IsWrite。
+func TestRegistryShape(t *testing.T) {
+	reg := Registry()
+	if len(reg) != 16 {
+		names := make([]string, 0, len(reg))
+		for _, tl := range reg {
+			names = append(names, tl.Name)
+		}
+		t.Fatalf("tool count = %d, want 16: %v", len(reg), names)
 	}
-
-	// 缺坐标 → 报错（DESIGN §6.3：latitude/longitude 必填）
-	if _, err = create.Exec(ctx, d, 1, map[string]any{"name": "无名地"}); err == nil {
-		t.Fatal("missing latitude/longitude: want error")
-	}
-
-	// RegistryForPAT：删除类（AppOnly）工具不出现在 PAT 通道工具表
-	for _, tool := range RegistryForPAT() {
-		if tool.AppOnly {
-			t.Fatalf("RegistryForPAT leaked AppOnly tool %q", tool.Name)
+	var reads, writes, appOnly int
+	for _, tl := range reg {
+		if tl.ProgressLabel == "" {
+			t.Fatalf("%s: ProgressLabel 缺失（tool.start 的人话标签）", tl.Name)
+		}
+		switch {
+		case tl.IsWrite:
+			writes++
+			if !strings.HasPrefix(tl.Name, "propose_") {
+				t.Fatalf("%s: 提案类必须以 propose_ 前缀命名", tl.Name)
+			}
+		default:
+			reads++
+		}
+		if tl.AppOnly {
+			appOnly++
+			if tl.Name != "propose_delete" {
+				t.Fatalf("%s: 仅删除类可 AppOnly", tl.Name)
+			}
 		}
 	}
-	if findTool(t, "delete_map_point").AppOnly != true {
-		t.Fatal("delete_map_point must be AppOnly")
+	if reads != 7 || writes != 9 {
+		t.Fatalf("reads=%d writes=%d, want 7/9", reads, writes)
 	}
-
-	// 删除 → 成功；再删 → 报错
-	del := findTool(t, "delete_map_point")
-	if res, err = del.Exec(ctx, d, 1, map[string]any{"point_id": float64(pointID)}); err != nil {
-		t.Fatalf("delete: %v", err)
+	if appOnly != 1 {
+		t.Fatalf("appOnly=%d, want 1", appOnly)
 	}
-	if _, err = del.Exec(ctx, d, 1, map[string]any{"point_id": float64(pointID)}); err == nil {
-		t.Fatal("re-delete: want error")
+	for _, want := range []string{"find_posts", "find_albums", "find_media", "find_anniversaries", "find_places", "get_record"} {
+		if findTool(t, want) == nil {
+			t.Fatalf("missing read tool %s", want)
+		}
 	}
-
-	// 审计：写工具的审计现在由 chat confirm 流程统一处理，单元测试不再检查审计记录
+	// RegistryForPAT：AppOnly 不出现在 PAT 工具表（铁律：删除类不开放）
+	for _, tl := range RegistryForPAT() {
+		if tl.AppOnly {
+			t.Fatalf("RegistryForPAT leaked AppOnly tool %q", tl.Name)
+		}
+	}
+	if len(RegistryForPAT()) != 15 {
+		t.Fatalf("PAT tools = %d, want 15", len(RegistryForPAT()))
+	}
 }
 
-// T1：get_next_anniversary 取最近一个，输出含 type 与 next_solar_date（DESIGN §6.4/§12.2）。
-func TestNextAnniversaryTool(t *testing.T) {
+// ModelText 四条硬规则：条件回显、句柄与条数、≤10 逐条列 id、超长截断。
+func TestModelTextRules(t *testing.T) {
+	recs := []UIRecord{{ID: 12, Kind: "post", Text: "海边的日落", Date: "2026-08-12", Badge: "有图"}}
+	got := modelTextForList("按 query=海边 查询动态，", 1, recs, "r_17")
+	for _, want := range []string{"query=海边", "共 1 条", "r_17", "#12", "海边的日落", "2026-08-12"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("ModelText 缺 %q：%s", want, got)
+		}
+	}
+	// >10 条：只列前 5 + 句柄
+	many := make([]UIRecord, 0, 80)
+	for i := 1; i <= 80; i++ {
+		many = append(many, UIRecord{ID: int64(i), Kind: "media", Text: "照片"})
+	}
+	got = modelTextForList("按 from=2026-08 查询，", 80, many, "r_3")
+	if !strings.Contains(got, "共 80 条") || !strings.Contains(got, "另有 75 条未列出") {
+		t.Fatalf("大结果集应只列前 5 + 计数：%s", got)
+	}
+	if strings.Contains(got, "#6") {
+		t.Fatalf(">10 条不得逐条列 id：%s", got)
+	}
+	// 超长截断到 2000 rune
+	long := make([]UIRecord, 0, 10)
+	for i := 0; i < 10; i++ {
+		long = append(long, UIRecord{ID: int64(i), Kind: "post", Text: strings.Repeat("字", 300)})
+	}
+	if n := len([]rune(modelTextForList("x", 10, long, "r_1"))); n > modelTextCap+1 {
+		t.Fatalf("ModelText 超上限未截断: %d", n)
+	}
+}
+
+// find_posts：浏览/关键词/过滤全下推；产出三分离（ModelText + UserText + UI，UI 带句柄）。
+func TestFindPosts(t *testing.T) {
 	db := newToolDB(t)
 	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
-	now := time.Now()
-	if _, err := db.CreateAnniversary(ctx, "生日", now.AddDate(0, 0, 10).Format("2006-01-02"), "solar", false, 1, 1); err != nil {
-		t.Fatalf("create a1: %v", err)
+	in1 := seedPostAt(t, db, "海边散步", "2026-01-15 10:00:00")
+	in2 := seedPostAt(t, db, "海边看日出", "2026-02-15 10:00:00")
+	out := seedPostAt(t, db, "山里的清晨", "2026-03-15 10:00:00")
+	seedPostMediaKind(t, db, in1, "photo")
+
+	// 关键词 + 日期过滤（SQL 下推）
+	res := exec(t, "find_posts", d, 1, map[string]any{"query": "海边", "from": "2026-01-01", "to": "2026-01-31"})
+	if res.UI == nil || res.UI.Kind != "record_list" || len(res.UI.Records) != 1 {
+		t.Fatalf("UI = %+v", res.UI)
 	}
-	if _, err := db.CreateAnniversary(ctx, "领证", now.AddDate(0, 0, 3).Format("2006-01-02"), "solar", false, 1, 1); err != nil {
-		t.Fatalf("create a2: %v", err)
+	if res.UI.Records[0].ID != in1 {
+		t.Fatalf("hit = %+v, want %d", res.UI.Records[0], in1)
 	}
-	res, err := findTool(t, "get_next_anniversary").Exec(ctx, d, 1, map[string]any{})
-	if err != nil {
-		t.Fatalf("exec: %v", err)
+	if res.UI.ResultID == "" {
+		t.Fatal("结果集句柄缺失（D10）：UI.ResultID 为空")
 	}
-	data := res.Data.(map[string]any)
-	if data["name"] != "领证" || data["type"] != "solar" {
-		t.Fatalf("next anniversary: %+v", data)
+	firstResultID := res.UI.ResultID
+	if !strings.Contains(res.ModelText, "from=2026-01-01") {
+		t.Fatalf("ModelText 必须回显查询条件：%s", res.ModelText)
 	}
-	if s, _ := data["next_solar_date"].(string); s == "" {
-		t.Fatalf("next_solar_date missing: %+v", data)
+	if res.UserText == "" {
+		t.Fatal("UserText 缺失")
+	}
+	// 日期过滤真的下推：区间只含 3 月的动态 → 只出 out
+	res = exec(t, "find_posts", d, 1, map[string]any{"from": "2026-03-01", "to": "2026-03-31"})
+	if len(res.UI.Records) != 1 || res.UI.Records[0].ID != out {
+		t.Fatalf("date pushdown: %+v", res.UI.Records)
+	}
+	// media_type 过滤
+	res = exec(t, "find_posts", d, 1, map[string]any{"media_type": "photo"})
+	if len(res.UI.Records) != 1 || res.UI.Records[0].ID != in1 {
+		t.Fatalf("media_type: %+v", res.UI.Records)
+	}
+	_ = in2
+	// 那年今日：独立路径
+	res = exec(t, "find_posts", d, 1, map[string]any{"on_this_day": true})
+	if res.UI.Kind != "record_list" {
+		t.Fatalf("on_this_day UI = %+v", res.UI)
+	}
+	// 结果集确实落库（句柄可回取并校验归属）；空结果集不落句柄（无可引用资源）
+	if _, err := db.GetResultSet(ctx, 0, firstResultID); err != nil {
+		t.Fatalf("结果集未落库: %v", err)
+	}
+	if res.UI.ResultID != "" {
+		t.Fatalf("空结果不应给句柄，got %q", res.UI.ResultID)
+	}
+	// 非法参数报错
+	if _, err := findTool(t, "find_posts").Invoke(ctx, d, 1, map[string]any{"from": "2026/01/01"}, ModeExecute); err == nil {
+		t.Fatal("非法 from 应报错")
+	}
+	if _, err := findTool(t, "find_posts").Invoke(ctx, d, 1, map[string]any{"media_type": "doc"}, ModeExecute); err == nil {
+		t.Fatal("非法 media_type 应报错")
 	}
 }
 
-// S2：create_anniversary 的提醒天数——未传默认 1 天，显式 0 保留为当天提醒（契约同 REST/mock）。
-func TestCreateAnniversaryRemindDefault(t *testing.T) {
+// find_media：过滤下推 + group_by 分桶（吸收 suggest_photo_grouping）。
+func TestFindMediaGrouping(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	p1 := seedPostAt(t, db, "厦门海边", "2026-08-10 10:00:00")
+	p2 := seedPostAt(t, db, "厦门鼓浪屿", "2026-08-11 10:00:00")
+	m1 := seedMedia(t, db, p1, "photo", "2026-08-10 10:00:00")
+	m2 := seedMedia(t, db, p2, "photo", "2026-08-11 10:00:00")
+	seedMedia(t, db, p2, "video", "2026-08-11 11:00:00")
+
+	res := exec(t, "find_media", d, 1, map[string]any{"media_type": "photo"})
+	if res.UI.Kind != "media_grid" || len(res.UI.Records) != 2 {
+		t.Fatalf("media_grid = %+v", res.UI)
+	}
+	if !res.UI.Selectable {
+		t.Fatal("媒体网格必须可勾选（D9 引用）")
+	}
+	res = exec(t, "find_media", d, 1, map[string]any{"group_by": "date"})
+	if res.UI.Kind != "media_groups" {
+		t.Fatalf("group_by 应出 media_groups: %+v", res.UI)
+	}
+	if len(res.UI.Records) != 2 {
+		t.Fatalf("按日期应两组（08-10 / 08-11）: %+v", res.UI.Records)
+	}
+	if res.UI.Records[0].GroupKey == "" {
+		t.Fatal("分组条目必须带 GroupKey（勾选引用要凭它展开）")
+	}
+	if !strings.Contains(res.ModelText, "分组") || !strings.Contains(res.ModelText, res.UI.ResultID) {
+		t.Fatalf("分组 ModelText 应含分组说明与句柄：%s", res.ModelText)
+	}
+	_ = m1
+	_ = m2
+}
+
+// find_albums / find_anniversaries / find_places / get_record 的基本形状。
+func TestFindOthers(t *testing.T) {
 	db := newToolDB(t)
 	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
-	create := findTool(t, "create_anniversary")
-
-	res, err := create.Exec(ctx, d, 1, map[string]any{"name": "缺省提醒", "date": "2026-11-11"})
+	albumID, err := db.CreateAlbum(ctx, "海边合集", "看海", 1)
 	if err != nil {
-		t.Fatalf("create without remind: %v", err)
-	}
-	id := res.Data.(map[string]any)["anniversary_id"].(int64)
-	if got := anniversaryRemindDays(t, db, id); got != 1 {
-		t.Fatalf("未传提醒天数应为 1（提前 1 天），got %d", got)
-	}
-
-	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "当天提醒", "date": "2026-12-12", "remind_days_before": float64(0)})
-	if err != nil {
-		t.Fatalf("create with remind=0: %v", err)
-	}
-	id = res.Data.(map[string]any)["anniversary_id"].(int64)
-	if got := anniversaryRemindDays(t, db, id); got != 0 {
-		t.Fatalf("显式 0 应保留为当天提醒，got %d", got)
-	}
-
-	// GAP19：lunar + is_leap=true 应落库为 1（DESIGN §12.2 / REQUIREMENTS §4.6）
-	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "闰六月纪念日", "date": "2025-06-01", "type": "lunar", "is_leap": true})
-	if err != nil {
-		t.Fatalf("create lunar is_leap=true: %v", err)
-	}
-	id = res.Data.(map[string]any)["anniversary_id"].(int64)
-	if got := anniversaryIsLeap(t, db, id); got != 1 {
-		t.Fatalf("lunar is_leap=true 应落库 1，got %d", got)
-	}
-	// solar + is_leap=true 应被忽略（恒 0）
-	res, err = create.Exec(ctx, d, 1, map[string]any{"name": "公历忽略闰月", "date": "2026-11-11", "type": "solar", "is_leap": true})
-	if err != nil {
-		t.Fatalf("create solar is_leap=true: %v", err)
-	}
-	id = res.Data.(map[string]any)["anniversary_id"].(int64)
-	if got := anniversaryIsLeap(t, db, id); got != 0 {
-		t.Fatalf("solar is_leap 应被忽略恒 0，got %d", got)
-	}
-}
-
-func anniversaryIsLeap(t *testing.T, db *store.DB, id int64) int {
-	t.Helper()
-	var v int
-	if err := db.QueryRow(`SELECT is_leap FROM anniversaries WHERE id = ?`, id).Scan(&v); err != nil {
 		t.Fatal(err)
 	}
-	return v
-}
-
-// GAP20：create_post 的 location_name 入参应落库到 posts.location_name 列（DESIGN §6.1 / mock fixtures 契约）。
-func TestCreatePostLocationName(t *testing.T) {
-	db := newToolDB(t)
-	d := &Deps{DB: db, DP: notify.New(db)}
-	ctx := t.Context()
-	hash, _ := auth.HashPassword("pw")
-	if _, err := db.CreateUser(ctx, &store.User{Username: "poster", PasswordHash: hash, Role: "girl"}); err != nil {
+	annID, err := db.CreateAnniversary(ctx, "相识", "2020-05-20", "solar", false, 1, 1)
+	if err != nil {
 		t.Fatal(err)
 	}
-	create := findTool(t, "create_post")
-
-	// 带 location_name
-	res, err := create.Exec(ctx, d, 1, map[string]any{"content": "海边散步", "location_name": "厦门 · 鼓浪屿"})
-	if err != nil {
-		t.Fatalf("create_post with location_name: %v", err)
+	if _, _, err := db.FindOrCreatePoint(ctx, store.PointInput{Name: "杭州·西湖", Lat: 30.25, Lng: 120.15, Source: "ai", UserID: 1}); err != nil {
+		t.Fatal(err)
 	}
-	id := res.Data.(map[string]any)["post_id"].(int64)
+
+	res := exec(t, "find_albums", d, 1, map[string]any{"query": "海边"})
+	if len(res.UI.Records) != 1 || res.UI.Records[0].ID != albumID {
+		t.Fatalf("find_albums: %+v", res.UI.Records)
+	}
+	res = exec(t, "find_anniversaries", d, 1, map[string]any{"upcoming_only": true})
+	if len(res.UI.Records) != 1 || res.UI.Records[0].ID != annID {
+		t.Fatalf("find_anniversaries: %+v", res.UI.Records)
+	}
+	if !strings.Contains(res.UI.Records[0].Text, "相识") {
+		t.Fatalf("anniversary text = %q", res.UI.Records[0].Text)
+	}
+	res = exec(t, "find_places", d, 1, map[string]any{"query": "西湖"})
+	if res.UI.Kind != "place_candidates" || !res.UI.SinglePick {
+		t.Fatalf("find_places UI = %+v", res.UI)
+	}
+	var sawVisited, sawCandidate bool
+	for _, r := range res.UI.Records {
+		if r.ID > 0 {
+			sawVisited = true
+		} else if r.Badge == "候选" {
+			sawCandidate = true
+		}
+	}
+	if !sawVisited {
+		t.Fatalf("应含已记录点位: %+v", res.UI.Records)
+	}
+	_ = sawCandidate
+
+	// get_record：post 详情含媒体与评论
+	pID := seedPostAt(t, db, "带图动态", "2026-08-10 10:00:00")
+	seedMedia(t, db, pID, "photo", "2026-08-10 10:00:00")
+	exec(t, "get_record", d, 1, map[string]any{"kind": "post", "id": float64(pID)})
+	res = exec(t, "get_record", d, 1, map[string]any{"kind": "album", "id": float64(albumID)})
+	if res.UI.Kind != "record_detail" || len(res.UI.Records) < 1 {
+		t.Fatalf("get_record album: %+v", res.UI)
+	}
+	if _, err := findTool(t, "get_record").Invoke(ctx, d, 1, map[string]any{"kind": "post", "id": float64(999999)}, ModeExecute); err == nil {
+		t.Fatal("不存在的 post 应报错")
+	}
+}
+
+// propose_post：Propose 出目标形态预览与展开参数；Execute 建动态（含媒体转正）；纯媒体校验。
+func TestProposePostFlow(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db), MP: newTestPipeline(t)}
+	ctx := t.Context()
+
+	// 校验前置：全空 → 报错（不出卡）
+	if _, err := findTool(t, "propose_post").Invoke(ctx, d, 1, map[string]any{}, ModePropose); err == nil {
+		t.Fatal("全空动态应报错")
+	}
+	// Propose：预览含正文/心情/地点（含解析坐标）
+	out := propose(t, "propose_post", d, 1, map[string]any{"content": "今天去看了电影", "mood": "开心", "place": "厦门·鼓浪屿"})
+	if out.Proposal == nil {
+		t.Fatal("Propose 模式必须产出提案")
+	}
+	if out.Proposal.Preview.Kind != "post" {
+		t.Fatalf("preview kind = %q", out.Proposal.Preview.Kind)
+	}
+	b, _ := json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(b), "今天去看了电影") || !strings.Contains(string(b), "开心") {
+		t.Fatalf("预览缺参数：%s", b)
+	}
+	if out.Proposal.Params["latitude"] == nil {
+		t.Fatalf("地名应解析出坐标：%+v", out.Proposal.Params)
+	}
+	// Execute（模拟 resolve：params + media_tokens）
+	execArgs := out.Proposal.Params
+	res := exec(t, "propose_post", d, 1, execArgs)
+	if res.Record == nil || res.Record.Kind != "post" {
+		t.Fatalf("record = %+v", res.Record)
+	}
 	var loc sql.NullString
-	if err := db.QueryRow(`SELECT location_name FROM posts WHERE id = ?`, id).Scan(&loc); err != nil {
+	if err := db.QueryRow(`SELECT location_name FROM posts WHERE id = ?`, res.Record.ID).Scan(&loc); err != nil {
 		t.Fatal(err)
 	}
-	if !loc.Valid || loc.String != "厦门 · 鼓浪屿" {
-		t.Fatalf("location_name 落库 = %q valid=%v, want \"厦门 · 鼓浪屿\"", loc.String, loc.Valid)
+	if !loc.Valid || loc.String != "厦门·鼓浪屿" {
+		t.Fatalf("location_name = %q", loc.String)
 	}
-
-	// 不带 location_name → 落 NULL
-	res, err = create.Exec(ctx, d, 1, map[string]any{"content": "无地点"})
-	if err != nil {
-		t.Fatalf("create_post without location_name: %v", err)
-	}
-	id = res.Data.(map[string]any)["post_id"].(int64)
-	if err := db.QueryRow(`SELECT location_name FROM posts WHERE id = ?`, id).Scan(&loc); err != nil {
+	// 通知另一方
+	var n int
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
 		t.Fatal(err)
 	}
-	if loc.Valid {
-		t.Fatalf("未传 location_name 应落 NULL，got %q", loc.String)
+	out = propose(t, "propose_post", d, 1, map[string]any{"content": "再记一条"})
+	exec(t, "propose_post", d, 1, out.Proposal.Params)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type='post_created' AND recipient_id=2`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("post_created 通知 = %d, want 1", n)
 	}
 }
 
-func anniversaryRemindDays(t *testing.T, db *store.DB, id int64) int {
-	t.Helper()
+// propose_reaction：幂等「设为」——状态无变化不出提案；有变化预览写明状态迁移。
+func TestProposeReactionIdempotent(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	pID := seedPostAt(t, db, "点赞对象", "2026-08-10 10:00:00")
+
+	// 初始未点赞：like=true 出提案，预览 from=false to=true
+	out := propose(t, "propose_reaction", d, 1, map[string]any{"post_id": float64(pID), "like": true})
+	if out.Proposal == nil {
+		t.Fatal("应有提案")
+	}
+	body, _ := json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), `"like":{"from":false,"to":true}`) {
+		t.Fatalf("reaction 预览应含状态迁移：%s", body)
+	}
+	exec(t, "propose_reaction", d, 1, map[string]any{"post_id": float64(pID), "like": true})
+	// 已点赞：再要 like=true → 无变化，不出提案
+	out = propose(t, "propose_reaction", d, 1, map[string]any{"post_id": float64(pID), "like": true})
+	if out.Proposal != nil {
+		t.Fatal("状态无变化不应出提案")
+	}
+	if !strings.Contains(out.ModelText, "无需变更") {
+		t.Fatalf("无变化应给出说明：%s", out.ModelText)
+	}
+	// 取消点赞 → 出提案
+	out = propose(t, "propose_reaction", d, 1, map[string]any{"post_id": float64(pID), "like": false})
+	if out.Proposal == nil {
+		t.Fatal("取消点赞应出提案")
+	}
+	// 参数缺失报错
+	if _, err := findTool(t, "propose_reaction").Invoke(t.Context(), d, 1, map[string]any{"post_id": float64(pID)}, ModePropose); err == nil {
+		t.Fatal("like/favorite 都没给应报错")
+	}
+}
+
+// propose_album：source 句柄展开（模型不搬 id）+ 已归属警告 + 一次确认建册。
+func TestProposeAlbumWithSource(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+	p1 := seedPostAt(t, db, "厦门海边", "2026-08-10 10:00:00")
+	m1 := seedMedia(t, db, p1, "photo", "2026-08-10 10:00:00")
+	m2 := seedMedia(t, db, p1, "photo", "2026-08-11 10:00:00")
+	// 造结果集（模拟 find_media 落句柄），绑会话 7
+	rid, err := db.SaveResultSet(ctx, 7, "media", []int64{m1, m2}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 归属校验：句柄不属于会话时展开失败
+	if _, err := findTool(t, "propose_album").Invoke(ctx, d, 1,
+		map[string]any{"name": "X", "source": map[string]any{"result_id": rid}}, ModePropose); err == nil {
+		t.Fatal("句柄不属于当前会话应报错")
+	}
+
+	sctx := WithSessionID(ctx, 7)
+	// kind 校验：post 集合传给相册类工具必须校验前置驳回（media/post 是两个自增空间，
+	// 不校验时 media id 撞 posts 同号会被误当成动态——S1 修正）
+	ridPost, err := db.SaveResultSet(ctx, 7, "post", []int64{p1}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := findTool(t, "propose_album").Invoke(sctx, d, 1,
+		map[string]any{"name": "X", "source": map[string]any{"result_id": ridPost}}, ModePropose); err == nil {
+		t.Fatal("post 集合传给相册工具应被 kind 校验驳回")
+	}
+	out, err := findTool(t, "propose_album").Invoke(sctx, d, 1,
+		map[string]any{"name": "厦门行", "source": map[string]any{"result_id": rid}}, ModePropose)
+	if err != nil {
+		t.Fatalf("propose with source: %v", err)
+	}
+	if out.Proposal == nil {
+		t.Fatal("应出提案")
+	}
+	ids := out.Proposal.Params["media_ids"]
+	if ids == nil || len(ids.([]any)) != 2 {
+		t.Fatalf("source 应展开为具体 id 存 params：%+v", out.Proposal.Params)
+	}
+	body, _ := json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), `"count":2`) {
+		t.Fatalf("预览应含张数：%s", body)
+	}
+	// Execute：建册 + 加图一次完成
+	res, err := findTool(t, "propose_album").Invoke(sctx, d, 1, out.Proposal.Params, ModeExecute)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if res.Record == nil || res.Record.Kind != "album" {
+		t.Fatalf("record = %+v", res.Record)
+	}
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM album_items WHERE album_id = ?`, res.Record.ID).Scan(&n)
+	if n != 2 {
+		t.Fatalf("album items = %d, want 2", n)
+	}
+	// 已归属警告：把 m1 再入另一册 → 新提案应带 Warnings
+	_ = db.AddAlbumItems(ctx, res.Record.ID, 1, []int64{m1})
+	if err := db.AddAlbumItems(ctx, res.Record.ID, 1, []int64{m2}); err != nil {
+		t.Fatal(err)
+	}
+	rid2, _ := db.SaveResultSet(ctx, 8, "media", []int64{m1}, nil)
+	out, err = findTool(t, "propose_album").Invoke(WithSessionID(ctx, 8), d, 1,
+		map[string]any{"name": "再来一册", "source": map[string]any{"result_id": rid2}}, ModePropose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Proposal.Warnings) == 0 || !strings.Contains(out.Proposal.Warnings[0], "跳过") {
+		t.Fatalf("已归属媒体应给 Warnings：%+v", out.Proposal.Warnings)
+	}
+}
+
+// propose_delete：AppOnly；存在性前置校验；Execute 软删除 + 通知口径。
+func TestProposeDelete(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
+		t.Fatal(err)
+	}
+	pID := seedPostAt(t, db, "要删的动态", "2026-08-10 10:00:00")
+
+	out := propose(t, "propose_delete", d, 2, map[string]any{"kind": "post", "id": float64(pID)})
+	if out.Proposal == nil || out.Proposal.Preview.Kind != "delete" {
+		t.Fatalf("delete proposal = %+v", out.Proposal)
+	}
+	body, _ := json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), "要删的动态") {
+		t.Fatalf("删除预览应含对象摘要：%s", body)
+	}
+	exec(t, "propose_delete", d, 2, map[string]any{"kind": "post", "id": float64(pID)})
+	var deleted sql.NullString
+	_ = db.QueryRow(`SELECT deleted_at FROM posts WHERE id = ?`, pID).Scan(&deleted)
+	if !deleted.Valid {
+		t.Fatal("未软删除")
+	}
+	// AI 代删对方内容 → 通知创建者
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type='post_deleted' AND recipient_id=1`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("删除通知 = %d, want 1", n)
+	}
+	// 不存在 → 前置报错（不出注定失败的卡）
+	if _, err := findTool(t, "propose_delete").Invoke(ctx, d, 1, map[string]any{"kind": "post", "id": float64(999999)}, ModePropose); err == nil {
+		t.Fatal("不存在的动态应报错")
+	}
+	if _, err := findTool(t, "propose_delete").Invoke(ctx, d, 1, map[string]any{"kind": "bogus", "id": float64(1)}, ModePropose); err == nil {
+		t.Fatal("非法 kind 应报错")
+	}
+}
+
+// propose_anniversary / propose_reminder / propose_place 的预览与执行。
+func TestProposeAnniversaryReminderPlace(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+
+	out := propose(t, "propose_anniversary", d, 1, map[string]any{
+		"name": "她的生日", "date": "1996-05-15", "calendar": "lunar", "is_leap": true, "remind_days_before": float64(3)})
+	body, _ := json.Marshal(out.Proposal.Preview.Body)
+	for _, want := range []string{"她的生日", "1996-05-15", "lunar", `"is_leap":true`, `"remind_days_before":3`, "next_solar_date"} {
+		if !strings.Contains(string(body), want) {
+			t.Fatalf("纪念日预览缺 %s：%s", want, body)
+		}
+	}
+	res := exec(t, "propose_anniversary", d, 1, out.Proposal.Params)
+	if res.Record == nil || res.Record.Kind != "anniversary" {
+		t.Fatalf("record = %+v", res.Record)
+	}
+	var isLeap int
+	_ = db.QueryRow(`SELECT is_leap FROM anniversaries WHERE id = ?`, res.Record.ID).Scan(&isLeap)
+	if isLeap != 1 {
+		t.Fatalf("lunar is_leap 应落库 1，got %d", isLeap)
+	}
+	// 日期格式错误 → 前置报错
+	if _, err := findTool(t, "propose_anniversary").Invoke(ctx, d, 1,
+		map[string]any{"name": "x", "date": "1996/05/15"}, ModePropose); err == nil {
+		t.Fatal("非法日期应报错")
+	}
+	// reminder：预览 from → to
+	out = propose(t, "propose_reminder", d, 1, map[string]any{"anniversary_id": float64(res.Record.ID), "days_before": float64(7)})
+	body, _ = json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), `"from":3`) || !strings.Contains(string(body), `"to":7`) {
+		t.Fatalf("提醒预览应含状态迁移：%s", body)
+	}
+	exec(t, "propose_reminder", d, 1, out.Proposal.Params)
 	var days int
-	if err := db.QueryRow(`SELECT remind_days_before FROM anniversaries WHERE id = ?`, id).Scan(&days); err != nil {
-		t.Fatal(err)
+	_ = db.QueryRow(`SELECT remind_days_before FROM anniversaries WHERE id = ?`, res.Record.ID).Scan(&days)
+	if days != 7 {
+		t.Fatalf("提醒天数 = %d, want 7", days)
 	}
-	return days
+	// place：地名解析坐标
+	out = propose(t, "propose_place", d, 1, map[string]any{"name": "西湖", "place_query": "杭州·西湖", "visit_date": "2026-08-17"})
+	body, _ = json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), `"resolved":true`) || !strings.Contains(string(body), "30.2") {
+		t.Fatalf("地点预览应含解析坐标：%s", body)
+	}
+	res = exec(t, "propose_place", d, 1, out.Proposal.Params)
+	if res.Record == nil || res.Record.Kind != "map_point" {
+		t.Fatalf("record = %+v", res.Record)
+	}
+	// 既无坐标也无地名 → 报错
+	if _, err := findTool(t, "propose_place").Invoke(ctx, d, 1, map[string]any{"name": "无名地"}, ModePropose); err == nil {
+		t.Fatal("缺坐标与地名应报错")
+	}
+	// 地名库查不到 → 报错（不出注定失败的卡）
+	if _, err := findTool(t, "propose_place").Invoke(ctx, d, 1, map[string]any{"name": "x", "place_query": "不存在的地名xyz"}, ModePropose); err == nil {
+		t.Fatal("未收录地名应报错")
+	}
 }
 
-// GAP2（AI 通道）：AI 代删对方创建的内容 → 站内通知创建者；自删静默。覆盖相册/纪念日/足迹三类。
-func TestAIDeleteNotifiesCreator(t *testing.T) {
+// propose_comment：预览含被评论动态摘要；执行落评论并通知。
+func TestProposeComment(t *testing.T) {
 	db := newToolDB(t)
 	d := &Deps{DB: db, DP: notify.New(db)}
 	ctx := t.Context()
 	hash, _ := auth.HashPassword("pw")
 	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
-		t.Fatalf("create boy: %v", err)
-	}
-	notif := func(eventType string, targetID int64) int {
-		t.Helper()
-		var n int
-		if err := db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE recipient_id = 1 AND event_type = ? AND target_id = ?`, eventType, targetID).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-
-	// 相册：user1 建 → user2 代删 → user1 收到
-	albumID, err := db.CreateAlbum(ctx, "manual", "AI删相册", "", "", 1)
-	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := findTool(t, "delete_album").Exec(ctx, d, 2, map[string]any{"album_id": float64(albumID)}); err != nil {
-		t.Fatalf("ai delete album: %v", err)
-	}
-	if n := notif("album_deleted", albumID); n != 1 {
-		t.Fatalf("AI 代删对方相册应通知创建者 1 条，got %d", n)
-	}
+	pID := seedPostAt(t, db, "被评论的动态", "2026-08-10 10:00:00")
 
-	// 纪念日：user1 建 → user2 代删 → user1 收到
-	annID, err := db.CreateAnniversary(ctx, "AI删纪念日", "2020-06-06", "solar", false, 1, 1)
-	if err != nil {
-		t.Fatal(err)
+	out := propose(t, "propose_comment", d, 1, map[string]any{"post_id": float64(pID), "content": "真好呀"})
+	body, _ := json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), "被评论的动态") || !strings.Contains(string(body), "真好呀") {
+		t.Fatalf("评论预览 = %s", body)
 	}
-	if _, err := findTool(t, "delete_anniversary").Exec(ctx, d, 2, map[string]any{"anniversary_id": float64(annID)}); err != nil {
-		t.Fatalf("ai delete anniversary: %v", err)
-	}
-	if n := notif("anniversary_deleted", annID); n != 1 {
-		t.Fatalf("AI 代删对方纪念日应通知创建者 1 条，got %d", n)
-	}
-
-	// 足迹：user1 建 → user2 代删 → user1 收到
-	res, err := findTool(t, "create_map_point").Exec(ctx, d, 1, map[string]any{"name": "AI删足迹", "latitude": 30.1, "longitude": 120.1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	pointID := res.Data.(map[string]any)["point_id"].(int64)
-	if _, err := findTool(t, "delete_map_point").Exec(ctx, d, 2, map[string]any{"point_id": float64(pointID)}); err != nil {
-		t.Fatalf("ai delete point: %v", err)
-	}
-	if n := notif("map_point_deleted", pointID); n != 1 {
-		t.Fatalf("AI 代删对方足迹应通知创建者 1 条，got %d", n)
-	}
-
-	// 自删静默：user2 建相册 → user2 自己删
-	selfAlbum, err := db.CreateAlbum(ctx, "manual", "AI自删相册", "", "", 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := findTool(t, "delete_album").Exec(ctx, d, 2, map[string]any{"album_id": float64(selfAlbum)}); err != nil {
-		t.Fatalf("ai self delete album: %v", err)
+	res := exec(t, "propose_comment", d, 1, out.Proposal.Params)
+	if res.Record == nil || res.Record.Kind != "comment" {
+		t.Fatalf("record = %+v", res.Record)
 	}
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type = 'album_deleted' AND target_id = ?`, selfAlbum).Scan(&n); err != nil {
-		t.Fatal(err)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type='post_commented' AND recipient_id=2`).Scan(&n)
+	if n != 1 {
+		t.Fatalf("评论通知 = %d, want 1", n)
 	}
+	// 超长评论 → 前置报错
+	if _, err := findTool(t, "propose_comment").Invoke(ctx, d, 1,
+		map[string]any{"post_id": float64(pID), "content": strings.Repeat("字", 501)}, ModePropose); err == nil {
+		t.Fatal("超长评论应报错")
+	}
+}
+
+// 审计口径：提案两个时点各记一条（出卡 pending / 裁决 success·failed·cancelled）由 chat 层记账，
+// 工具 Exec 内部不得自记（防一次调用落两条）。
+func TestToolsDoNotSelfAudit(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	pID := seedPostAt(t, db, "审计对象", "2026-08-10 10:00:00")
+	exec(t, "propose_reaction", d, 1, map[string]any{"post_id": float64(pID), "like": true})
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM audit_logs`).Scan(&n)
 	if n != 0 {
-		t.Fatalf("AI 自删应静默，got %d", n)
+		t.Fatalf("工具内部不应写审计，实得 %d 条", n)
 	}
 }
 
-// AppOnly 铁律：五个删除类工具必须全部标注 AppOnly（DESIGN §8.3 不对令牌开放）。
-func TestDeleteToolsAppOnly(t *testing.T) {
-	for _, name := range []string{"delete_post", "delete_comment", "delete_album", "delete_anniversary", "delete_map_point"} {
-		tool := findTool(t, name)
-		if !tool.AppOnly || !tool.IsWrite {
-			t.Fatalf("%s: want AppOnly+IsWrite", name)
-		}
-	}
-}
+// ---- 测试辅助 ----
 
-// delete_post：删对方动态通知作者（自删静默）；get_today_in_history 只含往年同月同日。
-func TestDeletePostAndHistoryTools(t *testing.T) {
-	db := newToolDB(t)
-	d := &Deps{DB: db, DP: notify.New(db)}
-	ctx := t.Context()
-	hash, _ := auth.HashPassword("pw")
-	boyID, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"})
-	if err != nil {
-		t.Fatalf("create boy: %v", err)
-	}
-	postID, err := db.CreatePostWithMedia(ctx, &store.Post{AuthorID: 1, Content: "删除测试动态"}, nil)
-	if err != nil {
-		t.Fatalf("create post: %v", err)
-	}
-	del := findTool(t, "delete_post")
-	if _, err := del.Exec(ctx, d, 1, map[string]any{"post_id": float64(postID)}); err != nil {
-		t.Fatalf("self delete: %v", err)
-	}
-	var notif int
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE recipient_id = 1 AND event_type = 'post_deleted'`).Scan(&notif)
-	if notif != 0 {
-		t.Fatalf("self delete must be silent, got %d", notif)
-	}
-
-	postID2, _ := db.CreatePostWithMedia(ctx, &store.Post{AuthorID: 1, Content: "boy 删 girl 的动态"}, nil)
-	if _, err := del.Exec(ctx, d, boyID, map[string]any{"post_id": float64(postID2)}); err != nil {
-		t.Fatalf("cross delete: %v", err)
-	}
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE recipient_id = 1 AND event_type = 'post_deleted'`).Scan(&notif)
-	if notif != 1 {
-		t.Fatalf("author notification = %d, want 1", notif)
-	}
-	if _, err := del.Exec(ctx, d, boyID, map[string]any{"post_id": float64(postID2)}); err == nil {
-		t.Fatal("re-delete: want error")
-	}
-
-	// 那年今日：当年动态不计入，去年同日动态计入
-	postID3, _ := db.CreatePostWithMedia(ctx, &store.Post{AuthorID: 1, Content: "今天发的动态"}, nil)
-	if _, err := db.ExecContext(ctx, `UPDATE posts SET created_at = datetime('now', '-1 year') WHERE id = ?`, postID3); err != nil {
-		t.Fatalf("backdate: %v", err)
-	}
-	res, err := findTool(t, "get_today_in_history").Exec(ctx, d, 1, map[string]any{})
-	if err != nil {
-		t.Fatalf("history: %v", err)
-	}
-	hits := res.Data.([]PostHit)
-	if len(hits) != 1 || hits[0].ID != postID3 {
-		t.Fatalf("history hits: %+v (want post %d)", hits, postID3)
-	}
-}
-
-// 相册类：create_album 通知口径 / remove/list/delete_album（月度相册不可删）与 suggest_photo_grouping 聚合。
-func TestAlbumToolsExtra(t *testing.T) {
-	db := newToolDB(t)
-	d := &Deps{DB: db, MP: mediaPlaceholder(t), DP: notify.New(db)}
-	ctx := t.Context()
-	// 收件人：newToolDB 只建了 girl(1)，补 boy(2) 才能观察「通知另一方」
-	hash, _ := auth.HashPassword("pw")
-	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
-		t.Fatalf("create boy: %v", err)
-	}
-	// 走 create_album 工具（而非直接落库），断言相册上新通知另一方的口径
-	ca := findTool(t, "create_album")
-	if _, err := ca.Exec(ctx, d, 1, map[string]any{"name": "旅行"}); err != nil {
-		t.Fatalf("create album tool: %v", err)
-	}
-	albumID, err := db.CreateAlbum(ctx, "manual", "旧相册", "", "", 1)
-	if err != nil {
-		t.Fatalf("create album: %v", err)
-	}
-	var notifN int
-	var notifSnap string
-	if err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*), COALESCE(MAX(snapshot_json),'') FROM notifications WHERE recipient_id = 2 AND event_type = 'album_created'").Scan(&notifN, &notifSnap); err != nil {
-		t.Fatalf("query album notifications: %v", err)
-	}
-	if notifN != 1 {
-		t.Fatalf("partner album notification = %d, want 1", notifN)
-	}
-	var albumSnap map[string]any
-	if err := json.Unmarshal([]byte(notifSnap), &albumSnap); err != nil {
-		t.Fatalf("unmarshal album snapshot %q: %v", notifSnap, err)
-	}
-	if albumSnap["operator"] != "girl" || albumSnap["via"] != "ai" || albumSnap["name"] != "旅行" {
-		t.Fatalf("album snapshot = %+v, want operator=girl via=ai name=旅行", albumSnap)
-	}
-	if _, err := db.CreateMonthlyAlbum(ctx, "2026-09", "2026年9月", 1); err != nil {
-		t.Fatalf("create monthly: %v", err)
-	}
-	// 分组候选 fixture：一条动态两张不同日期照片
-	postID, _ := db.CreatePostWithMedia(ctx, &store.Post{AuthorID: 1, Content: "照片承载动态", LocationName: store.NullStr("杭州·西湖")}, nil)
-	_, _ = db.ExecContext(ctx, `INSERT INTO media (post_id, kind, file_path, created_at, taken_at) VALUES
-		(?, 'photo', 'a.jpg', datetime('now'), '2026-09-01 10:00:00'),
-		(?, 'photo', 'b.jpg', datetime('now'), '2026-09-05 10:00:00')`, postID, postID)
-
-	res, err := findTool(t, "suggest_photo_grouping").Exec(ctx, d, 1, map[string]any{})
-	if err != nil {
-		t.Fatalf("grouping: %v", err)
-	}
-	if n := countGroups(t, res.Data); n != 2 {
-		t.Fatalf("grouping groups = %d, want 2", n)
-	}
-	// 日期过滤
-	res, err = findTool(t, "suggest_photo_grouping").Exec(ctx, d, 1, map[string]any{
-		"date_range": map[string]any{"from": "2026-09-01", "to": "2026-09-01"},
-	})
-	if err != nil {
-		t.Fatalf("grouping filtered: %v", err)
-	}
-	if n := countGroups(t, res.Data); n != 1 {
-		t.Fatalf("filtered groups = %d, want 1", n)
-	}
-
-	if _, err := findTool(t, "list_albums").Exec(ctx, d, 1, map[string]any{"view_type": "collection"}); err != nil {
-		t.Fatalf("list albums: %v", err)
-	}
-	rm := findTool(t, "remove_photos_from_album")
-	if _, err := rm.Exec(ctx, d, 1, map[string]any{"album_id": float64(albumID)}); err == nil {
-		t.Fatal("empty photo_ids: want error")
-	}
-	del := findTool(t, "delete_album")
-	if _, err := del.Exec(ctx, d, 1, map[string]any{"album_id": float64(albumID)}); err != nil {
-		t.Fatalf("delete manual album: %v", err)
-	}
-}
-
-// 地图查询类：search_locations 模糊命中 + get_location_posts 反查动态。
-func TestMapSearchTools(t *testing.T) {
-	db := newToolDB(t)
-	d := &Deps{DB: db, DP: notify.New(db)}
-	ctx := t.Context()
-	p, _, err := db.FindOrCreatePoint(ctx, store.PointInput{Name: "杭州·西湖", Lat: 30.2, Lng: 120.1, Source: "ai", UserID: 1})
-	if err != nil {
-		t.Fatalf("create point: %v", err)
-	}
-	res, err := findTool(t, "search_locations").Exec(ctx, d, 1, map[string]any{"query": "西湖"})
-	if err != nil {
-		t.Fatalf("search_locations: %v", err)
-	}
-	if len(res.Data.([]map[string]any)) != 1 {
-		t.Fatalf("search hits = %v", res.Data)
-	}
-	postID, _ := db.CreatePostWithMedia(ctx, &store.Post{
-		AuthorID: 1, Content: "西湖边走走",
-		PointID: sqlNullInt64(p.ID), LocationName: store.NullStr("杭州·西湖"),
-	}, nil)
-	res, err = findTool(t, "get_location_posts").Exec(ctx, d, 1, map[string]any{"location_id": float64(p.ID)})
-	if err != nil {
-		t.Fatalf("location posts: %v", err)
-	}
-	hits := res.Data.([]PostHit)
-	if len(hits) != 1 || hits[0].ID != postID || hits[0].LocationName != "杭州·西湖" {
-		t.Fatalf("location posts: %+v", hits)
-	}
-	if _, err := findTool(t, "get_location_posts").Exec(ctx, d, 1, map[string]any{"location_id": float64(999)}); err == nil {
-		t.Fatal("unknown point: want error")
-	}
-}
-
-// 互动类：收藏闭环 / 评论与通知口径 / 时间线统计。
-func TestInteractionTools(t *testing.T) {
-	db := newToolDB(t)
-	d := &Deps{DB: db, DP: notify.New(db)}
-	ctx := t.Context()
-	hash, _ := auth.HashPassword("pw")
-	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
-		t.Fatalf("create boy: %v", err)
-	}
-	postID, _ := db.CreatePostWithMedia(ctx, &store.Post{AuthorID: 2, Content: "互动测试动态"}, nil)
-
-	fav := findTool(t, "toggle_favorite")
-	res, err := fav.Exec(ctx, d, 1, map[string]any{"post_id": float64(postID)})
-	if err != nil || !res.Data.(map[string]any)["favorited"].(bool) {
-		t.Fatalf("favorite: %v %v", err, res)
-	}
-	lf, err := findTool(t, "list_favorites").Exec(ctx, d, 1, map[string]any{})
-	if err != nil {
-		t.Fatalf("list favorites: %v", err)
-	}
-	meta := lf.Data.(map[string]any)
-	if meta["total"].(int) != 1 {
-		t.Fatalf("favorites total = %v", meta["total"])
-	}
-	if _, err := fav.Exec(ctx, d, 1, map[string]any{"post_id": float64(postID)}); err != nil {
-		t.Fatalf("unfavorite: %v", err)
-	}
-
-	cc := findTool(t, "create_comment")
-	if _, err := cc.Exec(ctx, d, 1, map[string]any{"post_id": float64(postID), "content": "好美的湖"}); err != nil {
-		t.Fatalf("comment: %v", err)
-	}
-	var notif int
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE recipient_id = 2 AND event_type = 'post_commented'`).Scan(&notif)
-	if notif != 1 {
-		t.Fatalf("partner comment notification = %d, want 1", notif)
-	}
-	dc := findTool(t, "delete_comment")
-	if _, err := dc.Exec(ctx, d, 2, map[string]any{"comment_id": float64(1)}); err != nil {
-		t.Fatalf("delete comment: %v", err)
-	}
-	_ = db.QueryRowContext(ctx, `SELECT COUNT(*) FROM notifications WHERE recipient_id = 1 AND event_type = 'comment_deleted'`).Scan(&notif)
-	if notif != 1 {
-		t.Fatalf("comment author notification = %d, want 1", notif)
-	}
-	lc, err := findTool(t, "list_comments").Exec(ctx, d, 1, map[string]any{"post_id": float64(postID)})
-	if err != nil {
-		t.Fatalf("list comments: %v", err)
-	}
-	if lc.Data.(map[string]any)["total"].(int) != 0 {
-		t.Fatalf("comments total after delete = %v", lc.Data)
-	}
-
-	ts, err := findTool(t, "get_timeline_summary").Exec(ctx, d, 1, map[string]any{})
-	if err != nil {
-		t.Fatalf("timeline: %v", err)
-	}
-	if len(ts.Data.([]store.PeriodCount)) == 0 {
-		t.Fatal("timeline years empty")
-	}
-	ym := time.Now().Format("2006-01")
-	res2, err := findTool(t, "get_timeline_summary").Exec(ctx, d, 1, map[string]any{"month": ym})
-	if err != nil {
-		t.Fatalf("timeline month: %v", err)
-	}
-	if len(res2.Data.([]store.PeriodCount)) != 1 {
-		t.Fatalf("timeline month groups = %v", res2.Data)
-	}
-}
-
-// sqlNullInt64 构造（测试用）。
-func sqlNullInt64(v int64) sql.NullInt64 {
-	return sql.NullInt64{Int64: v, Valid: true}
-}
-
-// countGroups 分组结果经 JSON round-trip 计数（Data 为具名结构体切片）。
-func countGroups(t *testing.T, data any) int {
+func seedPostAt(t *testing.T, db *store.DB, content, createdAt string) int64 {
 	t.Helper()
-	b, err := json.Marshal(data)
+	id, err := db.CreatePostWithMedia(t.Context(), &store.Post{AuthorID: 1, Content: content}, nil)
 	if err != nil {
-		t.Fatalf("marshal groups: %v", err)
+		t.Fatalf("seed post: %v", err)
 	}
-	var groups []map[string]any
-	if err := json.Unmarshal(b, &groups); err != nil {
-		t.Fatalf("unmarshal groups: %v", err)
+	if _, err := db.Exec("UPDATE posts SET created_at = ? WHERE id = ?", createdAt, id); err != nil {
+		t.Fatalf("set created_at: %v", err)
 	}
-	return len(groups)
+	return id
 }
 
-// assertMapPointNotif 校验「另一方的足迹通知」：count 条 map_point_created，
-// 快照 operator = 真实用户名（非回退标签）、via = ai。
-func assertMapPointNotif(t *testing.T, db *store.DB, count int) {
+func seedMedia(t *testing.T, db *store.DB, postID int64, kind, takenAt string) int64 {
 	t.Helper()
-	var n int
-	var snap string
-	if err := db.QueryRowContext(t.Context(),
-		"SELECT COUNT(*), COALESCE(MAX(snapshot_json),'') FROM notifications WHERE recipient_id = 2 AND event_type = 'map_point_created'").Scan(&n, &snap); err != nil {
-		t.Fatalf("query map_point notifications: %v", err)
+	res, err := db.Exec("INSERT INTO media (post_id, kind, file_path, thumb_path, taken_at) VALUES (?, ?, ?, ?, ?)",
+		postID, kind, "media/x."+kind, "media/x.thumb", takenAt)
+	if err != nil {
+		t.Fatalf("seed media: %v", err)
 	}
-	if n != count {
-		t.Fatalf("partner map_point notification = %d, want %d", n, count)
-	}
-	var s map[string]any
-	if err := json.Unmarshal([]byte(snap), &s); err != nil {
-		t.Fatalf("unmarshal snapshot %q: %v", snap, err)
-	}
-	if s["operator"] != "girl" || s["via"] != "ai" || s["name"] != "杭州·西湖" {
-		t.Fatalf("snapshot = %+v, want operator=girl via=ai name=杭州·西湖", s)
-	}
+	id, _ := res.LastInsertId()
+	return id
 }
 
-// mediaPlaceholder Deps.MP 占位：list_albums 封面签名的 pipeline 依赖。
-func mediaPlaceholder(t *testing.T) *media.Pipeline {
+func seedPostMediaKind(t *testing.T, db *store.DB, postID int64, kind string) {
 	t.Helper()
-	tm, err := auth.LoadOrCreateSecret(t.TempDir())
-	if err != nil {
-		t.Fatalf("secret: %v", err)
-	}
-	return media.New(t.TempDir(), tm.Secret(), 500<<20)
+	seedMedia(t, db, postID, kind, "")
 }
+
+// newTestPipeline 最小媒体管线（promote 用）；数据目录独立。
+func newTestPipeline(t *testing.T) *media.Pipeline {
+	t.Helper()
+	return media.New(t.TempDir(), []byte("0123456789abcdef0123456789abcdef"), 500<<20)
+}
+
+var _ = time.Now

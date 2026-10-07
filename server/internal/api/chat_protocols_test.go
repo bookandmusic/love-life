@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -22,8 +21,15 @@ func seedFakeProviderType(t *testing.T, env *testEnv, apiType, model, baseURL st
 	if err != nil {
 		t.Fatalf("encrypt key: %v", err)
 	}
-	if _, err := env.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES (?, 'fake', ?, ?, ?, 0)`, apiType, baseURL, enc, model); err != nil {
+	res, err := env.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES (?, 'fake', ?, ?)`, apiType, baseURL, enc)
+	if err != nil {
 		t.Fatalf("seed provider: %v", err)
+	}
+	if model != "" {
+		pid, _ := res.LastInsertId()
+		if _, err := env.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, chain_order) VALUES (?, 'chat', ?, 0)`, pid, model); err != nil {
+			t.Fatalf("seed model: %v", err)
+		}
 	}
 }
 
@@ -77,13 +83,13 @@ func assertTextReply(t *testing.T, ts *testEnv, token, ask, wantText string) {
 	t.Helper()
 	res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": ask})
 	body := sseBody(t, res)
-	if !strings.Contains(body, "event: text") || !strings.Contains(body, wantText) {
+	if !strings.Contains(body, "event: answer.delta") || !strings.Contains(body, wantText) {
 		t.Fatalf("sse text event missing:\n%s", body)
 	}
-	if !strings.Contains(body, "event: done") {
+	if !strings.Contains(body, "event: turn.end") {
 		t.Fatalf("sse done event missing:\n%s", body)
 	}
-	if strings.Contains(body, "event: card") {
+	if strings.Contains(body, "event: proposal") {
 		t.Fatalf("unexpected card event:\n%s", body)
 	}
 }
@@ -93,29 +99,16 @@ func assertCardReply(t *testing.T, ts *testEnv, token, ask, tool string) int64 {
 	t.Helper()
 	res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": ask})
 	body := sseBody(t, res)
-	if !strings.Contains(body, "event: card") || !strings.Contains(body, `"tool":"`+tool+`"`) {
+	if !strings.Contains(body, "event: proposal") || !strings.Contains(body, `"intent":"`+tool+`"`) {
 		t.Fatalf("sse card event missing:\n%s", body)
 	}
-	var actionID int64
-	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(line, "data: ") && strings.Contains(line, "action_id") {
-			var card struct {
-				ActionID int64 `json:"action_id"`
-			}
-			_ = json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &card)
-			actionID = card.ActionID
-		}
-	}
-	if actionID == 0 {
-		t.Fatal("action_id not parsed")
-	}
-	return actionID
+	return cardFromSSE(t, body)
 }
 
 const (
-	toolCallAnthropic = `{"type":"tool_use","id":"toolu_1","name":"create_post","input":{"content":"今天去看了电影","mood":"开心"}}`
-	toolCallGemini    = `{"functionCall":{"name":"create_post","args":{"content":"今天去看了电影","mood":"开心"}}}`
-	toolCallResponses = `{"type":"function_call","call_id":"call_1","name":"create_post","arguments":"{\"content\":\"今天去看了电影\",\"mood\":\"开心\"}"}`
+	toolCallAnthropic = `{"type":"tool_use","id":"toolu_1","name":"propose_post","input":{"content":"今天去看了电影","mood":"开心"}}`
+	toolCallGemini    = `{"functionCall":{"name":"propose_post","args":{"content":"今天去看了电影","mood":"开心"}}}`
+	toolCallResponses = `{"type":"function_call","call_id":"call_1","name":"propose_post","arguments":"{\"content\":\"今天去看了电影\",\"mood\":\"开心\"}"}`
 )
 
 func TestChatAnthropicEndToEnd(t *testing.T) {
@@ -130,7 +123,7 @@ func TestChatAnthropicEndToEnd(t *testing.T) {
 	ts2, token2, _ := newPostTestEnv(t)
 	fake2 := newFakeAnthropic(t, toolCallAnthropic)
 	seedFakeProviderType(t, ts2, "anthropic", "claude-3", fake2.server.URL)
-	assertCardReply(t, ts2, token2, "帮我记一条动态", "create_post")
+	assertCardReply(t, ts2, token2, "帮我记一条动态", "propose_post")
 }
 
 func TestChatGeminiEndToEnd(t *testing.T) {
@@ -143,7 +136,7 @@ func TestChatGeminiEndToEnd(t *testing.T) {
 	ts2, token2, _ := newPostTestEnv(t)
 	fake2 := newFakeGemini(t, toolCallGemini)
 	seedFakeProviderType(t, ts2, "gemini", "gemini-1.5-pro", fake2.server.URL)
-	assertCardReply(t, ts2, token2, "帮我记一条动态", "create_post")
+	assertCardReply(t, ts2, token2, "帮我记一条动态", "propose_post")
 }
 
 func TestChatResponsesEndToEnd(t *testing.T) {
@@ -156,7 +149,7 @@ func TestChatResponsesEndToEnd(t *testing.T) {
 	ts2, token2, _ := newPostTestEnv(t)
 	fake2 := newFakeResponses(t, toolCallResponses)
 	seedFakeProviderType(t, ts2, "openai-responses", "gpt-5", fake2.server.URL)
-	assertCardReply(t, ts2, token2, "帮我记一条动态", "create_post")
+	assertCardReply(t, ts2, token2, "帮我记一条动态", "propose_post")
 }
 
 // TestChatProviderChainOrder 端到端验证链序选择：链头无 Key 的供应商被跳过，
@@ -164,16 +157,13 @@ func TestChatResponsesEndToEnd(t *testing.T) {
 func TestChatProviderChainOrder(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 
-	// 链头（sort_order=0）无 Key 的 openai-chat → 跳过
-	if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', 'nokey', 'https://invalid', '', 'm', 0)`); err != nil {
+	// 链头（无 Key 的 openai-chat）不入 chat 链 → 跳过
+	if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES ('openai-chat', 'nokey', 'https://invalid', '')`); err != nil {
 		t.Fatal(err)
 	}
-	// 链第二位（sort_order=1）gemini 有 Key → 被选中
+	// 另一位 gemini 有 Key → 被选中
 	fake := newFakeGemini(t, `{"text":"链序生效"}`)
 	seedFakeProviderType(t, ts, "gemini", "gemini-1.5-pro", fake.server.URL)
-	if _, err := ts.db.Exec(`UPDATE model_providers SET sort_order = 1 WHERE name = 'fake'`); err != nil {
-		t.Fatal(err)
-	}
 
 	assertTextReply(t, ts, adminToken, "在吗", "链序生效")
 }

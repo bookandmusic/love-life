@@ -91,7 +91,7 @@ func TestAdminUserManagement(t *testing.T) {
 		t.Fatalf("admin login: %d", code)
 	}
 
-	// couple 原子创建 girl/boy（AD9，契约对齐 mock-check C1-C4）
+	// couple 原子创建 girl/boy（契约对齐 mock 检查项）
 	res := doJSON(t, "POST", ts.URL+"/api/v1/admin/users/couple", adminToken, map[string]any{
 		"girl": map[string]string{"username": "girl", "password": "girl-pw", "nickname": "她"},
 		"boy":  map[string]string{"username": "boy", "password": "boy-pw", "nickname": "他"},
@@ -121,7 +121,7 @@ func TestAdminUserManagement(t *testing.T) {
 		t.Fatalf("couple exists precedence: want 400, got %d", res.StatusCode)
 	}
 
-	// 单创接口已随 Q6 删除 → 405（Go 1.22 method pattern 下路径存在但方法不匹配）
+	// 单创接口已删除 → 405（Go 1.22 method pattern 下路径存在但方法不匹配）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/users", adminToken, map[string]string{
 		"username": "solo", "password": "pw-123456", "role": "girl",
 	})

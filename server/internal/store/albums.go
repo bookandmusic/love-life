@@ -9,48 +9,37 @@ import (
 )
 
 type Album struct {
-	ID          int64
-	Type        string
-	Name        string
-	Description sql.NullString
-	MonthKey    sql.NullString
-	IsHidden    bool
-	CreatedAt   string
-	// CreatedBy：创建者 ID。月度相册由系统生成、无创建者，故用 NullInt64
-	// （若用 int64，月度相册读出来会是 0，与真实用户 ID 无法区分）。
+	ID           int64
+	Name         string
+	Description  sql.NullString
+	CreatedAt    string
 	CreatedBy    sql.NullInt64
 	ItemCount    int
 	CoverMediaID sql.NullInt64
 }
 
-func (d *DB) CreateAlbum(ctx context.Context, typ, name, description, monthKey string, createdBy int64) (int64, error) {
+// MonthGroup 集合视图里的按月分组（查询即时聚合，非实体）：该月未归属手动相册的媒体。
+type MonthGroup struct {
+	MonthKey     string
+	ItemCount    int
+	CoverMediaID sql.NullInt64
+}
+
+func (d *DB) CreateAlbum(ctx context.Context, name, description string, createdBy int64) (int64, error) {
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO albums (type, name, description, month_key, created_by) VALUES (?, ?, ?, ?, ?)`,
-		typ, name, description, monthKey, createdBy)
+		`INSERT INTO albums (name, description, created_by) VALUES (?, ?, ?)`,
+		name, description, createdBy)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
 }
 
-func (d *DB) ListAlbums(ctx context.Context, includeHidden bool) ([]*Album, error) {
-	query := `SELECT a.id, a.type, a.name, a.description, a.month_key, a.is_hidden, a.created_at, a.created_by,
-			CASE WHEN a.type = 'monthly' THEN
-				-- 月度相册虚拟口径（D4）：该月未归属手动相册的媒体数
-				(SELECT COUNT(*) FROM media m2 JOIN posts p2 ON p2.id = m2.post_id
-				 WHERE m2.deleted_at IS NULL AND p2.deleted_at IS NULL
-				   AND COALESCE(NULLIF(strftime('%Y-%m', m2.taken_at), ''), strftime('%Y-%m', m2.created_at, 'localtime')) = a.month_key
-				   AND NOT EXISTS (SELECT 1 FROM album_items i2 JOIN albums a2 ON a2.id = i2.album_id
-				     WHERE i2.media_id = m2.id AND a2.type = 'manual' AND a2.deleted_at IS NULL))
-			ELSE
-				(SELECT COUNT(*) FROM album_items i JOIN media m ON m.id = i.media_id WHERE i.album_id = a.id AND m.deleted_at IS NULL)
-			END,
-			a.cover_media_id
-		FROM albums a WHERE a.deleted_at IS NULL`
-	if !includeHidden {
-		query += ` AND a.is_hidden = 0`
-	}
-	query += ` ORDER BY a.id DESC`
+func (d *DB) ListAlbums(ctx context.Context) ([]*Album, error) {
+	query := `SELECT a.id, a.name, a.description, a.created_at, a.created_by,
+				(SELECT COUNT(*) FROM album_items i JOIN media m ON m.id = i.media_id WHERE i.album_id = a.id AND m.deleted_at IS NULL),
+				a.cover_media_id
+		FROM albums a WHERE a.deleted_at IS NULL ORDER BY a.id DESC`
 	rows, err := d.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
@@ -59,37 +48,66 @@ func (d *DB) ListAlbums(ctx context.Context, includeHidden bool) ([]*Album, erro
 	var list []*Album
 	for rows.Next() {
 		var a Album
-		var hidden int
-		if err := rows.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.CreatedBy, &a.ItemCount, &a.CoverMediaID); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Description, &a.CreatedAt, &a.CreatedBy, &a.ItemCount, &a.CoverMediaID); err != nil {
 			return nil, err
 		}
-		a.IsHidden = hidden == 1
 		list = append(list, &a)
 	}
 	return list, rows.Err()
 }
 
 func (d *DB) GetAlbum(ctx context.Context, id int64) (*Album, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, type, name, description, month_key, is_hidden, created_at, created_by, 0, cover_media_id
+	row := d.QueryRowContext(ctx, `SELECT id, name, description, created_at, created_by, 0, cover_media_id
 		FROM albums WHERE id = ? AND deleted_at IS NULL`, id)
 	var a Album
-	var hidden int
-	err := row.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.CreatedBy, &a.ItemCount, &a.CoverMediaID)
+	err := row.Scan(&a.ID, &a.Name, &a.Description, &a.CreatedAt, &a.CreatedBy, &a.ItemCount, &a.CoverMediaID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
 	if err != nil {
 		return nil, err
 	}
-	a.IsHidden = hidden == 1
 	return &a, nil
 }
 
-// SoftDeleteAlbum 仅手动相册可删（月度相册规则见需求 §4.5）；
+// ListMonthGroups 按月分组列表：该月未归属相册的媒体按 taken_at||created_at 归月
+// （口径与 ListMonthlyMedia 同源，避免两处漂移）；无照片的月份不出现（有几个月亮几个月）。
+func (d *DB) ListMonthGroups(ctx context.Context) ([]MonthGroup, error) {
+	monthExpr := func(alias string) string {
+		return `COALESCE(NULLIF(strftime('%Y-%m', ` + alias + `.taken_at), ''), strftime('%Y-%m', ` + alias + `.created_at, 'localtime'))`
+	}
+	query := `SELECT mk, COUNT(*) AS n,
+			(SELECT m3.id FROM media m3 JOIN posts p3 ON p3.id = m3.post_id
+			 WHERE m3.deleted_at IS NULL AND p3.deleted_at IS NULL
+			   AND ` + monthExpr("m3") + ` = mk AND ` + notInAlbum("m3") + `
+			 ORDER BY COALESCE(NULLIF(m3.taken_at,''), m3.created_at) DESC, m3.id DESC LIMIT 1) AS cover
+		FROM (
+			SELECT m.id, ` + monthExpr("m") + ` AS mk
+			FROM media m JOIN posts p ON p.id = m.post_id
+			WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND ` + notInAlbum("m") + `
+		)
+		GROUP BY mk ORDER BY mk DESC`
+	rows, err := d.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []MonthGroup
+	for rows.Next() {
+		var g MonthGroup
+		if err := rows.Scan(&g.MonthKey, &g.ItemCount, &g.CoverMediaID); err != nil {
+			return nil, err
+		}
+		list = append(list, g)
+	}
+	return list, rows.Err()
+}
+
+// SoftDeleteAlbum 仅手动相册可删（月）；
 // 同时释放媒体归属（对齐 mock「删除相册→媒体回未归属」，关系数据不进回收站）。
 func (d *DB) SoftDeleteAlbum(ctx context.Context, id int64, actorType string, actorID int64) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE albums SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL AND type = 'manual'`,
+		`UPDATE albums SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
 		actorID, actorType, id)
 	if err != nil {
 		return err
@@ -111,20 +129,8 @@ func (d *DB) CountAlbumItems(ctx context.Context, albumID int64) (int, error) {
 	return n, err
 }
 
-func (d *DB) SetAlbumHidden(ctx context.Context, id int64, hidden bool) error {
-	res, err := d.ExecContext(ctx, `UPDATE albums SET is_hidden = ? WHERE id = ? AND deleted_at IS NULL`, hidden, id)
-	if err != nil {
-		return err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return ErrNotFound
-	}
-	return nil
-}
-
-// MediaOwnedError 媒体已归属其他手动相册（一文件一相册，需求 §4.5）。
-// Error() 即 mock 契约 409 文案（AGENTS §4 mock 为事实源），API 层直接透传，格式串单源此处。
+// MediaOwnedError 媒体已归属其他手动相册（一文件一相册）。
+// Error 即 mock 契约 409 文案（ mock 为事实源），API 层直接透传，格式串单源此处。
 type MediaOwnedError struct {
 	MediaID int64 // 触发冲突的媒体 id
 	OwnedBy int64 // 已占用的相册 id
@@ -158,7 +164,7 @@ func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs 
 		var owner int64
 		err = tx.QueryRowContext(ctx, `SELECT i.album_id FROM album_items i
 			JOIN albums a ON a.id = i.album_id
-			WHERE i.media_id = ? AND a.type = 'manual' AND a.deleted_at IS NULL`, mid).Scan(&owner)
+			WHERE i.media_id = ? AND a.deleted_at IS NULL`, mid).Scan(&owner)
 		if err == nil && owner != albumID {
 			return &MediaOwnedError{MediaID: mid, OwnedBy: owner}
 		}
@@ -210,17 +216,19 @@ func (d *DB) ListAlbumMedia(ctx context.Context, albumID int64) ([]*MediaRow, er
 	return list, rows.Err()
 }
 
-// 未归属手动相册的媒体条件（月度虚拟口径共用）：活跃手动相册不含该媒体。
-const notInManualAlbum = `NOT EXISTS (SELECT 1 FROM album_items i JOIN albums a ON a.id = i.album_id
-	  WHERE i.media_id = m.id AND a.type = 'manual' AND a.deleted_at IS NULL)`
+// notInAlbum 未归属相册的媒体条件（时间轴与月度分组共用口径）；alias = 媒体表别名。
+func notInAlbum(alias string) string {
+	return `NOT EXISTS (SELECT 1 FROM album_items i JOIN albums a ON a.id = i.album_id
+	  WHERE i.media_id = ` + alias + `.id AND a.deleted_at IS NULL)`
+}
 
-// ListMonthlyMedia 月度相册虚拟详情：该月（taken_at||created_at 口径）未归属手动相册的媒体（D4）。
+// ListMonthlyMedia 月度相册虚拟详情：该月（taken_at||created_at 口径）未归属手动相册的媒体。
 func (d *DB) ListMonthlyMedia(ctx context.Context, monthKey string) ([]*MediaRow, error) {
 	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
 			m.duration, m.taken_at, m.created_at, p.author_id
 		FROM media m JOIN posts p ON p.id = m.post_id
 		WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL
-		  AND COALESCE(NULLIF(strftime('%Y-%m', m.taken_at), ''), strftime('%Y-%m', m.created_at, 'localtime')) = ? AND `+notInManualAlbum+`
+		  AND COALESCE(NULLIF(strftime('%Y-%m', m.taken_at), ''), strftime('%Y-%m', m.created_at, 'localtime')) = ? AND `+notInAlbum("m")+`
 		ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC`, monthKey)
 	if err != nil {
 		return nil, err
@@ -237,17 +245,23 @@ func (d *DB) ListMonthlyMedia(ctx context.Context, monthKey string) ([]*MediaRow
 	return list, rows.Err()
 }
 
-// ListTimelineMediaPaged 时间轴分页视图（D5）：mock 契约 page/size + 归属字段。
-func (d *DB) ListTimelineMediaPaged(ctx context.Context, page, size int) ([]*MediaRow, int, error) {
+// ListTimelineMediaPaged 时间轴分页视图（mock 契约 page/size + 归属字段）。
+// 口径（2026-09-22 确认）：时间轴 = 未归档媒体——已归属任一活跃手动相册的媒体不出现；
+// 从相册移出（解除归属）即回到时间轴。includeFiled=true 供选图器场景（需全部媒体做灰显）。
+func (d *DB) ListTimelineMediaPaged(ctx context.Context, page, size int, includeFiled bool) ([]*MediaRow, int, error) {
+	where := `m.deleted_at IS NULL AND p.deleted_at IS NULL`
+	if !includeFiled {
+		where += ` AND ` + notInAlbum("m")
+	}
 	var total int
 	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.post_id
-		WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`).Scan(&total); err != nil {
+		WHERE `+where).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
 			m.duration, m.taken_at, m.created_at, p.author_id
 		FROM media m JOIN posts p ON p.id = m.post_id
-		WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL
+		WHERE `+where+`
 		ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?`, size, (page-1)*size)
 	if err != nil {
 		return nil, 0, err
@@ -270,7 +284,7 @@ type AlbumRef struct {
 	Name string
 }
 
-// AlbumOwnership 媒体当前归属（活跃手动相册口径，供时间轴/详情输出 album_id/album_name）；
+// AlbumOwnership 媒体当前归属（活跃相册口径，供时间轴/详情输出 album_id/album_name）；
 // 未归属媒体不在返回值中，首次归属胜出。
 func (d *DB) AlbumOwnership(ctx context.Context, mediaIDs []int64) (map[int64]AlbumRef, error) {
 	out := map[int64]AlbumRef{}
@@ -281,7 +295,7 @@ func (d *DB) AlbumOwnership(ctx context.Context, mediaIDs []int64) (map[int64]Al
 	args := int64Args(mediaIDs)
 	rows, err := d.QueryContext(ctx, `SELECT i.media_id, i.album_id, a.name FROM album_items i
 		JOIN albums a ON a.id = i.album_id
-		WHERE a.type = 'manual' AND a.deleted_at IS NULL AND i.media_id IN (`+ph+`) ORDER BY i.added_at ASC, i.rowid ASC`, args...)
+		WHERE a.deleted_at IS NULL AND i.media_id IN (`+ph+`) ORDER BY i.added_at ASC, i.rowid ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -332,45 +346,20 @@ func (d *DB) ListTimelineMedia(ctx context.Context, year, month string, limit in
 	return list, rows.Err()
 }
 
-// GetMonthlyAlbum 按 month_key 取月度相册（cron 幂等）。
-func (d *DB) GetMonthlyAlbum(ctx context.Context, monthKey string) (*Album, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, type, name, description, month_key, is_hidden, created_at, 0, cover_media_id
-		FROM albums WHERE type = 'monthly' AND month_key = ? AND deleted_at IS NULL`, monthKey)
-	var a Album
-	var hidden int
-	err := row.Scan(&a.ID, &a.Type, &a.Name, &a.Description, &a.MonthKey, &hidden, &a.CreatedAt, &a.ItemCount, &a.CoverMediaID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
-	if err != nil {
-		return nil, err
-	}
-	a.IsHidden = hidden == 1
-	return &a, nil
-}
-
-// CreateMonthlyAlbum 月度相册生成（D4 动态化）：仅建册行，不再物理聚合 album_items；
-// 详情为虚拟口径（ListMonthlyMedia：该月未归属手动相册的媒体），月度行仅作隐藏开关。
-func (d *DB) CreateMonthlyAlbum(ctx context.Context, monthKey, name string, _ int64) (int64, error) {
-	res, err := d.ExecContext(ctx,
-		`INSERT INTO albums (type, name, month_key) VALUES ('monthly', ?, ?)`, name, monthKey)
-	if err != nil {
-		return 0, err
-	}
-	return res.LastInsertId()
-}
-
-// GroupCandidate 照片分组建议候选（suggest_photo_grouping）：媒体经所属动态过滤未删，
+// GroupCandidate 照片分组候选（find_media group_by）：媒体经所属动态过滤未删，
 // 日期键取 taken_at 回退 created_at（SortTime 同口径）。
 type GroupCandidate struct {
 	MediaID  int64
+	Kind     string
 	Date     string // YYYY-MM-DD
 	Location string
 }
 
-// ListMediaGroupCandidates 按日期区间（YYYY-MM-DD 含头，可空）与地点名模糊（可空）列分组候选。
-func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location string) ([]GroupCandidate, error) {
-	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`
+// ListMediaGroupCandidates 按日期区间（YYYY-MM-DD 含头，可空）、地点名模糊（可空）与
+// 媒体类型（可空）列分组候选。只取**未归档**媒体（与时间轴口径一致）：已归属手动相册的
+// 媒体不得再被推荐入册——一文件一相册（UNIQUE(media_id)），推荐它们只会撞 409。
+func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location, mediaType string) ([]GroupCandidate, error) {
+	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND ` + notInAlbum("m")
 	args := []any{}
 	if from != "" {
 		where += ` AND COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')) >= ?`
@@ -384,10 +373,14 @@ func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location st
 		where += ` AND p.location_name LIKE ?`
 		args = append(args, "%"+location+"%")
 	}
-	rows, err := d.QueryContext(ctx, `SELECT m.id,
+	if mediaType != "" {
+		where += ` AND m.kind = ?`
+		args = append(args, mediaType)
+	}
+	rows, err := d.QueryContext(ctx, `SELECT m.id, m.kind,
 			COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')),
 			COALESCE(p.location_name,'')
-		FROM media m JOIN posts p ON p.id = m.post_id`+where+` ORDER BY 2 DESC, m.id`, args...)
+		FROM media m JOIN posts p ON p.id = m.post_id`+where+` ORDER BY 3 DESC, m.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -395,10 +388,88 @@ func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location st
 	var list []GroupCandidate
 	for rows.Next() {
 		var g GroupCandidate
-		if err := rows.Scan(&g.MediaID, &g.Date, &g.Location); err != nil {
+		if err := rows.Scan(&g.MediaID, &g.Kind, &g.Date, &g.Location); err != nil {
 			return nil, err
 		}
 		list = append(list, g)
+	}
+	return list, rows.Err()
+}
+
+// MediaFilter 媒体查询过滤（find_media 用）；全部下推 SQL，禁「取 N 条再 Go 侧过滤」。
+type MediaFilter struct {
+	Unfiled   bool   // true = 仅未归档（时间轴口径，notInManualAlbum）
+	AlbumID   int64  // 非零 = 指定相册内的媒体（find_media(album_id)，AI模式设计「工具契约」）
+	From, To  string // YYYY-MM-DD 本地日期，基于 taken_at 回退 created_at
+	Place     string // 所属动态地点名模糊
+	MediaType string // photo / video / audio
+}
+
+// mediaFilterWhere find_media 过滤条件共用骨架（列表与 COUNT 下推同一条 WHERE）。
+// AlbumID 非零 = 指定相册内媒体（已归档也能查，补上 propose_album_members 的 remove 路径）。
+func mediaFilterWhere(f MediaFilter) (string, []any, error) {
+	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`
+	if f.AlbumID > 0 {
+		where += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM album_items i WHERE i.album_id = %d AND i.media_id = m.id)`, f.AlbumID)
+	} else if f.Unfiled {
+		where += ` AND ` + notInAlbum("m")
+	}
+	args := []any{}
+	if f.From != "" {
+		where += ` AND COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')) >= ?`
+		args = append(args, f.From)
+	}
+	if f.To != "" {
+		where += ` AND COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')) <= ?`
+		args = append(args, f.To)
+	}
+	if f.Place != "" {
+		where += ` AND p.location_name LIKE ?`
+		args = append(args, "%"+f.Place+"%")
+	}
+	if f.MediaType != "" {
+		where += ` AND m.kind = ?`
+		args = append(args, f.MediaType)
+	}
+	return where, args, nil
+}
+
+// CountMediaFiltered 与 ListMediaFiltered 同 WHERE 的命中总数（find_media 真实 total）。
+func (d *DB) CountMediaFiltered(ctx context.Context, f MediaFilter) (int, error) {
+	where, args, err := mediaFilterWhere(f)
+	if err != nil {
+		return 0, err
+	}
+	var n int
+	err = d.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.post_id`+where, args...).Scan(&n)
+	return n, err
+}
+
+// ListMediaFiltered 按过滤条件查媒体本体（时间轴视图），按拍摄/创建时间倒序；offset 翻页。
+func (d *DB) ListMediaFiltered(ctx context.Context, f MediaFilter, limit, offset int) ([]*MediaRow, error) {
+	where, args, err := mediaFilterWhere(f)
+	if err != nil {
+		return nil, err
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
+			m.duration, m.taken_at, m.created_at, p.author_id
+		FROM media m JOIN posts p ON p.id = m.post_id`+where+`
+		ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []*MediaRow
+	for rows.Next() {
+		m, err := scanMediaRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		list = append(list, m)
 	}
 	return list, rows.Err()
 }

@@ -17,15 +17,14 @@ var (
 const sqliteUniqueConstraint = 2067
 
 type User struct {
-	ID                int64
-	Username          string
-	PasswordHash      string
-	Role              string
-	Nickname          string
-	Birthday          sql.NullString
-	AvatarPath        sql.NullString // 独立头像通道（GAP16）：相对数据目录的文件路径；空则无头像
-	AIStyle           string
-	ChatRetentionDays int
+	ID           int64
+	Username     string
+	PasswordHash string
+	Role         string
+	Nickname     string
+	Birthday     sql.NullString
+	AvatarPath   sql.NullString // 独立头像通道：相对数据目录的文件路径；空则无头像
+	AIStyle      string
 }
 
 func (d *DB) CreateUser(ctx context.Context, u *User) (int64, error) {
@@ -42,10 +41,10 @@ func (d *DB) CreateUser(ctx context.Context, u *User) (int64, error) {
 }
 
 func (d *DB) GetUserByUsername(ctx context.Context, username string) (*User, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style, chat_retention_days
+	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style
 		FROM users WHERE username = ?`, username)
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle, &u.ChatRetentionDays)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -56,10 +55,10 @@ func (d *DB) GetUserByUsername(ctx context.Context, username string) (*User, err
 }
 
 func (d *DB) GetUserByID(ctx context.Context, id int64) (*User, error) {
-	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style, chat_retention_days
+	row := d.QueryRowContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style
 		FROM users WHERE id = ?`, id)
 	var u User
-	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle, &u.ChatRetentionDays)
+	err := row.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -70,7 +69,7 @@ func (d *DB) GetUserByID(ctx context.Context, id int64) (*User, error) {
 }
 
 func (d *DB) ListUsers(ctx context.Context) ([]*User, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style, chat_retention_days
+	rows, err := d.QueryContext(ctx, `SELECT id, username, password_hash, role, nickname, birthday, avatar_path, ai_style
 		FROM users ORDER BY id`)
 	if err != nil {
 		return nil, err
@@ -79,7 +78,7 @@ func (d *DB) ListUsers(ctx context.Context) ([]*User, error) {
 	var users []*User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle, &u.ChatRetentionDays); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.PasswordHash, &u.Role, &u.Nickname, &u.Birthday, &u.AvatarPath, &u.AIStyle); err != nil {
 			return nil, err
 		}
 		users = append(users, &u)
@@ -100,7 +99,7 @@ func (d *DB) UpdateUserPassword(ctx context.Context, id int64, passwordHash stri
 }
 
 // ListPartnerIDs 情侣「另一方」收件人：非 admin 且非操作者（对齐 mock partnerIds，
-// REQUIREMENTS §4.8/F7——任何一方动作都通知另一方，admin 不在情侣里）。
+// F7——任何一方动作都通知另一方，admin 不在情侣里）。
 func (d *DB) ListPartnerIDs(ctx context.Context, excludeUserID int64) ([]int64, error) {
 	rows, err := d.QueryContext(ctx, `SELECT id FROM users WHERE role != 'admin' AND id != ? ORDER BY id`, excludeUserID)
 	if err != nil {
@@ -124,7 +123,7 @@ func (d *DB) CountAdmins(ctx context.Context) (int, error) {
 	return n, err
 }
 
-// CreateCouple 情侣账户原子创建（AD9，DESIGN §9）：girl/boy 两用户同事务落库，
+// CreateCouple 情侣账户原子创建：girl/boy 两用户同事务落库，
 // 任一失败整体回滚；用户名 UNIQUE 冲突返回 ErrDuplicateUsername（校验顺序由 API 层按 mock 契约先行）。
 func (d *DB) CreateCouple(ctx context.Context, girl, boy *User) (girlID, boyID int64, err error) {
 	tx, err := d.BeginTx(ctx, nil)
@@ -162,7 +161,7 @@ func isUniqueConstraint(err error) bool {
 	return errors.As(err, &se) && se.Code() == sqliteUniqueConstraint
 }
 
-// UpdateUserNickname 仅昵称更新（AD9：用户名/角色为登录身份与数据归属，不可修改）。
+// UpdateUserNickname 仅昵称更新（用户名/角色为登录身份与数据归属，不可修改）。
 func (d *DB) UpdateUserNickname(ctx context.Context, id int64, nickname string) error {
 	res, err := d.ExecContext(ctx, `UPDATE users SET nickname = ? WHERE id = ?`, nickname, id)
 	if err != nil {
@@ -175,7 +174,7 @@ func (d *DB) UpdateUserNickname(ctx context.Context, id int64, nickname string) 
 	return nil
 }
 
-// UpdateUserAvatar 设置用户头像路径（GAP16 独立通道；空串 = 清除头像）。
+// UpdateUserAvatar 设置用户头像路径（独立通道；空串 = 清除头像）。
 func (d *DB) UpdateUserAvatar(ctx context.Context, id int64, avatarPath string) error {
 	res, err := d.ExecContext(ctx, `UPDATE users SET avatar_path = NULLIF(?, '') WHERE id = ?`, avatarPath, id)
 	if err != nil {
@@ -188,7 +187,7 @@ func (d *DB) UpdateUserAvatar(ctx context.Context, id int64, avatarPath string) 
 	return nil
 }
 
-// UpdateUserBirthday 设置用户生日（GAP16；空串 = 清除生日）。仅后台维护，不下发 APP。
+// UpdateUserBirthday 设置用户生日（空串 = 清除生日）。仅后台维护，不下发 APP。
 func (d *DB) UpdateUserBirthday(ctx context.Context, id int64, birthday string) error {
 	res, err := d.ExecContext(ctx, `UPDATE users SET birthday = NULLIF(?, '') WHERE id = ?`, birthday, id)
 	if err != nil {

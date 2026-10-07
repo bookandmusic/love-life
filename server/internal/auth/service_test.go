@@ -84,22 +84,20 @@ func TestLoginLockRefreshFlow(t *testing.T) {
 		Token        string `json:"token"`
 		RefreshToken string `json:"refresh_token"`
 		User         struct {
-			Role              string `json:"role"`
-			Birthday          string `json:"birthday"`
-			AIStyle           string `json:"ai_style"`
-			ChatRetentionDays int    `json:"chat_retention_days"`
+			Role    string `json:"role"`
+			AIStyle string `json:"ai_style"`
 		} `json:"user"`
 	}
 	decode(t, res, &tok)
 	if tok.Token == "" || tok.RefreshToken == "" || tok.User.Role != "admin" {
 		t.Fatalf("login response incomplete: %+v", tok)
 	}
-	// AI 偏好与生日随 user 返回（新建用户走 DB 默认值，D9）
-	if tok.User.AIStyle != "文艺" || tok.User.ChatRetentionDays != 30 || tok.User.Birthday != "" {
+	// AI 偏好随 user 返回（新建用户走 DB 默认值）；birthday / 保留时长不再下发 APP
+	if tok.User.AIStyle != "文艺" {
 		t.Fatalf("login user preferences: %+v", tok.User)
 	}
 
-	// /me 受保护：带 token 可访问，且返回 AI 偏好字段（D9）
+	// /me 受保护：带 token 可访问，且返回 AI 偏好字段
 	req, _ := http.NewRequest("GET", ts.URL+"/me", nil)
 	req.Header.Set("Authorization", "Bearer "+tok.Token)
 	meRes, err := http.DefaultClient.Do(req)
@@ -107,13 +105,11 @@ func TestLoginLockRefreshFlow(t *testing.T) {
 		t.Fatalf("me with token failed: %v", meRes.Status)
 	}
 	var me struct {
-		Birthday          string `json:"birthday"`
-		AIStyle           string `json:"ai_style"`
-		ChatRetentionDays int    `json:"chat_retention_days"`
+		AIStyle string `json:"ai_style"`
 	}
 	_ = json.NewDecoder(meRes.Body).Decode(&me)
 	meRes.Body.Close()
-	if me.AIStyle != "文艺" || me.ChatRetentionDays != 30 || me.Birthday != "" {
+	if me.AIStyle != "文艺" {
 		t.Fatalf("me preferences: %+v", me)
 	}
 
@@ -140,14 +136,12 @@ func TestLoginLockRefreshFlow(t *testing.T) {
 		Token        string `json:"token"`
 		RefreshToken string `json:"refresh_token"`
 		User         struct {
-			Birthday          string `json:"birthday"`
-			AIStyle           string `json:"ai_style"`
-			ChatRetentionDays int    `json:"chat_retention_days"`
+			AIStyle string `json:"ai_style"`
 		} `json:"user"`
 	}
 	decode(t, res, &tok2)
-	// refresh 换发同样携带完整 user（与 login 同源组装，D9）
-	if tok2.User.AIStyle != "文艺" || tok2.User.ChatRetentionDays != 30 || tok2.User.Birthday != "" {
+	// refresh 换发同样携带完整 user（与 login 同源组装；birthday / 保留时长不再下发）
+	if tok2.User.AIStyle != "文艺" {
 		t.Fatalf("refresh user preferences: %+v", tok2.User)
 	}
 	res = post(t, ts.URL+"/refresh", map[string]string{"refresh_token": tok.RefreshToken})

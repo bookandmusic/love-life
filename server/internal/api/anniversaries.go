@@ -23,10 +23,10 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 		Date string `json:"date"`
 		Type string `json:"type"`
-		// IsLeap 仅 type=lunar 有效（DESIGN §12.2 / REQUIREMENTS §4.6：闰月标记）；
+		// IsLeap 仅 type=lunar 有效（闰月标记）；
 		// solar 一律忽略，恒按平月。
 		IsLeap *bool `json:"is_leap"`
-		// 指针以区分「未传」与「显式 0」：未传 → 默认提前 1 天（REQUIREMENTS §4.6）；
+		// 指针以区分「未传」与「显式 0」：未传 → 默认提前 1 天；
 		// 显式 0 = 当天提醒，不得被缺省逻辑改写（契约同 mock routes.mjs）。
 		RemindDays *int `json:"remind_days_before"`
 	}
@@ -147,13 +147,13 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	// 删除对方创建的纪念日 → 站内通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+	// 删除对方创建的纪念日 → 站内通知创建者（自删静默；内容删除仅站内）
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
 		CreatorID: ann.CreatedBy, DeleterID: claims.UserID, DeleterName: claims.Username,
 		EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
 		Extra: map[string]any{"name": ann.Name},
 	})
-	// DESIGN §13.3：删除一律 204 No Content
+	// ：删除一律 204 No Content
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -184,8 +184,8 @@ func (a *webhooksAPI) decode(r *http.Request) (*store.WebhookChannel, error) {
 	if req.Method == "" {
 		req.Method = "POST"
 	}
-	if req.Method != "GET" && req.Method != "POST" && req.Method != "PUT" {
-		return nil, errBadWebhook{"method 仅支持 GET/POST/PUT"}
+	if req.Method != "GET" && req.Method != "POST" {
+		return nil, errBadWebhook{"method 仅支持 GET/POST"}
 	}
 	if req.URL == "" {
 		return nil, errBadWebhook{"服务地址不能为空"}

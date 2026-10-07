@@ -10,7 +10,7 @@ import (
 // ErrStyleNameTaken 风格名称重复（output_styles.name UNIQUE）。
 var ErrStyleNameTaken = errors.New("风格名称已存在")
 
-// ---- app_settings（全局单值配置，DESIGN §12.1）----
+// ---- app_settings（全局单值配置）----
 
 // GetSetting 读单值；不存在 → ErrNotFound。
 func (d *DB) GetSetting(ctx context.Context, key string) (string, error) {

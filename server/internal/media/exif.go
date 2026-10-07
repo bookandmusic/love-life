@@ -5,7 +5,7 @@ import (
 	"os"
 )
 
-// EXIFDateTimeOriginal 最小 JPEG APP1/TIFF 解析（A1c，DESIGN 4.8）：
+// EXIFDateTimeOriginal 最小 JPEG APP1/TIFF 解析：
 // 仅取 Exif SubIFD 的 DateTimeOriginal(0x9003)，GPS 忽略；II/MM 两种字节序；
 // 归一化为 "YYYY-MM-DD HH:MM:SS"（与 SQLite created_at 同形，时间轴排序口径一致）；
 // 非 JPEG / 无 EXIF / 解析失败一律返回空串（上传方回退 created_at）。

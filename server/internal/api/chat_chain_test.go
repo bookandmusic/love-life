@@ -11,7 +11,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/crypto"
 )
 
-// ---- 故障切换链（DESIGN §4.1 有序链）与模型级参数端到端 ----
+// ---- 故障切换链（ 有序链）与模型级参数端到端 ----
 // 基建沿用 chat_protocols_test.go 的假上游与 seedFakeProviderType。
 
 // newFailingUpstream 每次请求都返回 500 + 非 JSON 体（adapter 解码必失败 → chat 视为该供应商失败）。
@@ -41,21 +41,27 @@ func newCapturingChatUpstream(t *testing.T) (*httptest.Server, *[]string) {
 	return srv, &bodies
 }
 
-// seedNamedProvider 直插指定链序的供应商（区别于 seedFakeProviderType 固定链头）。
+// seedNamedProvider 直插指定链序的供应商 + chat 模型条目（chain_order 即原链序语义）。
 func seedNamedProvider(t *testing.T, env *testEnv, apiType, name, model, baseURL string, sortOrder int) int64 {
 	t.Helper()
 	enc, err := crypto.Encrypt(crypto.KeyFrom(env.tm.Secret()), "sk-"+name)
 	if err != nil {
 		t.Fatalf("encrypt key: %v", err)
 	}
-	res, err := env.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES (?, ?, ?, ?, ?, ?)`,
-		apiType, name, baseURL, enc, model, sortOrder)
+	res, err := env.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES (?, ?, ?, ?)`,
+		apiType, name, baseURL, enc)
 	if err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
 		t.Fatalf("last insert id: %v", err)
+	}
+	if model != "" {
+		if _, err := env.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, chain_order) VALUES (?, 'chat', ?, ?)`,
+			id, model, sortOrder); err != nil {
+			t.Fatalf("seed model: %v", err)
+		}
 	}
 	return id
 }
@@ -120,10 +126,10 @@ func TestChatChainExhausted(t *testing.T) {
 
 	res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": "在吗"})
 	body := sseBody(t, res)
-	if !strings.Contains(body, "event: error") || !strings.Contains(body, "event: done") {
+	if !strings.Contains(body, "event: error") || !strings.Contains(body, "event: turn.end") {
 		t.Fatalf("want error + done events:\n%s", body)
 	}
-	if strings.Contains(body, "event: text") || strings.Contains(body, "event: card") {
+	if strings.Contains(body, "event: answer.delta") || strings.Contains(body, "event: proposal") {
 		t.Fatalf("unexpected text/card events:\n%s", body)
 	}
 	for i, r := range usageRows(t, ts) {
@@ -151,8 +157,8 @@ func TestChatModelLevelParamsEndToEnd(t *testing.T) {
 	ts, token, _ := newPostTestEnv(t)
 
 	srv, bodies := newCapturingChatUpstream(t)
-	id := seedNamedProvider(t, ts, "openai-chat", "params", "gpt-x", srv.URL, 0)
-	if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, model_id, temperature, max_tokens) VALUES (?, 'gpt-x', 0.7, 2048)`, id); err != nil {
+	_ = seedNamedProvider(t, ts, "openai-chat", "params", "gpt-x", srv.URL, 0)
+	if _, err := ts.db.Exec(`UPDATE provider_models SET temperature = 0.7, max_tokens = 2048 WHERE model_id = 'gpt-x'`); err != nil {
 		t.Fatalf("seed provider_models: %v", err)
 	}
 
@@ -170,7 +176,10 @@ func TestChatModelLevelParamsEndToEnd(t *testing.T) {
 func TestChatDecryptFailureChain(t *testing.T) {
 	t.Run("坏 Key 链头被跳过", func(t *testing.T) {
 		ts, token, _ := newPostTestEnv(t)
-		if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', 'badkey', 'https://invalid', 'not-a-valid-ciphertext', 'm1', 0)`); err != nil {
+		if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES ('openai-chat', 'badkey', 'https://invalid', 'not-a-valid-ciphertext')`); err != nil {
+			t.Fatalf("seed badkey provider: %v", err)
+		}
+		if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, chain_order) SELECT id, 'chat', 'm1', 0 FROM model_providers WHERE name = 'badkey'`); err != nil {
 			t.Fatal(err)
 		}
 		fake := newFakeGemini(t, `{"text":"坏 Key 不挡道"}`)
@@ -180,7 +189,10 @@ func TestChatDecryptFailureChain(t *testing.T) {
 
 	t.Run("仅坏 Key 供应商返回 500", func(t *testing.T) {
 		ts, token, _ := newPostTestEnv(t)
-		if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', 'badkey', 'https://invalid', 'not-a-valid-ciphertext', 'm1', 0)`); err != nil {
+		if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES ('openai-chat', 'badkey', 'https://invalid', 'not-a-valid-ciphertext')`); err != nil {
+			t.Fatalf("seed badkey provider: %v", err)
+		}
+		if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, chain_order) SELECT id, 'chat', 'm1', 0 FROM model_providers WHERE name = 'badkey'`); err != nil {
 			t.Fatal(err)
 		}
 		res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": "在吗"})
@@ -193,14 +205,13 @@ func TestChatDecryptFailureChain(t *testing.T) {
 		}
 	})
 
-	// 混合跳过不触发 500：只有「全部因解 Key 失败」才算解密问题，
-	// 其余供应商因无模型跳过时仍按链空 → 423。
-	t.Run("坏 Key 与无模型混合跳过返回 423", func(t *testing.T) {
+	// 链上没有条目（供应商存在但未挂任何 chat 模型）→ 链空 → 423，
+	// 不因「有供应商」就误判为解密问题。
+	t.Run("供应商无模型条目时按链空返回 423", func(t *testing.T) {
 		ts, token, _ := newPostTestEnv(t)
-		if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', 'badkey', 'https://invalid', 'not-a-valid-ciphertext', 'm1', 0)`); err != nil {
-			t.Fatal(err)
+		if _, err := ts.db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES ('openai-chat', 'nomodel', 'https://invalid', 'some-cipher')`); err != nil {
+			t.Fatalf("seed nomodel provider: %v", err)
 		}
-		seedNamedProvider(t, ts, "openai-chat", "nomodel", "", "https://invalid", 1)
 		res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": "在吗"})
 		body := sseBody(t, res)
 		if res.StatusCode != http.StatusLocked {
@@ -212,15 +223,15 @@ func TestChatDecryptFailureChain(t *testing.T) {
 	})
 }
 
-// TestChatModelParamsFallbackToUnset default_model 手填了无参数条目的模型名时，
-// 参数按未设置降级（不传），不报错。
+// TestChatModelParamsFallbackToUnset 模型条目未设参数时，
+// 调用按未设置降级（不传该参数），不报错。
 func TestChatModelParamsFallbackToUnset(t *testing.T) {
 	ts, token, _ := newPostTestEnv(t)
 
 	srv, bodies := newCapturingChatUpstream(t)
 	id := seedNamedProvider(t, ts, "openai-chat", "manual", "gpt-x", srv.URL, 0)
-	// 参数只挂在另一个模型条目 gpt-y 上，default_model 的 gpt-x 无条目
-	if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, model_id, temperature, max_tokens) VALUES (?, 'gpt-y', 0.7, 2048)`, id); err != nil {
+	// 参数只挂在另一个模型条目 gpt-y 上；gpt-x 的条目无参数
+	if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, chain_order) VALUES (?, 'chat', 'gpt-y', 0.7, 2048, 1)`, id); err != nil {
 		t.Fatalf("seed provider_models: %v", err)
 	}
 

@@ -396,7 +396,7 @@ func TestMapTileRefererFallback(t *testing.T) {
 	}
 }
 
-// 天地图分支请求头（实测 2026-09，见 DESIGN §4.7）：
+// 天地图分支请求头（实测 2026-09）：
 // WAF 对非浏览器 UA 一律 418，即使 Referer 在 key 白名单内；Referer 必须透传页面真实来源。
 func TestMapTileTiandituHeaders(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/map/tile?z=4&x=13&y=5", nil)

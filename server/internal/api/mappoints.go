@@ -123,7 +123,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	// 删除对方创建的足迹 → 站内通知创建者（自删静默；内容删除仅站内，REQUIREMENTS §4.8）
+	// 删除对方创建的足迹 → 站内通知创建者（自删静默；内容删除仅站内）
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
 		CreatorID: p.CreatedBy, DeleterID: claims.UserID, DeleterName: claims.Username,
 		EventType: "map_point_deleted", TargetType: "map_point", TargetID: id,

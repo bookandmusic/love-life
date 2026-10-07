@@ -42,6 +42,43 @@ func (d *DB) ToggleFavorite(ctx context.Context, postID, userID int64) (favorite
 	return true, err
 }
 
+// SetLike / SetFavorite 幂等「设为」语义（propose_reaction 用）：
+// 与目标状态一致时不动（changed=false），不一致时置为目标状态。
+// toggle 语义下模型不知道当前状态，「点个赞」有约 50% 概率变成取消——设为语义从接口形状上消除。
+func (d *DB) SetLike(ctx context.Context, postID, userID int64, want bool) (changed bool, err error) {
+	var exists int
+	if err = d.QueryRowContext(ctx, `SELECT COUNT(*) FROM likes WHERE post_id = ? AND user_id = ?`, postID, userID).Scan(&exists); err != nil {
+		return false, err
+	}
+	has := exists > 0
+	if has == want {
+		return false, nil
+	}
+	if want {
+		_, err = d.ExecContext(ctx, `INSERT INTO likes (post_id, user_id) VALUES (?, ?)`, postID, userID)
+	} else {
+		_, err = d.ExecContext(ctx, `DELETE FROM likes WHERE post_id = ? AND user_id = ?`, postID, userID)
+	}
+	return err == nil, err
+}
+
+func (d *DB) SetFavorite(ctx context.Context, postID, userID int64, want bool) (changed bool, err error) {
+	var exists int
+	if err = d.QueryRowContext(ctx, `SELECT COUNT(*) FROM favorites WHERE post_id = ? AND user_id = ?`, postID, userID).Scan(&exists); err != nil {
+		return false, err
+	}
+	has := exists > 0
+	if has == want {
+		return false, nil
+	}
+	if want {
+		_, err = d.ExecContext(ctx, `INSERT INTO favorites (post_id, user_id) VALUES (?, ?)`, postID, userID)
+	} else {
+		_, err = d.ExecContext(ctx, `DELETE FROM favorites WHERE post_id = ? AND user_id = ?`, postID, userID)
+	}
+	return err == nil, err
+}
+
 // GetInteractions 批量取互动聚合（动态列表/详情共用）。
 func (d *DB) GetInteractions(ctx context.Context, postIDs []int64, viewerID int64) (map[int64]*PostInteraction, error) {
 	out := map[int64]*PostInteraction{}

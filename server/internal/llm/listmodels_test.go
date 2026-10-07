@@ -132,7 +132,7 @@ func TestListModelsErrors(t *testing.T) {
 		if err == nil {
 			t.Fatal("want error for 401")
 		}
-		// 非 2xx → 包含 HTTP 状态与上游片段（AD1 fetch-models 的 502 包装在 handler 层）
+		// 非 2xx → 包含 HTTP 状态与上游片段（fetch-models 的 502 包装在 handler 层）
 		if !strings.Contains(err.Error(), "HTTP 401") {
 			t.Errorf("err = %v, want HTTP 401 marker", err)
 		}

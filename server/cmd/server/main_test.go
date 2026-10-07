@@ -36,20 +36,20 @@ func TestSearchResolverDecryptsProviderKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encrypt: %v", err)
 	}
-	res, err := db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', '本地', 'http://127.0.0.1:11434/v1', ?, '', 0)`, enc)
+	res, err := db.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES ('openai-chat', '本地', 'http://127.0.0.1:11434/v1', ?)`, enc)
 	if err != nil {
 		t.Fatalf("insert provider: %v", err)
 	}
 	id, _ := res.LastInsertId()
-	if err := db.SaveEmbeddingConfig(ctx, id, "bge-m3"); err != nil {
-		t.Fatalf("save config: %v", err)
+	if _, err := db.CreateModel(ctx, &store.ProviderModel{ProviderID: id, Kind: "embedding", ModelID: "bge-m3"}); err != nil {
+		t.Fatalf("create embedding model: %v", err)
 	}
 
 	got, ok := searchResolver(db, seed)(ctx)
 	if !ok {
 		t.Fatal("ok=false, want configured")
 	}
-	if got.APIKey != "sk-embed" || got.Model != "bge-m3" || got.BaseURL != "http://127.0.0.1:11434/v1" {
+	if got[0].APIKey != "sk-embed" || got[0].Model != "bge-m3" || got[0].BaseURL != "http://127.0.0.1:11434/v1" {
 		t.Fatalf("config = %+v", got)
 	}
 }
@@ -88,8 +88,8 @@ func TestBackfillOnceRespectsLimitAndSkipsIndexed(t *testing.T) {
 	if _, err := db.CreatePostWithMedia(ctx, &store.Post{AuthorID: 1, Content: ""}, nil); err != nil {
 		t.Fatalf("create empty post: %v", err)
 	}
-	ix, err := search.Open(t.TempDir(), func(context.Context) (search.Config, bool) {
-		return search.Config{BaseURL: up.URL, APIKey: "k", Model: "m"}, true
+	ix, err := search.Open(t.TempDir(), func(context.Context) ([]search.Config, bool) {
+		return []search.Config{{BaseURL: up.URL, APIKey: "k", Model: "m"}}, true
 	})
 	if err != nil {
 		t.Fatalf("open index: %v", err)
@@ -115,7 +115,7 @@ func TestPurgeCutoff(t *testing.T) {
 	if got, want := purgeCutoff(now, 30), time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC); !got.Equal(want) {
 		t.Fatalf("purgeCutoff = %v, want %v", got, want)
 	}
-	// 保留期边界值：7 与 365 天（DESIGN §5.2 值域）
+	// 保留期边界值：7 与 365 天（ 值域）
 	if got, want := purgeCutoff(now, 7), time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC); !got.Equal(want) {
 		t.Fatalf("purgeCutoff(7) = %v, want %v", got, want)
 	}
@@ -200,7 +200,7 @@ func TestRunPurgeSkipsOutOfRangeRetention(t *testing.T) {
 		t.Fatalf("seed post: %v", err)
 	}
 	zero := int64(0)
-	if err := db.SaveSecuritySettings(context.Background(), &zero, nil); err != nil {
+	if err := db.SaveSecuritySettings(context.Background(), &zero); err != nil {
 		t.Fatalf("save settings: %v", err)
 	}
 
@@ -224,13 +224,13 @@ func TestEmbeddingUsageRecordsToAIUsageLogs(t *testing.T) {
 	defer db.Close()
 
 	// 先落嵌入配置：模型名须「调用时实时解析」（启动时固化会记成兜底名 embedding）
-	res, err := db.Exec("INSERT INTO model_providers (api_type, name, base_url, api_key_enc, default_model, sort_order) VALUES ('openai-chat', '本地', 'http://127.0.0.1:1/v1', 'x', '', 0)")
+	res, err := db.Exec("INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES ('openai-chat', '本地', 'http://127.0.0.1:1/v1', 'x')")
 	if err != nil {
 		t.Fatalf("seed provider: %v", err)
 	}
 	pid, _ := res.LastInsertId()
-	if err := db.SaveEmbeddingConfig(t.Context(), pid, "bge-m3"); err != nil {
-		t.Fatalf("save embedding config: %v", err)
+	if _, err := db.CreateModel(t.Context(), &store.ProviderModel{ProviderID: pid, Kind: "embedding", ModelID: "bge-m3"}); err != nil {
+		t.Fatalf("create embedding model: %v", err)
 	}
 
 	u := embeddingUsage{db: db}

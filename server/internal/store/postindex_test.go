@@ -16,8 +16,8 @@ type fakePostIndex struct {
 	err       error
 }
 
-func (f *fakePostIndex) IndexPost(_ context.Context, id int64, title, content, location string) error {
-	f.indexed = append(f.indexed, fmt.Sprintf("%d|%s|%s|%s", id, title, content, location))
+func (f *fakePostIndex) IndexPost(_ context.Context, id int64, content, location string) error {
+	f.indexed = append(f.indexed, fmt.Sprintf("%d|%s|%s", id, content, location))
 	return f.err
 }
 
@@ -47,14 +47,13 @@ func TestPostIndexHookOnCreateDeleteRestore(t *testing.T) {
 
 	id, err := db.CreatePostWithMedia(ctx, &Post{
 		AuthorID:     1,
-		Title:        NullStr("今天"),
 		Content:      "去看了海",
 		LocationName: NullStr("青岛"),
 	}, nil)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	want := fmt.Sprintf("%d|今天|去看了海|青岛", id)
+	want := fmt.Sprintf("%d|去看了海|青岛", id)
 	if len(idx.indexed) != 1 || idx.indexed[0] != want {
 		t.Fatalf("indexed = %v, want [%s]", idx.indexed, want)
 	}

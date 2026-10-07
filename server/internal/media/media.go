@@ -1,4 +1,4 @@
-// Package media 媒体上传管线（DESIGN 4.8）：两段式上传（临时区→发布转正）、
+// Package media 媒体上传管线：两段式上传（临时区→发布转正）、
 // 图片同步缩略图、视频占位图（零 ffmpeg 依赖）、短期签名 URL。
 package media
 
@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ type tempMeta struct {
 	Size     int64   `json:"size"`
 	Duration float64 `json:"duration,omitempty"`
 	TakenAt  string  `json:"taken_at,omitempty"`
+	OwnerID  int64   `json:"owner_id,omitempty"` // 上传者：discard 归属校验用（ARCHITECTURE「媒体上传管线」）
 }
 
 // Promoted 转正结果：正式区相对路径 + 媒体元数据。
@@ -92,7 +94,8 @@ func kindOf(filename string) (kind, ext string, err error) {
 }
 
 // SaveTemp 上传至临时区并同步生成缩略图；返回临时 token（发布时引用）。
-func (p *Pipeline) SaveTemp(r io.Reader, filename string) (*Uploaded, error) {
+// ownerID 记录上传者，discard 撤销时校验归属（防跨用户误删）。
+func (p *Pipeline) SaveTemp(r io.Reader, filename string, ownerID int64) (*Uploaded, error) {
 	kind, ext, err := kindOf(filename)
 	if err != nil {
 		return nil, err
@@ -135,17 +138,17 @@ func (p *Pipeline) SaveTemp(r io.Reader, filename string) (*Uploaded, error) {
 			return nil, fmt.Errorf("生成缩略图失败: %w", thumbErr)
 		}
 		up.Width, up.Height = w, h
-		// A1c：EXIF 拍摄时间（缺失回退上传时间，落库时处理），GPS 忽略（DESIGN 4.8）
+		// EXIF 拍摄时间（缺失回退上传时间，落库时处理），GPS 忽略
 		up.TakenAt = EXIFDateTimeOriginal(rawPath)
 	}
 	if kind == "audio" {
-		// D4：音频时长（秒）；解析失败不阻塞上传（duration 留空）
+		// 音频时长（秒）；解析失败不阻塞上传（duration 留空）
 		if d, err := audioDuration(rawPath); err == nil && d > 0 {
 			up.Duration = d
 		}
 	}
 
-	metaBytes, _ := json.Marshal(tempMeta{Kind: kind, Width: up.Width, Height: up.Height, Size: size, Duration: up.Duration, TakenAt: up.TakenAt})
+	metaBytes, _ := json.Marshal(tempMeta{Kind: kind, Width: up.Width, Height: up.Height, Size: size, Duration: up.Duration, TakenAt: up.TakenAt, OwnerID: ownerID})
 	if err := os.WriteFile(filepath.Join(tmpDir, token+".json"), metaBytes, 0o600); err != nil {
 		_ = os.Remove(rawPath)
 		return nil, err
@@ -264,6 +267,38 @@ func (p *Pipeline) Delete(relPaths ...string) {
 	}
 }
 
+// Discard 主动撤销临时文件：放弃 / 取消 / 卡片过期 / 把关作废时由客户端调用。
+// 逐个读 sidecar 校验归属后删 tmp 文件与缩略图（含 sidecar）；幂等——token 不存在或
+// 归属不符跳过不报错；返回实际清理数。ARCHITECTURE「媒体上传管线」主动撤销。
+func (p *Pipeline) Discard(tokens []string, userID int64) int {
+	var re = regexp.MustCompile(`^[0-9a-f]{32}$`)
+	removed := 0
+	for _, token := range tokens {
+		if !re.MatchString(token) {
+			continue // 非法 token 一律跳过（防路径穿越与误删）
+		}
+		raw, thumb, ok := p.tmpPaths(token)
+		if !ok {
+			continue
+		}
+		sidecar := filepath.Join(p.dataDir, "media", "tmp", token+".json")
+		if b, err := os.ReadFile(sidecar); err == nil {
+			var meta tempMeta
+			if json.Unmarshal(b, &meta) == nil && meta.OwnerID != 0 && meta.OwnerID != userID {
+				continue // 归属不符：不是你的临时文件，跳过
+			}
+		}
+		if os.Remove(raw) == nil {
+			removed++
+		}
+		if thumb != "" {
+			_ = os.Remove(thumb)
+		}
+		_ = os.Remove(sidecar)
+	}
+	return removed
+}
+
 // CleanTmp 清理临时区孤儿（上传后 24h 未发布引用）。
 func (p *Pipeline) CleanTmp(olderThan time.Duration) int {
 	cutoff := time.Now().Add(-olderThan)
@@ -288,9 +323,9 @@ func (p *Pipeline) CleanTmp(olderThan time.Duration) int {
 	return removed
 }
 
-// ---- 签名 URL（DESIGN 4.5：短期签名）----
+// ---- 签名 URL（短期签名）----
 
-// signedURLTTL 媒体签名 URL 有效期（DESIGN 4.5 默认 15 分钟）。
+// signedURLTTL 媒体签名 URL 有效期（默认 15 分钟）。
 const signedURLTTL = 15 * time.Minute
 
 func (p *Pipeline) signPayload(mediaID int64, variant string, exp time.Time) string {
@@ -320,7 +355,7 @@ func (p *Pipeline) signAvatarPayload(userID int64, exp time.Time) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
-// SignedAvatarURL 头像签名 URL（独立通道，不归属 media 表；GAP16）。
+// SignedAvatarURL 头像签名 URL（独立通道，不归属 media 表）。
 func (p *Pipeline) SignedAvatarURL(userID int64) string {
 	exp := time.Now().Add(signedURLTTL)
 	return fmt.Sprintf("/api/v1/avatar/%d?exp=%d&sig=%s", userID, exp.Unix(), p.signAvatarPayload(userID, exp))
@@ -336,7 +371,7 @@ func (p *Pipeline) VerifyAvatarSig(userID int64, expStr, sig string) bool {
 }
 
 // SaveAvatar 保存头像图片到正式区（avatars/<YYYY>/<MM>/<rand>.<ext>），返回相对数据目录的路径。
-// 仅接受照片格式；视频/音频一律拒绝。独立通道，不走媒体表与临时区两段式流程（GAP16）。
+// 仅接受照片格式；视频/音频一律拒绝。独立通道，不走媒体表与临时区两段式流程。
 func (p *Pipeline) SaveAvatar(r io.Reader, filename string) (string, error) {
 	kind, ext, err := kindOf(filename)
 	if err != nil {
@@ -378,8 +413,8 @@ func (p *Pipeline) Open(rel string) (*os.File, error) {
 	return os.Open(abs)
 }
 
-// PlaceholderThumb 视频缩略图占位（零 ffmpeg 依赖，DESIGN 4.8）。
-// AudioPlaceholder 音频缩略图占位（D4，mock 契约同款：蓝底 + 「音频 N」）。
+// PlaceholderThumb 视频缩略图占位（零 ffmpeg 依赖）。
+// AudioPlaceholder 音频缩略图占位（mock 契约同款：蓝底 + 「音频 N」）。
 func AudioPlaceholder(id int64) (string, []byte) {
 	svg := "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"512\" height=\"512\"><rect width=\"100%\" height=\"100%\" fill=\"#a0c4ff\"/><text x=\"50%\" y=\"50%\" font-size=\"28\" fill=\"#fff\" text-anchor=\"middle\" dominant-baseline=\"middle\">音频 " + fmt.Sprintf("%d", id) + "</text></svg>"
 	return "image/svg+xml;charset=utf-8", []byte(svg)

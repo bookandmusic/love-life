@@ -12,7 +12,6 @@ import (
 type Post struct {
 	ID           int64
 	AuthorID     int64
-	Title        sql.NullString
 	Content      string
 	Mood         sql.NullString
 	LocationName sql.NullString
@@ -38,7 +37,7 @@ type MediaRow struct {
 	AuthorID  int64 // 经 JOIN posts 取（媒体无独立作者，mock 口径=动态作者）
 }
 
-// SortTime 时间轴排序键：taken_at 优先，回退 created_at（A1c 口径，mock 一致）。
+// SortTime 时间轴排序键：taken_at 优先，回退 created_at（口径，mock 一致）。
 func (m *MediaRow) SortTime() string {
 	if m.TakenAt.Valid && m.TakenAt.String != "" {
 		return m.TakenAt.String
@@ -53,11 +52,11 @@ func NullStr(s string) sql.NullString {
 
 // indexPost / unindexPost 转发索引钩子。索引是派生数据：
 // 失败只告警，绝不反向阻断动态落库（未配置嵌入模型时钩子为空）。
-func (d *DB) indexPost(ctx context.Context, id int64, title, content, location string) {
+func (d *DB) indexPost(ctx context.Context, id int64, content, location string) {
 	if d.postIndex == nil {
 		return
 	}
-	if err := d.postIndex.IndexPost(ctx, id, title, content, location); err != nil {
+	if err := d.postIndex.IndexPost(ctx, id, content, location); err != nil {
 		slog.Warn("index post failed", "post_id", id, "err", err)
 	}
 }
@@ -80,8 +79,8 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 	defer func() { _ = tx.Rollback() }()
 
 	res, err := tx.ExecContext(ctx,
-		`INSERT INTO posts (author_id, title, content, mood, location_name, point_id) VALUES (?, ?, ?, ?, ?, ?)`,
-		p.AuthorID, p.Title, p.Content, p.Mood, p.LocationName, p.PointID)
+		`INSERT INTO posts (author_id, content, mood, location_name, point_id) VALUES (?, ?, ?, ?, ?)`,
+		p.AuthorID, p.Content, p.Mood, p.LocationName, p.PointID)
 	if err != nil {
 		return 0, err
 	}
@@ -99,21 +98,21 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
-	d.indexPost(ctx, postID, p.Title.String, p.Content, p.LocationName.String)
+	d.indexPost(ctx, postID, p.Content, p.LocationName.String)
 	return postID, nil
 }
 
-const postColumns = `p.id, p.author_id, p.title, p.content, p.mood, p.location_name, p.point_id, p.created_at, p.deleted_at, COALESCE(u.nickname, u.username)`
+const postColumns = `p.id, p.author_id, p.content, p.mood, p.location_name, p.point_id, p.created_at, p.deleted_at, COALESCE(u.nickname, u.username)`
 
 func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 	var p Post
-	err := row.Scan(&p.ID, &p.AuthorID, &p.Title, &p.Content, &p.Mood, &p.LocationName, &p.PointID, &p.CreatedAt, &p.DeletedAt, &p.AuthorNickname)
+	err := row.Scan(&p.ID, &p.AuthorID, &p.Content, &p.Mood, &p.LocationName, &p.PointID, &p.CreatedAt, &p.DeletedAt, &p.AuthorNickname)
 	return &p, err
 }
 
 // ListPosts 分页倒序；deleted=show 时含已删（后台回收站用，默认过滤）。
 // memories=true 时只取「那年今日」——历年在今天同月同日发布的动态（**不含当年**，
-// REQUIREMENTS §4.1「同月同日历史回忆」）；过滤发生在分页之前，total 为过滤后总数（契约同 mock）。
+// 「同月同日历史回忆」）；过滤发生在分页之前，total 为过滤后总数（契约同 mock）。
 // 月/年判定按部署者本地时区（库内 created_at 为 UTC，见 timeutil.go 时间口径）。
 func (d *DB) ListPosts(ctx context.Context, page, pageSize int, memories bool) ([]*Post, int, error) {
 	// 两个查询共用 WHERE，故一律用 p. 限定列名（users 也有 created_at，不限定会 ambiguous）
@@ -188,8 +187,8 @@ func (d *DB) GetPost(ctx context.Context, id int64) (*Post, error) {
 	return p, err
 }
 
-// SoftDeletePost 软删除动态并级联其媒体（媒体只能随动态存在，D8 口径）；
-// actorType ∈ ('user','ai')、actorID 为发起人，供回收站「删除者」列（AD5）。
+// SoftDeletePost 软删除动态并级联其媒体（媒体只能随动态存在， 口径）；
+// actorType ∈ ('user','ai')、actorID 为发起人，供回收站「删除者」列。
 func (d *DB) SoftDeletePost(ctx context.Context, id int64, actorType string, actorID int64) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
@@ -258,7 +257,7 @@ func scanMediaRow(row interface{ Scan(...any) error }) (*MediaRow, error) {
 	return &m, err
 }
 
-// GetMediaByIDs 批量取媒体（reurl，D1）：仅未删除的命中项，入参无效 id 自然跳过。
+// GetMediaByIDs 批量取媒体（reurl）：仅未删除的命中项，入参无效 id 自然跳过。
 func (d *DB) GetMediaByIDs(ctx context.Context, ids []int64) ([]*MediaRow, error) {
 	if len(ids) == 0 {
 		return nil, nil
@@ -300,9 +299,21 @@ func (d *DB) GetMedia(ctx context.Context, id int64) (*MediaRow, error) {
 // ListPostsOnMonthDay 那年今日（get_today_in_history）：历年在今天同月同日创建的动态，
 // yearsBack 限制回看年数上限，按时间倒序。
 // 月/年判定按**部署者本地时区**（库内 created_at 为 UTC，见 timeutil.go 时间口径）。
-func (d *DB) ListPostsOnMonthDay(ctx context.Context, yearsBack int, limit int) ([]*Post, error) {
+func (d *DB) ListPostsOnMonthDay(ctx context.Context, yearsBack int, limit int) ([]*Post, int, error) {
 	if yearsBack <= 0 {
 		yearsBack = 50
+	}
+	// 同一 WHERE 下推计数：列表卡的 total/more 要用真值，不能拿「命中数 == limit」猜
+	// （AI模式设计「计数与翻页」：真实余量 total - len(records)，未知则两者都省略）。
+	const where = ` FROM posts p
+		WHERE p.deleted_at IS NULL
+		  AND strftime('%m-%d', p.created_at, 'localtime') = strftime('%m-%d', 'now', 'localtime')
+		  AND strftime('%Y', p.created_at, 'localtime') < strftime('%Y', 'now', 'localtime')
+		  AND p.created_at >= datetime('now', ?)`
+	since := fmt.Sprintf("-%d years", yearsBack)
+	var total int
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*)`+where, since).Scan(&total); err != nil {
+		return nil, 0, err
 	}
 	rows, err := d.QueryContext(ctx, `SELECT `+postColumns+`
 		FROM posts p JOIN users u ON u.id = p.author_id
@@ -310,20 +321,20 @@ func (d *DB) ListPostsOnMonthDay(ctx context.Context, yearsBack int, limit int) 
 		  AND strftime('%m-%d', p.created_at, 'localtime') = strftime('%m-%d', 'now', 'localtime')
 		  AND strftime('%Y', p.created_at, 'localtime') < strftime('%Y', 'now', 'localtime')
 		  AND p.created_at >= datetime('now', ?)
-		ORDER BY p.created_at DESC LIMIT ?`, fmt.Sprintf("-%d years", yearsBack), limit)
+		ORDER BY p.created_at DESC LIMIT ?`, since, limit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 	var list []*Post
 	for rows.Next() {
 		p, err := scanPost(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		list = append(list, p)
 	}
-	return list, rows.Err()
+	return list, total, rows.Err()
 }
 
 // ListPostsByPoint 某地点下的动态（get_location_posts）：动态带地点时写入的 point_id 反查。
@@ -350,17 +361,19 @@ func (d *DB) ListPostsByPoint(ctx context.Context, pointID int64, limit int) ([]
 // TimelinePostCounts 时间线统计（get_timeline_summary）：无参按年分布；
 // year 非空按该年月度分布；month(YYYY-MM) 非空按该月日度分布。
 func (d *DB) TimelinePostCounts(ctx context.Context, year, month string) ([]PeriodCount, error) {
+	// 已软删动态不进统计（PRODUCT「卡片体系」统计概览卡「数字准且即时」；
+	// 与同工具 postTotal 的 deleted_at IS NULL 口径一致，否则同卡自相矛盾）。
 	group := "strftime('%Y', created_at)"
-	where := ""
+	where := " WHERE deleted_at IS NULL"
 	args := []any{}
 	switch {
 	case month != "":
 		group = "strftime('%Y-%m-%d', created_at)"
-		where = " WHERE strftime('%Y-%m', created_at) = ?"
+		where = " WHERE deleted_at IS NULL AND strftime('%Y-%m', created_at) = ?"
 		args = append(args, month)
 	case year != "":
 		group = "strftime('%Y-%m', created_at)"
-		where = " WHERE strftime('%Y', created_at) = ?"
+		where = " WHERE deleted_at IS NULL AND strftime('%Y', created_at) = ?"
 		args = append(args, year)
 	}
 	rows, err := d.QueryContext(ctx, `SELECT `+group+` AS period, COUNT(*) FROM posts`+where+`

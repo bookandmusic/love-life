@@ -81,13 +81,7 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
 	}
 
-	var choice struct {
-		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	}
+	var choice Choice
 	for _, block := range raw.Content {
 		switch block.Type {
 		case "text":
@@ -185,4 +179,31 @@ func buildAnthropicTools(tools []Tool) []any {
 		out = append(out, entry)
 	}
 	return out
+}
+
+// StreamChat 过渡实现：整块请求一次，拆成单个 Delta 回调（不阻塞 D3 其余部分；
+// 各协议原生流式随后逐个补齐—— anthropic content_block_delta / openai-responses
+// response.*.delta / gemini alt=sse）。
+func (self anthropicAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+	out, err := self.Chat(ctx, baseURL, apiKey, model, req)
+	if err != nil {
+		return "", err
+	}
+	if len(out.Choices) == 0 {
+		return "", nil
+	}
+	m := out.Choices[0].Message
+	if m.Reasoning != "" {
+		onDelta(Delta{Reasoning: m.Reasoning})
+	}
+	if m.Content != "" {
+		onDelta(Delta{Content: m.Content})
+	}
+	for i := range m.ToolCalls {
+		onDelta(Delta{ToolCall: &ToolCallDelta{Index: i, ID: m.ToolCalls[i].ID, Name: m.ToolCalls[i].Function.Name,
+			Arguments: m.ToolCalls[i].Function.Arguments}})
+	}
+	u := out.Usage
+	onDelta(Delta{Usage: &u})
+	return out.Choices[0].FinishReason, nil
 }

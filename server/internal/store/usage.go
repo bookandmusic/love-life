@@ -5,10 +5,10 @@ import (
 	"time"
 )
 
-// ---- L5 AI 调用统计 ----
+// ---- AI 调用统计 ----
 //
 // 每次模型调用落一行（tokens / latency / 状态），供仪表盘 ai-usage 近 14 天聚合
-// 与审计日志的 latencyMs 消费（AD3 / AD7）。
+// 与审计日志的 latencyMs 消费（/）。
 
 // AIUsageLog 一行调用统计。
 type AIUsageLog struct {
@@ -68,7 +68,7 @@ func (d *DB) AIUsageSince(ctx context.Context, days int) ([]*AIUsagePoint, error
 	return out, rows.Err()
 }
 
-// ---- AD7 审计日志查询 ----
+// ---- 审计日志查询 ----
 
 // AuditEntry 后台审计条目（契约 routes.mjs /admin/audit）。
 type AuditEntry struct {
@@ -84,7 +84,7 @@ type AuditEntry struct {
 // ListAuditLogs 审计日志列表，最新在前；actor 解析为显示名。
 //
 // 注意 actor_id 的语义按类型不同：user 与 ai 存的是「发起人用户 ID」
-// （Q1 刻意修正：读工具丢失发起人关联），pat 存的是令牌 ID。
+// （刻意修正：读工具丢失发起人关联），pat 存的是令牌 ID。
 // 故 ai 行解析为发起人显示名并前置「AI ·」以区分通道，不能拿它去 JOIN
 // model_providers——用户 ID 与供应商 ID 数值空间重叠，会串出错误的供应商名。
 func (d *DB) ListAuditLogs(ctx context.Context) ([]*AuditEntry, error) {

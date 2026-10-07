@@ -13,7 +13,7 @@ const (
 )
 
 // LoginLimiter 登录限速（安全基线三件套之一）：同一 用户名+IP 连续失败 loginMaxFails 次即锁定 loginLockWindow。
-// 单进程内存态即可——重启清零对本场景可接受（DESIGN 11.2）。
+// 单进程内存态即可——重启清零对本场景可接受。
 type LoginLimiter struct {
 	mu          sync.Mutex
 	fails       map[string]int

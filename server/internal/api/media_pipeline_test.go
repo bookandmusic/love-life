@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bookandmusic/love-life/server/internal/notify"
 )
 
 // newMediaPost 发一条带单图动态，返回 mediaID。
@@ -110,91 +108,73 @@ func jsonNumber(n int64) string {
 	return string(b)
 }
 
-// TestMonthlyAlbumVirtual 月度相册虚拟口径（D4）：详情=该月未归属媒体；
-// 媒体入手动相册后从月度视图消失；月度行不再占用归属（item_count 同步）。
-func TestMonthlyAlbumVirtual(t *testing.T) {
+// TestMonthGroupAggregation 月度分组聚合口径：详情=该月未归属媒体（查询即时聚合，非实体）；
+// 媒体入手动相册后即时从月度组消失。
+func TestMonthGroupAggregation(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 	mediaID := newMediaPost(t, ts, adminToken)
+	cur := time.Now().Format("2006-01")
 
-	// cron 生成月度相册（下月 1 日视角 → 上月=本月）
-	now := time.Now()
-	dp := notify.New(ts.db)
-	dp.CheckMonthlyAlbum(t.Context(), time.Date(now.Year(), now.Month()+1, 1, 9, 0, 0, 0, time.Local))
-
-	// 找月度相册 id
-	res := doJSON(t, "GET", ts.URL+"/api/v1/albums?include_hidden=1", adminToken, nil)
-	var list struct {
+	// 分组列表出现本月组，详情含该媒体
+	res := doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
+	var groups struct {
 		Items []struct {
-			ID        int64  `json:"id"`
-			Type      string `json:"type"`
+			MonthKey  string `json:"month_key"`
 			ItemCount int    `json:"item_count"`
 		} `json:"items"`
 	}
-	_ = json.NewDecoder(res.Body).Decode(&list)
+	_ = json.NewDecoder(res.Body).Decode(&groups)
 	res.Body.Close()
-	var monthlyID int64
-	for _, al := range list.Items {
-		if al.Type == "monthly" {
-			monthlyID = al.ID
-		}
-	}
-	if monthlyID == 0 {
-		t.Fatal("monthly album not generated")
+	if len(groups.Items) != 1 || groups.Items[0].MonthKey != cur || groups.Items[0].ItemCount != 1 {
+		t.Fatalf("month groups: %+v", groups.Items)
 	}
 
-	// 虚拟详情：未归属的本月媒体在列
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/"+itoa(monthlyID), adminToken, nil)
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
 	var detail struct {
-		Album struct {
-			ItemCount int `json:"item_count"`
-		} `json:"album"`
-		Media []struct {
+		MonthKey string `json:"month_key"`
+		Media    []struct {
 			ID int64 `json:"id"`
 		} `json:"media"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&detail)
 	res.Body.Close()
-	if len(detail.Media) != 1 || detail.Media[0].ID != mediaID || detail.Album.ItemCount != 1 {
-		t.Fatalf("monthly virtual detail: %+v", detail)
+	if len(detail.Media) != 1 || detail.Media[0].ID != mediaID {
+		t.Fatalf("month media detail: %+v", detail)
 	}
 
-	// 媒体加入手动相册后，月度视图应不再包含（且不被「已归属」卡死）
+	// 媒体加入手动相册后，月度组即时消失（归档即移出，无需任何任务）
 	al := createAlbum(t, ts, adminToken, "手动册")
 	res = doJSON(t, "POST", ts.URL+"/api/v1/albums/"+itoa(al)+"/photos", adminToken, map[string]any{"media_ids": []int64{mediaID}})
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("add to manual after monthly existed: %d", res.StatusCode)
+		t.Fatalf("add to manual: %d", res.StatusCode)
 	}
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/"+itoa(monthlyID), adminToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&detail)
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&groups)
 	res.Body.Close()
-	if len(detail.Media) != 0 || detail.Album.ItemCount != 0 {
-		t.Fatalf("monthly must exclude owned media: %+v", detail)
+	if len(groups.Items) != 0 {
+		t.Fatalf("month group must vanish when all archived: %+v", groups.Items)
 	}
 }
 
-// TestIndependentMediaGone 独立媒体接口 410（需求 §4.5/166）。
+// TestIndependentMediaGone 独立媒体接口不存在（PRODUCT「相册（独立底部 tab）」：媒体仅随动态）。
 func TestIndependentMediaGone(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 
 	res := doJSON(t, "POST", ts.URL+"/api/v1/media", adminToken, nil)
-	var up struct{ Error, Message string }
-	_ = json.NewDecoder(res.Body).Decode(&up)
 	res.Body.Close()
-	if res.StatusCode != http.StatusGone || up.Error != "INDEPENDENT_MEDIA_DISABLED" {
-		t.Fatalf("POST /media: %d %+v", res.StatusCode, up)
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("POST /media: %d, want 404", res.StatusCode)
 	}
 
 	res = doJSON(t, "DELETE", ts.URL+"/api/v1/media/1", adminToken, nil)
-	var del struct{ Error string }
-	_ = json.NewDecoder(res.Body).Decode(&del)
 	res.Body.Close()
-	if res.StatusCode != http.StatusGone || del.Error != "INDEPENDENT_MEDIA_DISABLED" {
-		t.Fatalf("DELETE /media/1: %d %+v", res.StatusCode, del)
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("DELETE /media/1: %d, want 404", res.StatusCode)
 	}
 }
 
-// TestReurl 批量重签（D1）：命中 + 无效跳过；签名 URL 可直接取回媒体。
+// TestReurl 批量重签：命中 + 无效跳过；签名 URL 可直接取回媒体。
 func TestReurl(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 	good := newMediaPost(t, ts, adminToken)
@@ -245,7 +225,7 @@ func TestReurl(t *testing.T) {
 	}
 }
 
-// TestTimelinePaged 时间轴分页（D5）：has_more/total/page/size + item 全字段。
+// TestTimelinePaged 时间轴分页：has_more/total/page/size + item 全字段。
 func TestTimelinePaged(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 	mediaID := newMediaPost(t, ts, adminToken)
@@ -296,5 +276,38 @@ func TestTimelinePaged(t *testing.T) {
 	res.Body.Close()
 	if cap.Size != 50 {
 		t.Fatalf("size cap: %d, want 50", cap.Size)
+	}
+}
+
+// TestMediaDiscard 主动撤销：上传者本人可撤销（幂等），他人 token 不越权，非法 token 跳过。
+func TestMediaDiscard(t *testing.T) {
+	ts, adminToken, girlToken := newPostTestEnv(t)
+
+	tok, code := uploadMedia(t, ts.URL, adminToken, "a.jpg", genJPEG(t))
+	if code != http.StatusOK || tok == "" {
+		t.Fatalf("upload: %d token=%q", code, tok)
+	}
+
+	// 他人撤销：归属不符 → discarded=0，文件仍在
+	res := doJSON(t, "POST", ts.URL+"/api/v1/media/discard", girlToken, map[string]any{"tokens": []string{tok}})
+	var out struct {
+		Discarded int `json:"discarded"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&out)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || out.Discarded != 0 {
+		t.Fatalf("cross-user discard: %d %+v", res.StatusCode, out)
+	}
+	// 本人撤销：discarded=1；重复调用幂等（discarded=0，不报错）
+	for i, want := range []int{1, 0} {
+		res = doJSON(t, "POST", ts.URL+"/api/v1/media/discard", adminToken, map[string]any{"tokens": []string{tok, "not-a-token", "zzz"}})
+		var out2 struct {
+			Discarded int `json:"discarded"`
+		}
+		_ = json.NewDecoder(res.Body).Decode(&out2)
+		res.Body.Close()
+		if res.StatusCode != http.StatusOK || out2.Discarded != want {
+			t.Fatalf("discard #%d: %d %+v, want discarded=%d", i, res.StatusCode, out2, want)
+		}
 	}
 }

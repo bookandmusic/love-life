@@ -18,7 +18,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
-// mapConfigAPI 地图瓦片源管理（DESIGN 4.7：多卡片，类型限 public/tianditu，至多一个使用中；
+// mapConfigAPI 地图瓦片源管理（多卡片，类型限 public/tianditu，至多一个使用中；
 // 密钥加密存储、只写不读、永不下发 APP）。
 type mapConfigAPI struct {
 	db        *store.DB
@@ -193,7 +193,7 @@ func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.item(s))
 }
 
-// tileGrantTTL 瓦片短时签名有效期（DESIGN §4.7）：一次签名覆盖全部坐标，APP 定时重取。
+// tileGrantTTL 瓦片短时签名有效期：一次签名覆盖全部坐标，APP 定时重取。
 const tileGrantTTL = 30 * time.Minute
 
 // tileSig 空间级签名：只绑 exp、不绑 z/x/y。瓦片坐标由客户端按视口实时算出，
@@ -332,7 +332,7 @@ func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
 		upstream = strings.ReplaceAll(upstream, "{y}", strconv.Itoa(y))
 	}
 
-	// 转发瓦片：按源设置上游请求头（实测见 DESIGN §4.7「转发请求头」）
+	// 转发瓦片：按源设置上游请求头（实测见 「转发请求头」）
 	// 用请求 context：客户端断开时取消上游请求
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstream, nil)
 	if err != nil {

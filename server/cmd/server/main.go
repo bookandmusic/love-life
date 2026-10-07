@@ -15,7 +15,6 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/config"
 	"github.com/bookandmusic/love-life/server/internal/crypto"
-	"github.com/bookandmusic/love-life/server/internal/llm"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/search"
@@ -28,7 +27,7 @@ import (
 const tmpMediaTTL = 24 * time.Hour
 
 // startJanitor 每小时例行：临时区孤儿媒体（tmpMediaTTL 未发布）、过期 refresh token、
-// 纪念日提醒检查（需求 §4.6 站内+外部同发；按「当日已发」幂等，每小时跑一次不会重复）。
+// 纪念日提醒检查（ 站内+外部同发；按「当日已发」幂等，每小时跑一次不会重复）。
 func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher, ix *search.Index) {
 	go func() {
 		// 启动即回填一轮：首次配置嵌入模型或换模型后不必等满一小时。
@@ -43,11 +42,7 @@ func startJanitor(db *store.DB, mp *media.Pipeline, dp *notify.Dispatcher, ix *s
 				slog.Warn("clean expired refresh tokens failed", "err", err)
 			}
 			dp.CheckAnniversaries(context.Background(), time.Now())
-			dp.CheckMonthlyAlbum(context.Background(), time.Now())
 			backfillSearch(context.Background(), db, ix)
-			if err := db.CleanExpiredChatMessages(context.Background()); err != nil {
-				slog.Warn("clean expired chat messages failed", "err", err)
-			}
 		}
 	}()
 }
@@ -184,35 +179,31 @@ func main() {
 	slog.Info("server stopped")
 }
 
-// searchResolver 组装一次嵌入调用所需的配置：后台选定的供应商 + 嵌入模型，
-// 密钥解密后传入（明文只在内存）。任一步不成立都视为「未配置」→ 检索回落关键词。
+// searchResolver 组装嵌入链：kind=embedding 的模型条目按链序（chain_order, id）逐个给出，
+// 密钥解密后传入（明文只在内存）。链为空或全部 Key 解密失败都视为「未配置」→ 检索回落关键词。
+// 嵌入条目只允许 openai-chat 供应商由写入侧校验，这里不再重复判定。
 func searchResolver(db *store.DB, seed []byte) search.Resolver {
 	// 供应商 Key 用 KeyFrom(数据目录密钥) 加密（与 chat 服务、供应商接口同口径）
 	key := crypto.KeyFrom(seed)
-	return func(ctx context.Context) (search.Config, bool) {
-		ec, err := db.GetEmbeddingConfig(ctx)
+	return func(ctx context.Context) ([]search.Config, bool) {
+		chain, err := db.ListModels(ctx, "embedding")
 		if err != nil {
-			slog.Warn("read embedding config failed", "err", err)
-			return search.Config{}, false
+			slog.Warn("read embedding chain failed", "err", err)
+			return nil, false
 		}
-		if ec.ProviderID == 0 || ec.Model == "" {
-			return search.Config{}, false
+		cfgs := make([]search.Config, 0, len(chain))
+		for _, e := range chain {
+			apiKey, derr := crypto.Decrypt(key, e.Provider.APIKeyEnc)
+			if derr != nil {
+				slog.Warn("embedding provider key decrypt failed", "provider_id", e.Provider.ID, "err", derr)
+				continue
+			}
+			cfgs = append(cfgs, search.Config{BaseURL: e.Provider.BaseURL, APIKey: apiKey, Model: e.Model.ModelID})
 		}
-		p, err := db.GetProvider(ctx, ec.ProviderID)
-		if err != nil {
-			slog.Warn("embedding provider unavailable, semantic search off", "provider_id", ec.ProviderID, "err", err)
-			return search.Config{}, false
+		if len(cfgs) == 0 {
+			return nil, false
 		}
-		if p.APIType != llm.APITypeOpenAIChat {
-			slog.Warn("embedding provider api_type unsupported, semantic search off", "provider_id", p.ID, "api_type", p.APIType)
-			return search.Config{}, false
-		}
-		apiKey, err := crypto.Decrypt(key, p.APIKeyEnc)
-		if err != nil {
-			slog.Warn("embedding provider key decrypt failed", "provider_id", p.ID, "err", err)
-			return search.Config{}, false
-		}
-		return search.Config{BaseURL: p.BaseURL, APIKey: apiKey, Model: ec.Model}, true
+		return cfgs, true
 	}
 }
 
@@ -232,10 +223,10 @@ func (u embeddingUsage) EmbeddingCalled(latency time.Duration, ok bool) {
 	if !ok {
 		status = "failed"
 	}
-	// 模型名每次实时解析：后台可随时改嵌入模型，启动时固化会让用量归类失真。
+	// 模型名每次实时解析：后台可随时改嵌入链，启动时固化会让用量归类失真。
 	model := "embedding"
-	if ec, err := u.db.GetEmbeddingConfig(context.Background()); err == nil && ec.Model != "" {
-		model = ec.Model
+	if chain, err := u.db.ListModels(context.Background(), "embedding"); err == nil && len(chain) > 0 {
+		model = chain[0].Model.ModelID
 	}
 	if err := u.db.InsertAIUsage(context.Background(), &store.AIUsageLog{
 		Model:     model,
@@ -270,7 +261,7 @@ func backfillOnce(ctx context.Context, db *store.DB, ix *search.Index, limit int
 			return filled, failed
 		}
 		for _, p := range posts {
-			if !search.Embeddable(p.Title.String, p.Content, p.LocationName.String) {
+			if !search.Embeddable(p.Content, p.LocationName.String) {
 				continue
 			}
 			ok, err := ix.Has(ctx, p.ID)
@@ -282,7 +273,7 @@ func backfillOnce(ctx context.Context, db *store.DB, ix *search.Index, limit int
 			if ok {
 				continue
 			}
-			if err := ix.IndexPost(ctx, p.ID, p.Title.String, p.Content, p.LocationName.String); err != nil {
+			if err := ix.IndexPost(ctx, p.ID, p.Content, p.LocationName.String); err != nil {
 				slog.Warn("backfill index post failed", "post_id", p.ID, "err", err)
 				failed++
 				continue
@@ -299,7 +290,7 @@ func backfillOnce(ctx context.Context, db *store.DB, ix *search.Index, limit int
 	return filled, failed
 }
 
-// bootstrapAdmin 部署口径：admin 由环境变量内置（DESIGN §3）。仅当库中无 admin 时创建；
+// bootstrapAdmin 部署口径：admin 由环境变量内置。仅当库中无 admin 时创建；
 // 已存在则忽略环境变量（改密走后台）。
 func bootstrapAdmin(db *store.DB, cfg config.Config) error {
 	n, err := db.CountAdmins(context.Background())

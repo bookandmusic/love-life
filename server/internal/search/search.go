@@ -1,5 +1,5 @@
 // Package search 动态的向量索引：chromem-go 持久库 + 复用既有模型供应商的 OpenAI 兼容
-// embeddings 接口（DESIGN §6.1 / §10.3）。
+// embeddings 接口。
 //
 // 向量属派生数据——可从动态正文重建，故不纳入备份语义；库落在数据目录内。
 package search
@@ -10,6 +10,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strconv"
 	"strings"
@@ -22,6 +23,10 @@ import (
 // ErrDisabled 未配置嵌入模型（调用方据此回落关键词检索）。
 var ErrDisabled = errors.New("语义检索未配置嵌入模型")
 
+// minSimilarity 语义检索相关性下限（余弦相似度，[-1,1]）：0.5 为常用起点，后续按实测调整。
+// 设为后台可配置项的增量需求另立项（当前为代码常量）。
+const minSimilarity float32 = 0.5
+
 // Config 一次嵌入调用所需信息；APIKey 为明文，由调用方解密后传入。
 type Config struct {
 	BaseURL string
@@ -29,9 +34,9 @@ type Config struct {
 	Model   string
 }
 
-// Resolver 取当前生效配置；ok=false 表示未配置。配置可在运行时变更（后台可改），
-// 故每次操作都取一遍——app_settings 只有两行，读取代价可忽略，省掉缓存失效逻辑。
-type Resolver func(ctx context.Context) (Config, bool)
+// Resolver 取当前嵌入链（按链序排列）；ok=false 表示链为空。配置可在运行时变更（后台可改），
+// 故每次操作都取一遍——模型条目个位数量级，读取代价可忽略，省掉缓存失效逻辑。
+type Resolver func(ctx context.Context) ([]Config, bool)
 
 // UsageRecorder 嵌入调用的用量记录端口（由 main 注入 store 侧实现，避免 search 依赖 store）。
 // 只记调用次数、耗时与成败——token 不可靠（见 embed 注释）。
@@ -77,17 +82,36 @@ func Open(dir string, resolve Resolver) (*Index, error) {
 // 非并发安全：须在启动后台任务与 HTTP 服务前调用一次。
 func (ix *Index) SetUsageRecorder(r UsageRecorder) { ix.usage = r }
 
-// Enabled 当前是否已配置嵌入模型。
+// Enabled 当前嵌入链是否非空。
 func (ix *Index) Enabled(ctx context.Context) bool {
 	_, ok := ix.resolve(ctx)
 	return ok
 }
 
-// embedText 拼装一条动态参与嵌入的文本：标题、正文、地点按序拼接，跳过空段
+// embedChainLocked 按链序逐个尝试嵌入，首个成功即返回其配置与向量；
+// 链上全部失败才报错（调用方据此回落关键词检索，ARCHITECTURE「语义检索」）。
+// 调用方必须已持有 ix.mu：嵌入在写锁内进行，保持「同一时刻至多一个上游调用」的串行语义。
+func (ix *Index) embedChainLocked(ctx context.Context, cfgs []Config, text string) (Config, []float32, error) {
+	var lastErr error
+	for _, cfg := range cfgs {
+		vec, err := ix.embed(ctx, cfg, text)
+		if err == nil {
+			return cfg, vec, nil
+		}
+		lastErr = err
+		slog.Warn("embedding chain entry failed, trying next", "model", cfg.Model, "err", err)
+	}
+	if lastErr == nil {
+		lastErr = ErrDisabled
+	}
+	return Config{}, nil, lastErr
+}
+
+// embedText 拼装一条动态参与嵌入的文本：正文、地点按序拼接，跳过空段
 // （部分供应商按 token 计费，空段只稀释语义）。
-func embedText(title, content, location string) string {
-	parts := make([]string, 0, 3)
-	for _, s := range []string{title, content, location} {
+func embedText(content, location string) string {
+	parts := make([]string, 0, 2)
+	for _, s := range []string{content, location} {
 		if s != "" {
 			parts = append(parts, s)
 		}
@@ -97,13 +121,13 @@ func embedText(title, content, location string) string {
 
 // Upsert 写入或覆盖一条动态的向量。
 func (ix *Index) Upsert(ctx context.Context, postID int64, content string) error {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	cfg, ok := ix.resolve(ctx)
+	cfgs, ok := ix.resolve(ctx)
 	if !ok {
 		return ErrDisabled
 	}
-	vec, err := ix.embed(ctx, cfg, content)
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	cfg, vec, err := ix.embedChainLocked(ctx, cfgs, content)
 	if err != nil {
 		return err
 	}
@@ -117,10 +141,11 @@ func (ix *Index) Upsert(ctx context.Context, postID int64, content string) error
 // Remove 移除一条动态的向量（软删或永久删除时调用）。
 // 维度未知（本进程未成功嵌入过）时无可操作对象，按无事返回。
 func (ix *Index) Remove(ctx context.Context, postID int64) error {
-	cfg, ok := ix.resolve(ctx)
+	cfgs, ok := ix.resolve(ctx)
 	if !ok {
 		return ErrDisabled
 	}
+	cfg := cfgs[0]
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	if ix.dim == 0 {
@@ -136,19 +161,19 @@ func (ix *Index) Remove(ctx context.Context, postID int64) error {
 // IndexPost / UnindexPost 是 store.PostIndexer 的实现：store 只转发动态原始字段，
 // 嵌入文本口径留在这里。未配置嵌入模型是**默认态而非失败**，故吞掉 ErrDisabled，
 // 避免默认部署下每次发/删动态都刷一条告警；其余错误照常上抛，由 store 记录。
-func (ix *Index) IndexPost(ctx context.Context, id int64, title, content, location string) error {
-	if !Embeddable(title, content, location) {
+func (ix *Index) IndexPost(ctx context.Context, id int64, content, location string) error {
+	if !Embeddable(content, location) {
 		return nil // 纯媒体/纯心情动态没有可嵌入文本：跳过，别让上游对空输入报错
 	}
-	if err := ix.Upsert(ctx, id, embedText(title, content, location)); err != nil && !errors.Is(err, ErrDisabled) {
+	if err := ix.Upsert(ctx, id, embedText(content, location)); err != nil && !errors.Is(err, ErrDisabled) {
 		return err
 	}
 	return nil
 }
 
 // Embeddable 该动态是否有可嵌入文本；回填据此跳过（否则这类动态会永久占住回填配额）。
-func Embeddable(title, content, location string) bool {
-	return embedText(title, content, location) != ""
+func Embeddable(content, location string) bool {
+	return embedText(content, location) != ""
 }
 
 func (ix *Index) UnindexPost(ctx context.Context, id int64) error {
@@ -161,10 +186,11 @@ func (ix *Index) UnindexPost(ctx context.Context, id int64) error {
 // Has 该动态是否已建向量；janitor 回填据此跳过，避免重复计费。
 // 维度未知时保守返回 false（交给回填补齐）。
 func (ix *Index) Has(ctx context.Context, postID int64) (bool, error) {
-	cfg, ok := ix.resolve(ctx)
+	cfgs, ok := ix.resolve(ctx)
 	if !ok {
 		return false, ErrDisabled
 	}
+	cfg := cfgs[0]
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	if ix.dim == 0 {
@@ -182,13 +208,13 @@ func (ix *Index) Has(ctx context.Context, postID int64) (bool, error) {
 
 // Query 返回与 text 最相似的至多 k 条动态 ID，相似度降序。
 func (ix *Index) Query(ctx context.Context, text string, k int) ([]int64, error) {
-	ix.mu.Lock()
-	defer ix.mu.Unlock()
-	cfg, ok := ix.resolve(ctx)
+	cfgs, ok := ix.resolve(ctx)
 	if !ok {
 		return nil, ErrDisabled
 	}
-	vec, err := ix.embed(ctx, cfg, text)
+	ix.mu.Lock()
+	defer ix.mu.Unlock()
+	cfg, vec, err := ix.embedChainLocked(ctx, cfgs, text)
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +235,11 @@ func (ix *Index) Query(ctx context.Context, text string, k int) ([]int64, error)
 	}
 	ids := make([]int64, 0, len(results))
 	for _, r := range results {
+		// 相关性下限（2026-09-22）：低于阈值的相似度视为不相关——chromem 无条件返回 top-k，
+		// 无阈值时无关查询也返回全部文档（「搜的不对」感来源），且关键词兜底永不触发
+		if r.Similarity < minSimilarity {
+			continue
+		}
 		if id, convErr := strconv.ParseInt(r.ID, 10, 64); convErr == nil {
 			ids = append(ids, id)
 		}

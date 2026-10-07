@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// L5：四个协议适配器都必须把上游 usage 归一化到 ChatResponse.Usage。
+// 四个协议适配器都必须把上游 usage 归一化到 ChatResponse.Usage。
 // 各协议字段名不同（Responses: input/output；Anthropic: input/output 无 total；
 // Gemini: usageMetadata + prompt/candidatesTokenCount），此处逐一锁定。
 

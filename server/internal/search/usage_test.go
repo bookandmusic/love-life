@@ -21,12 +21,12 @@ func (f *fakeUsage) EmbeddingCalled(d time.Duration, ok bool) {
 	f.latency = append(f.latency, d)
 }
 
-// 每次嵌入调用（upsert / query）都应记一次用量；失败也要记（否则「嵌入在报错」不可见）。
+// 每次嵌入调用（upsert / query）都应记一次用量；失败也要记（否则「嵌入在报错」不可）。
 func TestIndexRecordsEmbeddingUsage(t *testing.T) {
 	up := newFakeUpstream(t, map[string][]float32{"海边": {1, 0, 0}})
 	usage := &fakeUsage{}
 	cfg := Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "m"}
-	ix, err := Open(t.TempDir(), func(context.Context) (Config, bool) { return cfg, true })
+	ix, err := Open(t.TempDir(), func(context.Context) ([]Config, bool) { return []Config{cfg}, true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestIndexRecordsEmbeddingUsage(t *testing.T) {
 func TestIndexUsageRecorderOptional(t *testing.T) {
 	up := newFakeUpstream(t, map[string][]float32{"海边": {1, 0, 0}})
 	cfg := Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "m"}
-	ix, err := Open(t.TempDir(), func(context.Context) (Config, bool) { return cfg, true })
+	ix, err := Open(t.TempDir(), func(context.Context) ([]Config, bool) { return []Config{cfg}, true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestIndexRecordsFailedEmbedding(t *testing.T) {
 	bad := newFailingUpstream(t)
 	usage := &fakeUsage{}
 	cfg := Config{BaseURL: bad, APIKey: "k", Model: "m"}
-	ix, err := Open(t.TempDir(), func(context.Context) (Config, bool) { return cfg, true })
+	ix, err := Open(t.TempDir(), func(context.Context) ([]Config, bool) { return []Config{cfg}, true })
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -8,7 +8,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/tools"
 )
 
-// mcpToolsAPI MCP 工具注册表与启停（AD4，DESIGN §6 / §9）。
+// mcpToolsAPI MCP 工具注册表与启停。
 type mcpToolsAPI struct {
 	db *store.DB
 }

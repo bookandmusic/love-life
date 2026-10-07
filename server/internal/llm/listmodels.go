@@ -13,7 +13,7 @@ import (
 )
 
 // ListModels 按协议调用供应商的模型列表接口（管理后台 fetch-models 的上游轻调用）。
-// chat 侧的协议适配归 L2；此处仅做「列模型」，超时 10s。
+// chat 侧的协议适配归 ；此处仅做「列模型」，超时 10s。
 func ListModels(ctx context.Context, apiType, baseURL, apiKey string) ([]string, error) {
 	base := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
 	var url string

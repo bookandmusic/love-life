@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// InsertNotification 站内通知入库（事件类型见需求 §4.8，现为 12+1 类；内容删除事件带快照、无跳转）。
+// InsertNotification 站内通知入库（现为 12+1 类；内容删除事件带快照、无跳转）。
 func (d *DB) InsertNotification(ctx context.Context, recipientID int64, eventType, targetType string, targetID int64, snapshot string) error {
 	_, err := d.ExecContext(ctx,
 		`INSERT INTO notifications (recipient_id, event_type, target_type, target_id, snapshot_json) VALUES (?, ?, ?, ?, ?)`,
@@ -29,7 +29,7 @@ type DeletedNotice struct {
 }
 
 // NotifyContentDeleted 删除对方内容时发站内通知；自删静默。
-// 内容删除仅站内（REQUIREMENTS §4.8），故直接落 notifications 表，不经 notify.Dispatcher。
+// 内容删除仅站内，故直接落 notifications 表，不经 notify.Dispatcher。
 func (d *DB) NotifyContentDeleted(ctx context.Context, n DeletedNotice) error {
 	if n.CreatorID == 0 || n.CreatorID == n.DeleterID {
 		return nil

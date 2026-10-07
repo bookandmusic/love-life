@@ -6,11 +6,9 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bookandmusic/love-life/server/internal/notify"
 )
 
-// TestAlbumCreatedWebhook 相册上新外推（D10）：手动相册与月度相册均走 Dispatch（站内 + 外推）。
+// TestAlbumCreatedWebhook 相册上新外推：手动相册与月度相册均走 Dispatch（站内 + 外推）。
 func TestAlbumCreatedWebhook(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 	rc := newWebhookReceiver(t)
@@ -38,29 +36,6 @@ func TestAlbumCreatedWebhook(t *testing.T) {
 		t.Fatalf("webhook body: %s", rc.body)
 	}
 
-	// 铺垫本月一条带媒体动态（月度相册只聚合有照片的月份）
-	mediaToken, code := uploadMedia(t, ts.URL, adminToken, "p.jpg", genJPEG(t))
-	if code != http.StatusOK {
-		t.Fatalf("upload: %d", code)
-	}
-	res = doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{
-		"content": "月度测试", "media_tokens": []string{mediaToken},
-	})
-	res.Body.Close()
-	if res.StatusCode != http.StatusCreated {
-		t.Fatalf("create post: %d", res.StatusCode)
-	}
-
-	// 月度相册 cron 同样外推（通知双方）：用「下月 1 日」视角使上月=本月（含测试媒体）
-	now := time.Now()
-	dp := notify.New(ts.db)
-	dp.CheckMonthlyAlbum(t.Context(), time.Date(now.Year(), now.Month()+1, 1, 9, 0, 0, 0, time.Local))
-	if rc.hits != 2 {
-		t.Fatalf("monthly album webhook hits: %d", rc.hits)
-	}
-	if !strings.Contains(rc.body, albumPush) {
-		t.Fatalf("monthly webhook body: %s", rc.body)
-	}
 }
 
 func TestAlbums(t *testing.T) {
@@ -116,6 +91,29 @@ func TestAlbums(t *testing.T) {
 		t.Fatalf("add photos: %d", res.StatusCode)
 	}
 
+	// 时间轴口径（2026-09-22 确认）：加入相册后媒体离开时间轴；移出后回到时间轴
+	res = doJSON(t, "GET", ts.URL+"/api/v1/media/timeline", adminToken, nil)
+	var tlAfterAdd struct {
+		Items []any `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&tlAfterAdd)
+	res.Body.Close()
+	if len(tlAfterAdd.Items) != 0 {
+		t.Fatalf("filed media must leave timeline: %+v", tlAfterAdd.Items)
+	}
+	// scope=all（选图器灰显场景）：归册媒体仍在
+	res = doJSON(t, "GET", ts.URL+"/api/v1/media/timeline?scope=all", adminToken, nil)
+	var tlAll struct {
+		Items []struct {
+			ID int64 `json:"id"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&tlAll)
+	res.Body.Close()
+	if len(tlAll.Items) != 1 {
+		t.Fatalf("scope=all must include filed media: %+v", tlAll.Items)
+	}
+
 	// 详情：照片在册、封面自动取首图
 	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/1", adminToken, nil)
 	var detail struct {
@@ -140,77 +138,74 @@ func TestAlbums(t *testing.T) {
 		t.Fatalf("remove photos: %d", res.StatusCode)
 	}
 
-	// 月度相册：cron 在每月 1 日生成「上月」相册——用「下月 1 日」跑，使上月=本月（含测试媒体）；跑两次验证幂等
-	now := time.Now()
-	firstOfNextMonth := time.Date(now.Year(), now.Month()+1, 1, 9, 0, 0, 0, time.Local)
-	dp := notify.New(ts.db)
-	dp.CheckMonthlyAlbum(t.Context(), firstOfNextMonth)
-	dp.CheckMonthlyAlbum(t.Context(), firstOfNextMonth)
-
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums?include_hidden=1", adminToken, nil)
-	var albums struct {
+	// 移出相册 → 回到时间轴（未归档口径闭环）
+	res = doJSON(t, "GET", ts.URL+"/api/v1/media/timeline", adminToken, nil)
+	var tlAfterRemove struct {
 		Items []struct {
-			ID   int64  `json:"id"`
-			Type string `json:"type"`
-			Name string `json:"name"`
+			ID int64 `json:"id"`
 		} `json:"items"`
 	}
-	_ = json.NewDecoder(res.Body).Decode(&albums)
+	_ = json.NewDecoder(res.Body).Decode(&tlAfterRemove)
 	res.Body.Close()
-	var monthlyCount int
-	for _, al := range albums.Items {
-		if al.Type == "monthly" {
-			monthlyCount++
+	if len(tlAfterRemove.Items) != 1 || tlAfterRemove.Items[0].ID != mediaID {
+		t.Fatalf("removed media must return to timeline: %+v", tlAfterRemove.Items)
+	}
+
+	// 月度分组：查询即时聚合（非实体）——该月未归属媒体归入月度组；
+	// 媒体加入手动相册后即时移出月度组；无照片的月份不出现。
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
+	var months struct {
+		Items []struct {
+			MonthKey  string `json:"month_key"`
+			ItemCount int    `json:"item_count"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&months)
+	res.Body.Close()
+	if len(months.Items) == 0 {
+		t.Fatal("month groups must follow unfiled media")
+	}
+	cur := time.Now().Format("2006-01")
+	var g *struct {
+		MonthKey  string `json:"month_key"`
+		ItemCount int    `json:"item_count"`
+	}
+	for i := range months.Items {
+		if months.Items[i].MonthKey == cur {
+			g = &months.Items[i]
 		}
 	}
-	if monthlyCount != 1 {
-		t.Fatalf("monthly album generated: %d (want 1, idempotent)", monthlyCount)
+	if g == nil || g.ItemCount != 1 {
+		t.Fatalf("current month group = %+v, want 本月 1 条未归属媒体", months.Items)
 	}
 
-	// 月度相册不可删除
-	res = doJSON(t, "DELETE", ts.URL+"/api/v1/albums/2", adminToken, nil)
-	res.Body.Close()
-	if res.StatusCode != http.StatusForbidden {
-		t.Fatalf("delete monthly album: want 403, got %d", res.StatusCode)
-	}
-
-	// 隐藏后默认列表不显示，include_hidden=1 可见
-	res = doJSON(t, "PATCH", ts.URL+"/api/v1/albums/2/hidden", adminToken, map[string]bool{"hidden": true})
+	// 月度详情端点
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		t.Fatalf("hide album: %d", res.StatusCode)
-	}
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums", adminToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&albums)
-	res.Body.Close()
-	for _, al := range albums.Items {
-		if al.Type == "monthly" {
-			t.Fatal("hidden monthly album should not appear in default list")
-		}
-	}
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums?include_hidden=1", adminToken, nil)
-	var all struct {
-		Items []struct {
-			Type string `json:"type"`
-		} `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&all)
-	res.Body.Close()
-	found := false
-	for _, al := range all.Items {
-		if al.Type == "monthly" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("include_hidden=1 should show hidden monthly album")
+		t.Fatalf("month media: %d", res.StatusCode)
 	}
 
-	// 月度相册生成 → 双方各收到 1 条相册上新通知
-	var monthlyNotif int
-	_ = ts.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type='album_created' AND snapshot_json LIKE '%monthly%'`).Scan(&monthlyNotif)
-	if monthlyNotif != 2 {
-		t.Fatalf("monthly album_created notifications: %d (want 2)", monthlyNotif)
+	// 把媒体加入手动相册 → 本月分组即时消失（归档即移出月度组，无需任何任务）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/albums/1/photos", adminToken, map[string]any{"media_ids": []int64{mediaID}})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("add to manual album: %d", res.StatusCode)
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&months)
+	res.Body.Close()
+	for _, item := range months.Items {
+		if item.MonthKey == cur {
+			t.Fatalf("archived media must leave month group immediately: %+v", months.Items)
+		}
+	}
+
+	// 月度分组不是实体：无隐藏端点、不可删除（404 = 路由不存在）
+	res = doJSON(t, "PATCH", ts.URL+"/api/v1/albums/1/hidden", adminToken, map[string]bool{"hidden": true})
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("hidden endpoint must be gone: %d", res.StatusCode)
 	}
 
 	// 手动相册可软删

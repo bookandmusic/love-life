@@ -22,7 +22,7 @@ func postIDFromPath(r *http.Request) (int64, bool) {
 	return id, err == nil
 }
 
-// notifyPartner 互动通知口径（需求 §4.8）：允许自赞/自藏，任何一方动作（含自己
+// notifyPartner 互动通知口径：允许自赞/自藏，任何一方动作（含自己
 // 赞/藏自己发布的动态）都通知另一方（传达「我在意这条内容」），评论同口径；
 // 另一方不存在时站内无收件人，外部推送仍按渠道订阅照常发送。
 func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targetID int64, title, content string, snapshot map[string]any) {
@@ -188,7 +188,7 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 		EventType: "comment_deleted", TargetType: "comment", TargetID: id,
 		Extra: map[string]any{"content": textutil.TruncMark(c.Content, 50)},
 	})
-	// DESIGN §13.3：删除一律 204 No Content
+	// ：删除一律 204 No Content
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -1,16 +1,24 @@
-// Package chat AI 对话（DESIGN 7.3 端到端链路）：模型往返工具循环、
-// 写工具产出确认卡片（15 分钟 TTL 单次有效）、SSE 推送、审计与历史。
+// Package chat AI 对话（ 端到端链路）：模型往返工具循环、
+// 提案（确认卡，15 分钟 TTL 单次有效）、SSE 语义事件、审计与历史回显。
+//
+// 协议口径：SSE 事件为语义事件——turn.start / session /
+// thinking.delta / thinking.end / answer.delta / answer.end / tool.start / tool.end /
+// proposal / turn.end / error。零带内信令（无 emoji 前缀协议）。
 package chat
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
@@ -22,9 +30,23 @@ import (
 )
 
 const (
-	historyWindow = 20 // 送入模型的历史消息条数
-	maxToolRounds = 3  // 单次对话最大工具往返
-	MaxChatMedia  = 18 // 单条聊天消息媒体引用上限（对齐发动态 18 个/条）
+	// MaxToolRounds 单次对话最大工具往返（预算三维之一；初始值，无实测依据，上线后按观测调整）。
+	MaxToolRounds = 8
+	maxToolRounds = MaxToolRounds
+	// MaxToolCalls 单轮工具调用总数上限（预算三维之一）：一次响应可能回远超额度数量的调用，
+	// 故执行前按剩余额度截断，而不是先执行再判断。
+	MaxToolCalls   = 16
+	maxToolCalls   = MaxToolCalls
+	turnWallBudget = 90 * time.Second // 整轮墙钟预算：触顶进入收尾
+	MaxChatMedia   = 9                // 单条聊天消息媒体引用上限（对齐发动态上限 9，见 api.maxPostMedia）
+	// MaxChatMediaBytes 单条消息附件的元数据体积上限：8MB（按客户端上报的 size 累加）。
+	// 附件在「确认执行」前不离开设备，服务端只收到元数据——这里防的是「一次带上几十个大文件」
+	// 这种明显不合理的批量（PRODUCT「发布动态」的整批把关在确认阶段还有一道真实校验）。
+	MaxChatMediaBytes = 8 << 20
+	// resolvedReplayCap 已裁决提案进模型上下文的上限（超出降为一行摘要，AI模式设计「上下文组装」）。
+	resolvedReplayCap = 20
+	// proposalTTL 提案有效期（秒）：单次有效 + 15 分钟过期。
+	proposalTTLSeconds = 900
 )
 
 type Service struct {
@@ -32,6 +54,38 @@ type Service struct {
 	key  []byte // API Key 加密密钥（派生自数据目录密钥）
 	deps *tools.Deps
 	reg  map[string]*tools.Tool
+	// abortedTurns 进程内「用户已显式中止」登记（key = userID|turnID）。
+	// 用户点「停止」时客户端先 abort 请求（服务端 r.Context() 随之取消），在服务端与
+	// 「意外断连」表现同一现象，但语义相反：停止 = 整轮回滚（AbortTurn 按 turn_id 删除全轮行），
+	// 断连 = 保留已产生内容并标中断。故用本表把「用户主动停止」显式标出，
+	// 否则断连分支会与 AbortTurn 的 DELETE 并发，给用户明确要求回滚的那轮留下孤儿 assistant 行。
+	// 进程内即可：断连与停止本就发生在同一进程；重启丢失不影响正确性（届时本轮请求已结束）。
+	abortedTurns sync.Map
+}
+
+// abortKey 中止登记的 key（userID 与 turnID 的组合，turnID 单轮唯一）。
+func abortKey(userID int64, turnID string) string {
+	return strconv.FormatInt(userID, 10) + "|" + turnID
+}
+
+// MarkAbortIntent 登记「用户已显式中止本轮」，供 Abort handler 在整轮回滚前调用。
+func (s *Service) MarkAbortIntent(userID int64, turnID string) {
+	if turnID == "" {
+		return
+	}
+	s.abortedTurns.Store(abortKey(userID, turnID), struct{}{})
+}
+
+// abortRequested 本轮是否已被用户显式中止。
+func (s *Service) abortRequested(userID int64, turnID string) bool {
+	_, ok := s.abortedTurns.Load(abortKey(userID, turnID))
+	return ok
+}
+
+// clearAbortIntent 撤销中止登记（AbortTurn 自身失败时，整轮并未回滚，
+// 保留登记会让后续真实断连不敢落库）。
+func (s *Service) clearAbortIntent(userID int64, turnID string) {
+	s.abortedTurns.Delete(abortKey(userID, turnID))
 }
 
 func NewService(db *store.DB, seed []byte, deps *tools.Deps) *Service {
@@ -42,24 +96,129 @@ func NewService(db *store.DB, seed []byte, deps *tools.Deps) *Service {
 	return &Service{db: db, key: crypto.KeyFrom(seed), deps: deps, reg: reg}
 }
 
-// SystemPromptTrunkFallback 主干模板：管理后台未配置 system_prompt 时的默认值
-// （与改造前硬编码一致，行为向后兼容）。GET /admin/system-prompt 未配置时同用此值。
+// SystemPromptTrunkFallback 主干模板：管理后台未配置 system_prompt 时的默认值。
 const SystemPromptTrunkFallback = "你是情侣生活记录应用的 AI 助手，帮助这对情侣记录生活、查询回忆。"
 
-// toolProtocol 工具使用约定：固定追加在 system prompt 末尾，不被后台自定义 prompt 覆盖
-//（覆盖掉它模型就会退化成「文字复述操作」或「向用户索要 media token」）。
-// 附当前日期作相对时间（今天/最近/上周）换算 date_range 的基准。
-func toolProtocol() string {
-	return "\n\n工具使用约定：\n" +
-		"1. 执行写操作（发动态/建相册/纪念日/记地点等）必须调用对应工具生成确认卡片，禁止只用文字描述操作而不调用工具。\n" +
-		"2. 用户消息标注附带媒体附件时，直接调用 create_post 只填 content 等文本参数；media_tokens 由系统在用户确认时自动上传填充，不要传该参数、更不要向用户索要。\n" +
-		"3. 「今天/昨天/最近/上周」等相对时间，先换算成具体日期区间传给 search_posts 的 date_range（YYYY-MM-DD~YYYY-MM-DD），query 用描述内容的宽泛语义词。\n" +
-		"4. 当前日期：" + time.Now().Format("2006-01-02") + "。"
+// weekdayCN 中文星期（time.Weekday 只给英文，提示词要给人看的中文）。
+var weekdayCN = [...]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}
+
+// promptTail 固定追加在 system prompt 末尾的「空间事实 + 能力与规矩」。
+// 两项各有理由：空间事实是每轮都成立的稳定信息（直接注入比让模型调工具省一个往返）；
+// 能力与规矩不被后台自定义 prompt 覆盖（覆盖掉模型就会退化成「文字复述操作」）。
+// 每一项单独降级：读不到就跳过，不得让对话因提示词组装失败而中断。
+// resolvedSummary 为「已裁决提案超出回放上限」的一行摘要（空 = 无溢出）。
+func (s *Service) promptTail(ctx context.Context, userID int64, resolvedSummary string) string {
+	facts := make([]string, 0, 5)
+	if who := s.factCouples(ctx, userID); who != "" {
+		facts = append(facts, who)
+	}
+	if d := s.factTogether(ctx); d != "" {
+		facts = append(facts, d)
+	}
+	now := time.Now()
+	facts = append(facts, "今天 "+now.Format("2006-01-02")+" "+weekdayCN[now.Weekday()])
+	if n, err := s.countRecentPosts(ctx); err == nil {
+		facts = append(facts, fmt.Sprintf("近 7 天记了 %d 条动态", n))
+	}
+	if a := s.factNextAnniversary(ctx, now); a != "" {
+		facts = append(facts, a)
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n【空间事实】" + strings.Join(facts, "；") + "\n")
+	if resolvedSummary != "" {
+		sb.WriteString("【历史操作概要】" + resolvedSummary + "\n")
+	}
+	sb.WriteString("【能力与规矩】\n")
+	sb.WriteString("  - 你能查询与提案操作：动态/相册/纪念日/地点/互动。\n")
+	sb.WriteString("  - 所有写操作都会先给用户一张确认卡，用户确认后才生效；" +
+		"意图明确就直接出提案，不要反复问「需要我帮你…吗」。\n")
+	sb.WriteString("  - 记录内容不可编辑，只能新增或删除（删除进回收站）。不要承诺你能修改已有内容。\n")
+	sb.WriteString("  - 「今天/昨天/上周/最近」等相对时间，先换算成 from/to 的 YYYY-MM-DD 再查，query 用描述内容的语义词。\n")
+	sb.WriteString("  - 用户消息标注附带媒体附件时，直接调用 propose_post 只填文本参数；" +
+		"附件由系统在用户确认时自动转正，不要传 media_tokens、更不要向用户索要。\n")
+	sb.WriteString("  - 批量整理媒体时用结果集句柄（source={result_id, group?}）引用，不要搬运 id 列表；" +
+		"用户勾选了条目时，操作范围以勾选子集句柄为准。\n")
+	sb.WriteString("  - 「我们一共记了多少」「点亮了哪些城市」「哪个月记得最多」这类总量/分布问题，" +
+		"用 get_space_stats 一次拿全（统计卡会直接展示），不要逐类去数。\n")
+	sb.WriteString("  - 查询结果用户已经能在卡片里看到，不要逐条复述；给结论、给感受、给下一步建议。\n")
+	return sb.String()
+}
+
+func (s *Service) factCouples(ctx context.Context, userID int64) string {
+	users, err := s.db.ListUsers(ctx)
+	if err != nil {
+		return ""
+	}
+	var self, partner string
+	for _, u := range users {
+		if u.Role == "admin" {
+			continue
+		}
+		n := u.Nickname
+		if n == "" {
+			n = u.Username
+		}
+		if n == "" {
+			continue
+		}
+		if u.ID == userID {
+			self = n
+		} else {
+			partner = n
+		}
+	}
+	switch {
+	case self != "" && partner != "":
+		return fmt.Sprintf("正在与你（%s）对话，你的伴侣是 %s", self, partner)
+	case partner != "":
+		return "你的伴侣是 " + partner
+	default:
+		return ""
+	}
+}
+
+// factTogether 在一起天数；未设恋爱开始日时不给数字（与首页同口径：不编造）。
+func (s *Service) factTogether(ctx context.Context) string {
+	sp, err := s.db.GetSpace(ctx)
+	if err != nil || !sp.LoveStartDate.Valid {
+		return ""
+	}
+	start, perr := time.ParseInLocation("2006-01-02", sp.LoveStartDate.String, time.Local)
+	if perr != nil {
+		return ""
+	}
+	return fmt.Sprintf("在一起 %d 天（自 %s）", int(time.Since(start).Hours()/24)+1, sp.LoveStartDate.String)
+}
+
+// countRecentPosts 近 7 天动态数（只给计数，不列内容）。
+func (s *Service) countRecentPosts(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM posts WHERE deleted_at IS NULL AND created_at >= datetime('now', '-7 days')`).Scan(&n)
+	return n, err
+}
+
+// factNextAnniversary 最近一个纪念日（含农历换算后的下次公历日）。
+func (s *Service) factNextAnniversary(ctx context.Context, now time.Time) string {
+	list, err := s.db.ListAnniversaries(ctx)
+	if err != nil || len(list) == 0 {
+		return ""
+	}
+	best := -1
+	for i, a := range list {
+		if d := a.DaysUntil(now); d >= 0 && (best < 0 || d < list[best].DaysUntil(now)) {
+			best = i
+		}
+	}
+	if best < 0 {
+		return ""
+	}
+	a := list[best]
+	return fmt.Sprintf("下一个纪念日：%s（下次公历 %s，还有 %d 天）", a.Name, a.NextSolarDate(now), a.DaysUntil(now))
 }
 
 // systemPrompt 拼装：主干（app_settings system_prompt → fallback）+ 风格片段。
-// 用户风格按名字精确匹配风格库；未设置或名字已删 → 全局默认风格；库空 → 无片段。
-// 每次调用实时读库——管理后台热切换即生效。
 func (s *Service) systemPrompt(ctx context.Context, userStyle string) string {
 	trunk := SystemPromptTrunkFallback
 	if v, err := s.db.GetSetting(ctx, "system_prompt"); err == nil {
@@ -107,57 +266,55 @@ type chatTarget struct {
 	Client      *llm.Client
 	ProviderID  int64
 	Model       string
-	Temperature *float64 // 模型级采样参数（provider_models 条目），nil = 调用不传
+	Temperature *float64
 	MaxTokens   *int64
 }
 
-// chatTargets 构建本条消息的供应商链（DESIGN §4.1 有序故障切换链）：已配 Key 的供应商
-// 按链序排列；解 Key 失败留痕后跳过（全部因此不可用 → errKeyDecrypt）；无模型条目的跳过；
-// 链空 → errNoModel。每次调用实时读库——管理后台热切换即生效。
+// chatTargets 构建 chat 链（模型条目按 chain_order, id 全局链序，跨供应商；
+// 同一供应商挂多个条目时各自成链上节点）。失败依次向下切换（AI模式设计「模型网关与配置中心」）。
 func (s *Service) chatTargets(ctx context.Context) ([]*chatTarget, error) {
-	providers, err := s.db.ListChatProviders(ctx)
+	chain, err := s.db.ListModels(ctx, "chat")
 	if err != nil {
 		return nil, err
 	}
 	var targets []*chatTarget
 	decryptFailed := 0
-	for _, p := range providers {
-		apiKey, derr := crypto.Decrypt(s.key, p.APIKeyEnc)
-		if derr != nil {
-			decryptFailed++
-			slog.Warn("模型 Key 解密失败，跳过该供应商", "provider_id", p.ID, "err", derr)
+	decrypted := map[int64]string{} // provider_id -> 明文 Key（一次解密，多条目复用）
+	for _, e := range chain {
+		p := e.Provider
+		apiKey, ok := decrypted[p.ID]
+		if !ok {
+			plain, derr := crypto.Decrypt(s.key, p.APIKeyEnc)
+			if derr != nil {
+				decryptFailed++
+				slog.Warn("模型 Key 解密失败，跳过该供应商", "provider_id", p.ID, "err", derr)
+				decrypted[p.ID] = ""
+				continue
+			}
+			decrypted[p.ID] = plain
+			apiKey = plain
+		}
+		if apiKey == "" {
 			continue
 		}
-		model := p.DefaultModel
-		if model == "" && len(p.Models) > 0 {
-			model = p.Models[0].ModelID
-		}
-		if model == "" {
-			continue
-		}
+		model := e.Model.ModelID
 		client, cerr := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType)
 		if cerr != nil {
-			// api_type 由 DB CHECK 约束为四协议，正常到不了这里；上抛而非静默跳过
 			return nil, fmt.Errorf("不支持的服务协议: %w", cerr)
 		}
 		t := &chatTarget{Client: client, ProviderID: p.ID, Model: model}
-		for _, m := range p.Models {
-			if m.ModelID == model {
-				if m.Temperature.Valid {
-					v := m.Temperature.Float64
-					t.Temperature = &v
-				}
-				if m.MaxTokens.Valid {
-					v := m.MaxTokens.Int64
-					t.MaxTokens = &v
-				}
-				break
-			}
+		if e.Model.Temperature.Valid {
+			v := e.Model.Temperature.Float64
+			t.Temperature = &v
+		}
+		if e.Model.MaxTokens.Valid {
+			v := e.Model.MaxTokens.Int64
+			t.MaxTokens = &v
 		}
 		targets = append(targets, t)
 	}
 	if len(targets) == 0 {
-		if decryptFailed > 0 && decryptFailed == len(providers) {
+		if decryptFailed > 0 && decryptFailed == len(chain) {
 			return nil, errKeyDecrypt
 		}
 		return nil, errNoModel
@@ -170,10 +327,62 @@ var errNoModel = errors.New("未配置模型——请管理员在后台配置模
 // errKeyDecrypt 链上全部供应商的 Key 都解密失败（数据问题，非「未配置」）。
 var errKeyDecrypt = errors.New("模型 Key 解密失败，请管理员检查配置")
 
-// chatCall 一次模型调用沿链执行：链头起首个成功者胜出；失败者记 failed 统计后淘汰，
-// 成功者记 success 并固定为后续轮次起点（回到链首）。模型级参数随目标供应商注入
-// （default_model 可手填兜底名、查不到参数条目按未设置处理）。链耗尽返回最后一个错误
-// 与空链；返回的链供同一条消息的后续轮次续用（不跨请求）。
+// chatCall 一次模型调用沿链执行：链头起首个成功者胜出；失败者记 failed 统计后淘汰。
+// streamEvents 一轮流式调用的归一产物：全部增量 + 重组后的完整响应（供既有工具循环）。
+type streamEvents struct {
+	Deltas   []llm.Delta
+	Response *llm.ChatResponse
+}
+
+// chatCallStream 流式版链式调用：链首失败且尚未产出任何增量时向下切换；
+// 已开始下发增量后失败即以错误收尾（不换模型续写，AI模式设计「模型网关」）。
+// 返回值 rest 之外还带本轮全部增量（调用方据此重组完整响应）。
+func (s *Service) chatCallStream(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, chain []*chatTarget, req *llm.ChatRequest, onDelta func(llm.Delta)) (*llm.ChatResponse, []llm.Delta, []*chatTarget, error) {
+	var lastErr error
+	for len(chain) > 0 {
+		t := chain[0]
+		chain = chain[1:]
+		req.Temperature = t.Temperature
+		req.MaxTokens = t.MaxTokens
+		startedAt := time.Now()
+		var deltas []llm.Delta
+		var usage llm.Usage
+		_, err := t.Client.StreamChat(ctx, req, func(d llm.Delta) {
+			if d.Usage != nil {
+				usage = *d.Usage
+			}
+			deltas = append(deltas, d)
+			if onDelta != nil {
+				onDelta(d)
+			}
+		})
+		elapsed := time.Since(startedAt).Milliseconds()
+		if err == nil {
+			// 上游未产出任何流式增量（非事件流响应）：adapter 层已降级回放，
+			// 正常不会走到这里；deltas 为空时重组块会自动填充整块响应。
+			s.recordUsageStream(ctx, t, usage, elapsed, "success")
+			return &llm.ChatResponse{Usage: usage}, deltas, append([]*chatTarget{t}, chain...), nil
+		}
+		s.recordUsageStream(ctx, t, usage, elapsed, "failed")
+		lastErr = err
+		if len(deltas) > 0 {
+			break // 已下发增量：不换模型续写（用户会看到半句话被另一个模型接下去）
+		}
+	}
+	return nil, nil, nil, lastErr
+}
+
+// recordUsageStream 流式版用量落库（usage 由末帧归一；无 usage 时如实记 0）。
+func (s *Service) recordUsageStream(ctx context.Context, t *chatTarget, usage llm.Usage, latencyMs int64, status string) {
+	if t == nil {
+		return
+	}
+	_ = s.db.InsertAIUsage(ctx, &store.AIUsageLog{
+		ProviderID: t.ProviderID, Model: t.Model, LatencyMs: latencyMs, Status: status,
+		PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens,
+	})
+}
+
 func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.ChatRequest) (*llm.ChatResponse, []*chatTarget, error) {
 	var lastErr error
 	for len(chain) > 0 {
@@ -194,8 +403,7 @@ func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.Ch
 	return nil, nil, lastErr
 }
 
-// recordUsage 落库一次模型调用的统计。失败不阻断对话——统计是旁路，
-// 但会尽力写入，避免仪表盘长期缺口。
+// recordUsage 落库一次模型调用的统计。失败不阻断对话。
 func (s *Service) recordUsage(ctx context.Context, t *chatTarget, res *llm.ChatResponse, latencyMs int64, status string) {
 	if t == nil {
 		return
@@ -214,52 +422,121 @@ func (s *Service) recordUsage(ctx context.Context, t *chatTarget, res *llm.ChatR
 	_ = s.db.InsertAIUsage(ctx, log)
 }
 
-// Status GET /api/v1/chat/status 返回 AI 可用性（需求 §3.2：无模型 Key 时 APP 置灰并提示）。
-func (s *Service) Status(w http.ResponseWriter, r *http.Request) {
-	available := true
-	reason := ""
-	p, err := s.db.GetChatProvider(r.Context())
+// aiAvailability AI 可用性判定（chat 链为空即不可用，不设独立功能开关）。
+func (s *Service) aiAvailability(ctx context.Context) (bool, string) {
+	head, err := s.db.GetChatHead(ctx)
 	switch {
 	case errors.Is(err, store.ErrNotFound):
-		available = false
-		reason = "未配置模型——请管理员在后台配置模型服务"
+		return false, "未配置模型——请管理员在后台配置模型服务"
 	case err != nil:
-		available = false
-		reason = "模型配置读取失败"
-	default:
-		if _, derr := crypto.Decrypt(s.key, p.APIKeyEnc); derr != nil {
-			available = false
-			reason = "模型 Key 解密失败，请管理员检查配置"
-		} else if p.DefaultModel == "" && len(p.Models) == 0 {
-			available = false
-			reason = "未配置模型——请管理员在后台配置模型服务"
-		}
+		return false, "模型配置读取失败"
 	}
+	if _, derr := crypto.Decrypt(s.key, head.Provider.APIKeyEnc); derr != nil {
+		return false, "模型 Key 解密失败，请管理员检查配置"
+	}
+	return true, ""
+}
+
+// Status GET /api/v1/chat/status 返回 AI 可用性（锁定态轮询用，文案与 bootstrap 同源）。
+func (s *Service) Status(w http.ResponseWriter, r *http.Request) {
+	available, reason := s.aiAvailability(r.Context())
 	s.writeJSON(w, http.StatusOK, map[string]any{"available": available, "reason": reason})
 }
 
-// chatMedia 客户端随消息携带的媒体引用：仅本会话展示 + 历史回显，不落媒体资源；
-// 真正落库发生在「确认执行」时客户端先用 /media/upload 换 token 随 confirm 提交。
-type chatMedia struct {
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Size    int64  `json:"size"`
-	DataURL string `json:"data_url"`
+// chatChips 快捷指令（静态文案，点击填入输入框）。
+var chatChips = []string{"帮我发动态", "整理最近的照片", "我们记过什么"}
+
+// Bootstrap GET /api/v1/chat/bootstrap：AI 页首屏一次拿全（可用性 + 欢迎语 + chips）。
+func (s *Service) Bootstrap(w http.ResponseWriter, r *http.Request) {
+	available, reason := s.aiAvailability(r.Context())
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"available": available,
+		"reason":    reason,
+		"welcome":   s.welcomeText(r.Context()),
+		"chips":     chatChips,
+	})
 }
 
-// Message POST /api/v1/chat/message {content, media?}，SSE 响应（event: text/card/done/error）。
+// welcomeText 空会话欢迎语：服务端模板拼装空间事实，不调模型、不落库、不占会话。
+func (s *Service) welcomeText(ctx context.Context) string {
+	days := 0
+	if sp, err := s.db.GetSpace(ctx); err == nil && sp.LoveStartDate.Valid {
+		if start, perr := time.ParseInLocation("2006-01-02", sp.LoveStartDate.String, time.Local); perr == nil {
+			days = int(time.Since(start).Hours()/24) + 1
+		}
+	}
+	var recent int
+	_ = s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM posts WHERE deleted_at IS NULL AND created_at >= datetime('now', '-7 days')`).Scan(&recent)
+	switch {
+	case days > 0 && recent > 0:
+		return fmt.Sprintf("今天是你们在一起的第 %d 天。这周已经记了 %d 条，想再记点什么？", days, recent)
+	case days > 0:
+		return fmt.Sprintf("今天是你们在一起的第 %d 天。想记点什么？", days)
+	default:
+		return "想记点什么？"
+	}
+}
+
+// newTurnID 生成本轮对话标识——abort 按轮回滚的定位依据。
+func newTurnID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "t" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// chatMedia 客户端随消息携带的媒体引用：仅元数据，不含文件内容。
+// 依 AI模式设计「图片处理与存储」：消息体只带 {name, mime, size}，服务端不存文件、不存 base64；
+// 文件在「确认执行提案时」才从本机上传（与发动态同一管线）。
+type chatMedia struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+	Size int64  `json:"size"`
+}
+
+// quoteRef 用户引用的资源（仅限当前会话）：
+//   - 结果集引用：{result_id, group?, ids?}（勾选具体条目时带 ids，缺省 = 整组/整集）；
+//   - 单条引用：{kind, id}（id 必须在本会话结果集中出现过）。
+type quoteRef struct {
+	ResultID string  `json:"result_id,omitempty"`
+	Group    string  `json:"group,omitempty"`
+	IDs      []int64 `json:"ids,omitempty"`
+	Kind     string  `json:"kind,omitempty"`
+	ID       int64   `json:"id,omitempty"`
+}
+
+// Message POST /api/v1/chat/message {content, media?, session_id?, quoted?}，SSE 语义事件响应。
 func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	var req struct {
-		Content string      `json:"content"`
-		Media   []chatMedia `json:"media"`
+		Content   string      `json:"content"`
+		Media     []chatMedia `json:"media"`
+		SessionID int64       `json:"session_id"`
+		Quoted    []quoteRef  `json:"quoted"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Content) == "" {
-		http.Error(w, `{"error":"内容不能为空"}`, http.StatusBadRequest)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"请求格式错误"}`, http.StatusBadRequest)
+		return
+	}
+	// 正文可选：可留空只传媒体、或只勾引用（PRODUCT「发布动态」同口径）；三者全空才是空消息。
+	if strings.TrimSpace(req.Content) == "" && len(req.Media) == 0 && len(req.Quoted) == 0 {
+		http.Error(w, `{"error":"内容、媒体或引用至少一项"}`, http.StatusBadRequest)
 		return
 	}
 	if len(req.Media) > MaxChatMedia {
 		http.Error(w, fmt.Sprintf(`{"error":"单条消息最多 %d 个媒体引用"}`, MaxChatMedia), http.StatusBadRequest)
+		return
+	}
+	// 附件总量护栏：按客户端上报的 size 累加（元数据层面，不需要文件内容）。
+	// 拦的是「一次带上几十个大文件」这种明显不合理的批量——真实校验在确认执行阶段的上传。
+	var mediaBytes int64
+	for _, m := range req.Media {
+		mediaBytes += m.Size
+	}
+	if mediaBytes > MaxChatMediaBytes {
+		http.Error(w, fmt.Sprintf(`{"error":"附件总体积过大（上限 %d MB），请减少数量"}`, MaxChatMediaBytes>>20), http.StatusBadRequest)
 		return
 	}
 	for _, m := range req.Media {
@@ -268,7 +545,43 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	mediaJSON, _ := json.Marshal(req.Media)
+
+	// 会话归属：>0 必须是本人会话；否则懒创建（标题=首条消息摘要，无 AI 调用）
+	sessionID := req.SessionID
+	sessionTitle := ""
+	createdSession := false
+	if sessionID > 0 {
+		sess, err := s.db.GetChatSession(r.Context(), sessionID)
+		if err != nil || sess.UserID != claims.UserID {
+			http.Error(w, `{"error":"会话不存在"}`, http.StatusNotFound)
+			return
+		}
+		sessionTitle = sess.Title
+	} else {
+		sessionTitle = sessionTitleFrom(req.Content)
+		id, err := s.db.CreateChatSession(r.Context(), claims.UserID, sessionTitle)
+		if err != nil {
+			http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+			return
+		}
+		sessionID = id
+		// 仅懒创建时下发：已有会话的 id 客户端自己带的，不重复发
+		createdSession = true
+	}
+
+	// 引用归属校验：句柄必须属于本会话、单条 id 必须在本会话结果集里出现过。
+	quotedContext, quotedJSON, quotedSel, qerr := s.validateQuoted(r.Context(), sessionID, req.Quoted)
+	if qerr != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, qerr.Error()), http.StatusBadRequest)
+		return
+	}
+
+	turnID := newTurnID()
+	// 轮级聚合缓存：思考文本 / 工具步骤（parts 契约：一轮助手消息只有一行）。
+	// turnParts 按发生顺序累积各轮内容，落库时一次写出（thinking → tool* → text/card）。
+	var roundReasoning string
+	thinkSeconds := 0
+	turnParts := []map[string]any{}
 	chain, err := s.chatTargets(r.Context())
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -279,245 +592,546 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 历史 + 用户风格；工具使用约定固定追加在 system 末尾（不被后台自定义 prompt 覆盖，2026-09-21）
+	// 历史 + 用户风格；空间事实与工具约定固定追加在 system 末尾
 	user, _ := s.db.GetUserByID(r.Context(), claims.UserID)
-	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(r.Context(), userStyle(user)) + toolProtocol()}}
-	history, _ := s.db.ListChatMessages(r.Context(), claims.UserID, historyWindow)
-	for _, m := range history {
-		if m.Role == "user" || m.Role == "assistant" {
-			// 卡片载体消息（带 card_id）与已停写的惰性 marker 都是 UI 状态而非对话内容：
-			// 进模型历史会被模型模仿成「文字复述代替调工具」（A5 实测根因），一律剔除
-			if m.CardID.Valid {
-				continue
-			}
-			if m.Role == "assistant" && m.Content == "已生成确认卡片，等待确认" {
-				continue
-			}
-			msgs = append(msgs, llm.Message{Role: m.Role, Content: m.Content})
-		}
-	}
+	ctxMsgs, resolvedSummary := s.buildModelHistory(r.Context(), claims.UserID, sessionID)
+	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(r.Context(), userStyle(user)) + s.promptTail(r.Context(), claims.UserID, resolvedSummary)}}
+	msgs = append(msgs, ctxMsgs...)
 	modelContent := req.Content
 	if len(req.Media) > 0 {
 		modelContent += fmt.Sprintf(" [本条消息附带 %d 个媒体附件]", len(req.Media))
 	}
+	if quotedContext != "" {
+		modelContent += "\n" + quotedContext
+	}
 	msgs = append(msgs, llm.Message{Role: "user", Content: modelContent})
-	if _, err := s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "user", Content: req.Content, Media: string(mediaJSON)}); err != nil {
+	// user parts：text + attachment（本机元数据 {name,mime,size}，无 ref 无 base64）
+	// + quote（引用条回显；附件在确认执行前只在本机，落库仅元数据）
+	// text 为空（只传媒体 / 只勾引用）时不产生空 text part，避免回显出空行。
+	// 判据用 TrimSpace 与上面的入参校验同口径，否则「只有空格 + 有媒体」会落一个空白 part。
+	userParts := []map[string]any{}
+	if strings.TrimSpace(req.Content) != "" {
+		userParts = append(userParts, map[string]any{"type": "text", "text": req.Content})
+	}
+	for _, m := range req.Media {
+		userParts = append(userParts, map[string]any{"type": "attachment", "name": m.Name, "mime": m.Type, "size": m.Size})
+	}
+	for _, q := range req.Quoted {
+		userParts = append(userParts, map[string]any{"type": "quote", "refs": q})
+	}
+	partsJSON, _ := json.Marshal(userParts)
+	if _, err := s.db.SaveChatMessage(r.Context(), &store.ChatMessage{
+		UserID: claims.UserID, SessionID: sessionID, TurnID: turnID, Role: "user",
+		Parts: string(partsJSON), Quoted: quotedJSON,
+	}); err != nil {
 		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
 		return
+	}
+	if err := s.db.TouchChatSession(r.Context(), sessionID); err != nil {
+		slog.Warn("touch chat session failed", "session_id", sessionID, "err", err)
+	}
+	// 模型上下文：user 轮（dialogue）
+	if err := s.db.AppendContext(r.Context(), claims.UserID, sessionID, turnID,
+		"user", modelContent, "", "", "", store.ApproxTokens(modelContent), "dialogue", false); err != nil {
+		slog.Warn("写入模型上下文失败", "session_id", sessionID, "err", err)
 	}
 
 	flusher, ok := s.sseHeader(w)
 	if !ok {
 		return
 	}
+	if createdSession {
+		s.sseEvent(w, flusher, "session", map[string]any{"session_id": sessionID, "title": sessionTitle})
+	}
+	s.sseEvent(w, flusher, "turn.start", map[string]any{"turn_id": turnID})
 
-	// 工具循环（读工具立即执行回填；写工具止于确认卡片）
+	// 工具循环（读工具立即执行回填；提案工具止于确认卡）
+	answered := false
+	stopReason := "aborted"
+	// 一轮附件只归首个提案（旧实现两行都核会让同轮两张卡绑同一批 token）。
+	mediaRefs := mediaRefsFrom(req.Media)
+	// 结果集端口 + 会话 id 注入 ctx：读工具落句柄、source 展开校验归属
+	toolCtx := tools.WithSessionID(r.Context(), sessionID)
+	toolCtx = tools.WithResultSink(toolCtx, func(kind string, ids []int64, groups []store.ResultGroup) (string, error) {
+		return s.db.SaveResultSet(toolCtx, sessionID, kind, ids, groups)
+	})
+	// 点选优先：本轮勾选并集注入工具 ctx——提案展开 source / 直给 id 时校验 ⊆（超出即驳回）
+	toolCtx = tools.WithQuotedSelection(toolCtx, quotedSel)
+	deadline := time.Now().Add(turnWallBudget)
+	toolCallsUsed := 0
+	budgetHit := false
 	for round := 0; round < maxToolRounds; round++ {
-		// 每次模型调用沿链执行：失败自动切换下一供应商重试同轮，链耗尽才报错
-		res, rest, err := s.chatCall(r.Context(), chain, &llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs(r.Context())})
-		if err != nil {
-			s.sseEvent(w, flusher, "error", map[string]string{"message": err.Error()})
-			s.sseEvent(w, flusher, "done", nil)
+		if time.Now().After(deadline) || toolCallsUsed >= maxToolCalls {
+			budgetHit = true
+		}
+		// 真流式：思考链与正文逐字下发（AI模式设计「时序与事件」）；回答一开始即折叠的
+		// 语义由客户端处理，服务端只保证 delta 真增量。
+		thinkStart := time.Now()
+		thinkOpen := false
+		thinkStreamed := false
+		var streamedAnswer bool
+		// 断连兜底：逐字增量的真正去处是回调 onDelta；chatCallStream 出错时返回的
+		// lastDeltas 为 nil（错误路径丢弃 deltas），所以这里同步累积一份，
+		// 使「意外断连」时手上已有全部已下发内容（否则落库时无正文可存）。
+		var streamReasoning, streamAnswer strings.Builder
+		res, lastDeltas, rest, err := s.chatCallStream(r.Context(), w, flusher, chain,
+			&llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs(r.Context())},
+			func(d llm.Delta) {
+				switch {
+				case d.Reasoning != "":
+					streamReasoning.WriteString(d.Reasoning)
+					s.sseEvent(w, flusher, "thinking.delta", map[string]any{"text": d.Reasoning})
+					thinkOpen = true
+					thinkStreamed = true
+				case d.Content != "":
+					if thinkOpen {
+						s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": int(time.Since(thinkStart).Seconds())})
+						thinkOpen = false
+					}
+					streamAnswer.WriteString(d.Content)
+					streamedAnswer = true
+					s.sseEvent(w, flusher, "answer.delta", map[string]any{"text": d.Content})
+				}
+			})
+		if thinkOpen {
+			s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": int(time.Since(thinkStart).Seconds())})
+		}
+		// 断连判定必须在 err 之前：连接断了（网络抖动 / 切后台 / 锁屏，或客户端未及发 abort）
+		// 会让上游调用报 ctx 取消错误，先走 err 分支就再也到不了这里。
+		if r.Context().Err() != nil {
+			// 思考秒数取**本轮**已流逝时间：turnParts 里各轮的 seconds 是各轮自己记的，
+			// 而本轮尚未 append，用外层的 thinkSeconds 会拿到上一轮（或 0）的陈旧值。
+			s.persistDisconnectedTurn(claims.UserID, sessionID, turnID, turnParts,
+				streamReasoning.String(), streamAnswer.String(), int(time.Since(thinkStart).Seconds()))
 			return
 		}
-		// 停止生成（客户端已断开）：撤回本轮用户消息、不落任何回复。
-		// 竞态背景：客户端撤回与「生成完成落库」可能交错，模型已答完时这里再落库会产生孤儿回复（2026-09-21 回归实测）
-		if r.Context().Err() != nil {
-			_, _ = s.db.DeleteLastUserMessageIfOrphan(context.Background(), claims.UserID)
+		if err != nil {
+			s.sseEvent(w, flusher, "error", map[string]any{"code": "model_error", "message": err.Error(), "retryable": true})
+			s.sseEvent(w, flusher, "turn.end", map[string]any{"stop_reason": "error"})
 			return
 		}
 		chain = rest
+		// 流式重组：chatCallStream 只带 usage，正文/思考/工具调用从增量重组
+		if len(res.Choices) == 0 {
+			var reasoning, content strings.Builder
+			toolCalls := map[int]*llm.ToolCall{}
+			var order []int
+			for _, d := range lastDeltas {
+				if d.Reasoning != "" {
+					reasoning.WriteString(d.Reasoning)
+				}
+				if d.Content != "" {
+					content.WriteString(d.Content)
+				}
+				if d.ToolCall != nil {
+					tc, ok := toolCalls[d.ToolCall.Index]
+					if !ok {
+						tc = &llm.ToolCall{ID: d.ToolCall.ID, Type: "function"}
+						tc.Function.Name = d.ToolCall.Name
+						tc.Function.Arguments = d.ToolCall.Arguments // 首个分片的参数不可丢
+						toolCalls[d.ToolCall.Index] = tc
+						order = append(order, d.ToolCall.Index)
+						continue
+					}
+					if d.ToolCall.ID != "" {
+						tc.ID = d.ToolCall.ID
+					}
+					if d.ToolCall.Name != "" {
+						tc.Function.Name = d.ToolCall.Name
+					}
+					tc.Function.Arguments += d.ToolCall.Arguments
+				}
+			}
+			cm := llm.ChoiceMessage{Content: content.String(), Reasoning: reasoning.String()}
+			for _, i := range order {
+				cm.ToolCalls = append(cm.ToolCalls, *toolCalls[i])
+			}
+			res.Choices = []llm.Choice{{Message: cm, FinishReason: "stop"}}
+		}
 		choice := res.Choices[0]
+		// 思考链：模型下发 reasoning_content 则记录并落库（刷新后挂回随后的助手气泡，默认折叠）。
+		// 增量已在上面逐帧下发过——这里**只补未流式下发的情况**，否则用户会看到思考重复一遍。
+		if choice.Message.Reasoning != "" {
+			if !thinkStreamed {
+				s.sseEvent(w, flusher, "thinking.delta", map[string]any{"text": choice.Message.Reasoning})
+				s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": int(time.Since(thinkStart).Seconds())})
+			}
+			thinkSeconds = int(time.Since(thinkStart).Seconds())
+			roundReasoning = choice.Message.Reasoning
+			// 本轮思考进 parts 累积（各轮按发生顺序，落库时一次写出）
+			turnParts = append(turnParts, map[string]any{"type": "thinking", "text": roundReasoning, "seconds": thinkSeconds})
+		}
 		if len(choice.Message.ToolCalls) == 0 {
 			text := choice.Message.Content
-			_, _ = s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "assistant", Content: text})
-			s.sseEvent(w, flusher, "text", map[string]string{"content": text})
+			{
+				// parts 展示口径（AI模式设计「消息 parts 契约」）：思考 → 工具步骤 → 正文
+				// 全在同一行，刷新后仍可展开（与「不进模型上下文」是两回事）。
+				parts := append(turnParts, map[string]any{"type": "text", "text": text})
+				pj, _ := json.Marshal(parts)
+				_, _ = s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, SessionID: sessionID, TurnID: turnID, Role: "assistant", Parts: string(pj)})
+			}
+			// 兜底整块下发（流式回调未覆盖到正文时）：文本非空才发 delta，避免空帧
+			if text != "" && !streamedAnswer {
+				s.sseEvent(w, flusher, "answer.delta", map[string]any{"text": text})
+			}
+			// 助手正文进模型上下文（kind=dialogue，AI模式设计「上下文组装」· kind 取值：
+			// dialogue 含用户消息与助手正文）。此前只写展示面 chat_messages，
+			// 模型看不到自己上一轮说过什么，多轮指代（「再说一次」）会失忆。
+			// 空文本不写（空串进上下文是无效行）；思考链不进上下文。
+			if text != "" {
+				_ = s.db.AppendContext(r.Context(), claims.UserID, sessionID, turnID,
+					"assistant", text, "", "", "", store.ApproxTokens(text), "dialogue", false)
+			}
+			s.sseEvent(w, flusher, "answer.end", map[string]any{})
+			answered = true
+			stopReason = "answer"
 			break
 		}
 
-		msgs = append(msgs, llm.Message{Role: "assistant", Content: choice.Message.Content, ToolCalls: choice.Message.ToolCalls})
-		stopForConfirm := false
-		for _, call := range choice.Message.ToolCalls {
-			result, card, data, err := s.runToolCall(r.Context(), claims.UserID, call)
+		// 预算：工具调用总数上限。一次响应的调用数可能远超剩余额度，故**执行前截断**，
+		// 且截断后的 assistant 行与随后的 tool 结果成对进上下文（不留下无回执的 tool_call）。
+		calls := choice.Message.ToolCalls
+		if remaining := maxToolCalls - toolCallsUsed; len(calls) > remaining {
+			if remaining <= 0 {
+				budgetHit = true
+				break
+			}
+			calls = calls[:remaining]
+			budgetHit = true
+		}
+		toolCallsUsed += len(calls)
+
+		msgs = append(msgs, llm.Message{Role: "assistant", Content: choice.Message.Content, ToolCalls: calls})
+		stopForProposal := false
+		for _, call := range calls {
+			// 工具状态条：label 由注册表提供（人话），不含工具名与参数（ 零带内信令）
+			label := s.progressLabel(call.Function.Name)
+			s.sseEvent(w, flusher, "tool.start", map[string]any{"call_id": call.ID, "label": label})
+			out, err := s.invokeTool(toolCtx, claims.UserID, sessionID, turnID, call, mediaRefs)
 			if err != nil {
-				result = "工具执行失败: " + err.Error()
+				// 校验前置失败等：把原因回填给模型，本轮继续（模型可修正重试）；用户不见卡
+				errText := "工具调用失败: " + err.Error()
+				s.sseEvent(w, flusher, "tool.end", map[string]any{"call_id": call.ID, "status": "failed", "text": err.Error()})
+				// 失败步骤同样进 parts（展示口径：刷新后能看到这一步失败过）。
+				// text 只放「没成功」级信息，不放错误原文——parts 是展示面，错误细节属审计
+				// （AI模式设计「时序与事件」：展开看到的是人话状态，不是技术细节）。
+				turnParts = append(turnParts, map[string]any{
+					"type": "tool", "call_id": call.ID, "label": label, "status": "failed", "text": "没成功",
+				})
+				msgs = append(msgs, llm.Message{Role: "tool", Content: errText, ToolCallID: call.ID})
+				// 失败同样成对进上下文：该 call 在内存 msgs 里已有回执，上下文侧不能缺，
+				// 否则两个受众不一致（AI模式设计「上下文组装」· 协议配对）。
+				s.appendToolPair(r.Context(), claims.UserID, sessionID, turnID, call, errText)
+				continue
 			}
-			if card != nil {
-				if len(req.Media) > 0 {
-					// 卡片携带本条消息的媒体引用（name/type/size，无 data_url）：供确认界面展示待确认附件（mock 契约）
-					if prms, ok := card["params"].(map[string]any); ok {
-						refs := make([]map[string]any, 0, len(req.Media))
-						for _, m := range req.Media {
-							refs = append(refs, map[string]any{"name": m.Name, "type": m.Type, "size": m.Size})
-						}
-						prms["media_refs"] = refs
-					}
+			if out.Proposal != nil {
+				proposal := s.proposalEvent(r.Context(), out.Proposal, mediaRefs)
+				actionID, perr := s.createProposal(r.Context(), claims.UserID, sessionID, turnID, out.Proposal, mediaRefs, turnParts)
+				if perr != nil {
+					return
 				}
-				s.sseEvent(w, flusher, "card", card)
-				result = "已生成确认卡片，等待用户确认后执行"
-				stopForConfirm = true
-			} else if ev := s.searchResultFrom(r.Context(), call.Function.Name, call.Function.Arguments, data); ev != nil {
-				// 搜索结果卡片（契约 tools/mock/routes.mjs:897-905）：读工具产出转 result 事件内联展示。
-				// 空结果同样下发（items=[]），由客户端渲染「没找到」。
-				// 仅推卡片 + 一句人话文案；不推「🔎 工具名 → 原始 JSON」（那是内部结构，用户看不懂）。
-				s.sseEvent(w, flusher, "text", map[string]string{"content": "🔎 " + ev.Caption})
-				s.sseEvent(w, flusher, "result", ev)
-			} else {
-				s.sseEvent(w, flusher, "text", map[string]string{"content": fmt.Sprintf("🔎 %s → %s", call.Function.Name, result)})
+				proposal["id"] = actionID
+				s.sseEvent(w, flusher, "proposal", map[string]any{"proposal": proposal})
+				// 提案往返进上下文：模型据此知道「已出卡待确认」，不会重复出卡
+				msgs = append(msgs, llm.Message{Role: "tool", Content: out.ModelText, ToolCallID: call.ID})
+				mediaRefs = nil // 本轮附件已被这张卡消费（一轮只归一个提案）
+				// 一轮只出一张卡：立即停止处理本响应里后续的 tool_calls
+				// （AI模式设计「预算与并行」：写工具串行，一旦产出提案即停止本轮）。
+				// 用 break 而非 continue——continue 只跳过一个 call，同响应的第二个提案仍会出卡。
+				stopForProposal = true
+				break
 			}
-			msgs = append(msgs, llm.Message{Role: "tool", Content: result, ToolCallID: call.ID})
+			// 读工具：状态条 + 可选 UI 块；ModelText 进上下文（AI模式设计「工具契约」）
+			s.sseEvent(w, flusher, "tool.end", map[string]any{"call_id": call.ID, "status": "ok",
+				"text": out.UserText, "ui": out.UI})
+			// ui 一并落库：结果卡（含 result_id 句柄）刷新后要能重绘并继续勾选引用
+			// （AI模式设计「结果集句柄与点选优先」：句柄随会话存活，翻页结果照常落新句柄）。
+			tp := map[string]any{
+				"type": "tool", "call_id": call.ID, "label": label, "status": "ok", "text": out.UserText,
+			}
+			if out.UI != nil {
+				tp["ui"] = out.UI
+			}
+			turnParts = append(turnParts, tp)
+			// 模型上下文：读工具往返成对写（assistant 带 tool_calls + tool 回执）——
+			// 缺 assistant 行会跨轮留下孤儿 tool 行（AI模式设计「上下文组装」· 协议配对）。
+			s.appendToolPair(r.Context(), claims.UserID, sessionID, turnID, call, out.ModelText)
+			msgs = append(msgs, llm.Message{Role: "tool", Content: out.ModelText, ToolCallID: call.ID})
 		}
-		if stopForConfirm {
-			// 卡片本体消息（runToolCall 里已带 card_id 落库）即状态载体，
-			// 不再另写「已生成确认卡片，等待确认」惰性 marker（2026-09-21：回显时它只是无交互文字）
+		if stopForProposal {
+			answered = true
+			stopReason = "proposal"
+			break
+		}
+		if budgetHit {
 			break
 		}
 	}
-	s.sseEvent(w, flusher, "done", nil)
-}
-
-// searchHitItem 搜索结果卡片条目（契约 routes.mjs:899-903）。
-type searchHitItem struct {
-	ID       int64  `json:"id"`
-	Content  string `json:"content"`
-	ThumbURL string `json:"thumb_url"`
-}
-
-// searchResultEvent 搜索结果卡片事件体（契约 tools/mock/routes.mjs:897-905）。
-// Items 用非 nil 空切片：空结果须序列化为 []，客户端读 items.length，null 会渲染异常。
-type searchResultEvent struct {
-	Tool  string          `json:"tool"`
-	Query string          `json:"query"`
-	Items []searchHitItem `json:"items"`
-	// Caption 不进事件体（客户端只认 tool/query/items），仅用于日志/文案一致性检查
-	Caption string `json:"-"`
-}
-
-// searchResultFrom 把 search_posts 的产出转成 result 事件（有命中才有缩略图）。
-// 契约：content 截断 60 rune、thumb_url 取该动态首图缩略图（无媒体为空串）。
-func (s *Service) searchResultFrom(ctx context.Context, toolName, argsJSON string, data any) *searchResultEvent {
-	if toolName != "search_posts" {
-		return nil
-	}
-	hits, ok := data.([]tools.PostHit)
-	if !ok {
-		return nil
-	}
-	ids := make([]int64, 0, len(hits))
-	for _, h := range hits {
-		ids = append(ids, h.ID)
-	}
-	// 一次批量取媒体；查不到只是没缩略图，不该让整张卡片不出来
-	medias, err := s.db.GetMediaByPostIDs(ctx, ids)
-	if err != nil {
-		slog.Warn("search result media lookup failed", "err", err)
-	}
-	items := make([]searchHitItem, 0, len(hits))
-	for _, h := range hits {
-		thumb := ""
-		if list := medias[h.ID]; len(list) > 0 && s.deps.MP != nil {
-			thumb = s.deps.MP.SignedURL(list[0].ID, "thumb")
+	// 预算耗尽必收尾：轮次/工具数触顶时不能静默 done——再补一次不带工具的调用。
+	if !answered || budgetHit {
+		// 到达这里时 ctx 可能已取消（断连发生在工具执行期间，循环后的断连检查在收尾之前
+		// 没有机会跑）。此时收尾调用与后续写库都会失败，必须先按断连落库再返回，
+		// 否则 turnParts 全丢且用户消息没有任何中断标记。
+		if r.Context().Err() != nil {
+			s.persistDisconnectedTurn(claims.UserID, sessionID, turnID, turnParts, "", "", 0)
+			return
 		}
-		items = append(items, searchHitItem{ID: h.ID, Content: textutil.Trunc(h.Content, 60), ThumbURL: thumb})
+		msgs = append(msgs, llm.Message{Role: "user",
+			Content: "（系统提示）工具调用次数已用尽。请基于以上已获得的信息直接回答用户，并说明哪些部分没能完成，不要再调用工具。"})
+		text := "这次没能整理完，请换个说法再试一次。"
+		if res, _, cerr := s.chatCall(r.Context(), chain, &llm.ChatRequest{Messages: msgs}); cerr == nil &&
+			len(res.Choices) > 0 && strings.TrimSpace(res.Choices[0].Message.Content) != "" {
+			text = res.Choices[0].Message.Content
+		} else if cerr != nil {
+			slog.Warn("预算收尾调用失败", "err", cerr)
+		}
+		// 收尾调用途中断连：这是循环之外的**第二个**断连出口，必须与循环内同款处理——
+		// 把已累积的工具步骤落成 assistant 行并在用户消息上标中断。否则下面的写库会因
+		// 请求 ctx 已取消而静默失败（`_, _ =`），turnParts 全丢且没有任何中断标记。
+		// 兜底文案不算「已产生内容」，故不并入 parts（只保留真实的工具步骤）。
+		if r.Context().Err() != nil {
+			s.persistDisconnectedTurn(claims.UserID, sessionID, turnID, turnParts, "", "", 0)
+			return
+		}
+		{
+			parts := append(turnParts, map[string]any{"type": "text", "text": text})
+			pj, _ := json.Marshal(parts)
+			_, _ = s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, SessionID: sessionID, TurnID: turnID, Role: "assistant", Parts: string(pj)})
+		}
+		// 收尾回答也是助手正文，同样要进模型上下文（与循环内 :777 的 dialogue 写入同口径），
+		// 否则用户下一轮引用「你刚才的总结」时模型看不到它。
+		if t := strings.TrimSpace(text); t != "" {
+			_ = s.db.AppendContext(r.Context(), claims.UserID, sessionID, turnID,
+				"assistant", text, "", "", "", store.ApproxTokens(text), "dialogue", false)
+		}
+		s.sseEvent(w, flusher, "answer.delta", map[string]any{"text": text})
+		s.sseEvent(w, flusher, "answer.end", map[string]any{})
+		stopReason = "budget"
 	}
-	var args map[string]any
-	_ = json.Unmarshal([]byte(argsJSON), &args)
-	q, _ := args["query"].(string)
-	evt := &searchResultEvent{Tool: "search_posts", Query: q, Items: items}
-	// 文案照 mock 口径：卡片是主体，配一句人话；空结果由客户端渲染「没找到」
-	if len(items) > 0 {
-		evt.Caption = fmt.Sprintf("找到 %d 条%s回忆：", len(items), relatedTo(q))
-	} else {
-		evt.Caption = "没找到" + relatedTo(q) + "回忆。"
+	// 服务器主动收尾必须是预算类；正常/提案路径已在循环内置位。
+	if stopReason == "aborted" && answered {
+		stopReason = "answer"
 	}
-	return evt
+	s.sseEvent(w, flusher, "turn.end", map[string]any{"stop_reason": stopReason})
 }
 
-// relatedTo 组装「和「X」相关的」限定语；query 为空时退化为「最近的」。
-func relatedTo(q string) string {
-	if q == "" {
-		return "最近的"
-	}
-	return "和「" + q + "」相关的"
+// toolNameOf 取工具名（call.Function.Name 的取值包装，便于测试与日志统一）。
+func toolNameOf(call llm.ToolCall) string { return call.Function.Name }
+
+// appendToolPair 把一次读工具的往返按协议配对写进模型上下文：
+// 先 assistant 行（**单元素** tool_calls_json），再 tool 行（同 tool_call_id）。
+//
+// AI模式设计「上下文组装」· 协议配对：`tool_calls_json` 存 assistant 轮的 name+arguments，
+// 回放时原样还原配对。严格要求下（OpenAI / Anthropic）`role=tool` 必须紧跟带同 id
+// `tool_calls` 的 assistant 消息，孤儿 tool 行属协议违规。
+//
+// 三条约束（改动前务必读）：
+//  1. **逐 call 写，不得把整响应写成一条 assistant 行**——同一响应里有的 call 失败
+//     （不产生回执）、有的 call 因出提案 `break` 而未执行，整响应写就会出现
+//     「声明 N 个 tool_calls、只有部分回执」。
+//  2. **只在拿到该 call 的终局结果之后写**——执行前写 assistant，出提案的 call 会
+//     `break` 且不写 tool 行，同样留下无回执的 tool_calls。
+//  3. 出提案的 call 两侧都不写：其往返由 recordDecision 以合成 id `card-<n>` 自成一对
+//     （service.go recordDecision），与真实 call.ID 不同名，先写的 assistant 永远配不上。
+func (s *Service) appendToolPair(ctx context.Context, userID, sessionID int64, turnID string, call llm.ToolCall, toolContent string) {
+	tc, _ := json.Marshal([]llm.ToolCall{call})
+	_ = s.db.AppendContext(ctx, userID, sessionID, turnID,
+		"assistant", "", string(tc), "", "", store.ApproxTokens(string(tc)), "read_result", false)
+	_ = s.db.AppendContext(ctx, userID, sessionID, turnID,
+		"tool", toolContent, "", call.ID, toolNameOf(call), store.ApproxTokens(toolContent), "read_result", false)
 }
 
-func userStyle(u *store.User) string {
-	if u == nil {
+// progressLabel 工具状态条人话标签（注册表 ProgressLabel）；未知工具回退通用文案。
+func (s *Service) progressLabel(toolName string) string {
+	if t, ok := s.reg[toolName]; ok && t.ProgressLabel != "" {
+		return t.ProgressLabel
+	}
+	return "处理中"
+}
+
+// toolRowMedia 读工具回显行载荷（role=tool 行的 media 列）：
+// {tool, text, ui}——text 供状态条、ui 供结果卡片渲染（含 result_id，刷新后可继续勾选引用）。
+func toolRowMedia(toolName string, out *tools.ToolResult) string {
+	payload := map[string]any{"tool": toolName}
+	if out.UserText != "" {
+		payload["text"] = out.UserText
+	}
+	if out.UI != nil {
+		payload["ui"] = out.UI
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
 		return ""
 	}
-	return u.AIStyle
+	return string(b)
 }
 
-// runToolCall 读工具立即执行；写工具创建确认卡片并返回卡片数据。
-// data 是读工具的结构化产出（ExecResult.Data），供搜索结果卡片等事件取用。
-func (s *Service) runToolCall(ctx context.Context, userID int64, call llm.ToolCall) (result string, card map[string]any, data any, err error) {
+// invokeTool 执行一次模型工具调用。
+//   - 读工具：立即执行（ModeExecute），返回 ModelText/UserText/UI；
+//   - 提案工具：ModePropose（校验 + 自构造 Preview + 展开 source），返回 Proposal；
+//     出卡时记审计（action=工具名, result=pending），裁决时另记一条（见 ResolveProposal）。
+func (s *Service) invokeTool(ctx context.Context, userID, sessionID int64, turnID string, call llm.ToolCall, mediaRefs []any) (*tools.ToolResult, error) {
 	tool, ok := s.reg[call.Function.Name]
 	if !ok {
-		return "未知工具: " + call.Function.Name, nil, nil, nil
+		return nil, fmt.Errorf("未知工具: %s", call.Function.Name)
 	}
-	// 后台停用的工具拒绝执行（模型可能凭历史上下文继续调用，
-	// 仅从 toolSpecs 摘除不足以拦截）。
+	// 后台停用的工具拒绝执行（模型可能凭历史上下文继续调用）
 	if disabled, derr := s.db.DisabledTools(ctx); derr == nil && disabled[tool.Name] {
-		return "该工具已在后台停用: " + tool.Name, nil, nil, nil
+		return nil, fmt.Errorf("该工具已在后台停用: %s", tool.Name)
 	}
 	var args map[string]any
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil {
-		return "", nil, nil, fmt.Errorf("参数解析失败: %w", err)
+		return nil, fmt.Errorf("参数解析失败: %w", err)
 	}
-	if !tool.IsWrite {
-		startAt := time.Now()
-		out, err := tool.Exec(ctx, s.deps, userID, args)
-		latencyMs := time.Since(startAt).Milliseconds()
-		if err != nil {
-			// 读工具失败同样落审计（failed: 原因），与 confirm / PAT 通道口径一致；
-			// 否则「所有工具调用均记审计」在这条路径留空档。
-			s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditFailure(err), latencyMs)
-			return "", nil, nil, err
-		}
-		// result 仅记状态（success/failed，对齐 mock 契约与后台等值判定）；工具输出不回写审计
-		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditSuccess, latencyMs)
-		return out.Content, nil, out.Data, nil
+	// 顺序重要：必须先挂 media_refs 再校验，否则「用户只发图不说字」的纯媒体动态会被误拒
+	//（媒体在确认时才转正，卡阶段只能以引用形式存在）。
+	if tool.IsWrite && len(mediaRefs) > 0 {
+		args["media_refs"] = mediaRefs
 	}
-	// 写工具 → 确认卡片（15 分钟 TTL，单次有效）
-	params, _ := json.Marshal(args)
-	actionID, err := s.db.CreateConfirmAction(ctx, userID, tool.Name, string(params))
+	mode := tools.ModeExecute
+	if tool.IsWrite {
+		mode = tools.ModePropose
+	}
+	startAt := time.Now()
+	out, err := tool.Invoke(ctx, s.deps, userID, args, mode)
+	latencyMs := time.Since(startAt).Milliseconds()
 	if err != nil {
-		return "", nil, nil, err
+		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditFailure(err), latencyMs)
+		return nil, err
 	}
-	_, _ = s.db.SaveChatMessage(ctx, &store.ChatMessage{UserID: userID, Role: "assistant", Content: tool.Description, CardID: sql.NullInt64{Int64: actionID, Valid: actionID > 0}})
-	return "", map[string]any{
-		"action_id":  actionID,
-		"tool":       tool.Name,
-		"params":     args,
-		"status":     "pending",
-		"expires_in": 900,
-	}, nil, nil
+	if tool.IsWrite {
+		// 出卡审计：result=pending（「AI 提议了什么但未被确认」也可追溯）
+		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditPending, latencyMs)
+	} else {
+		s.deps.AuditWithLatency(ctx, userID, tool.Name, call.Function.Arguments, tools.AuditSuccess, latencyMs)
+	}
+	_ = turnID // 卡片载体消息在 createProposal 内落库，需要 turn 归属（回滚）
+	return out, nil
 }
 
-// Confirm POST /api/v1/chat/confirm {action_id, confirmed}。
-func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
+// createProposal 落库提案（params_json 存展开后的执行参数；preview_json 存自构造预览）
+// 与载体消息（card_id 关联，content 为空——卡片本体由 preview 渲染，不需要文字载体）。
+func (s *Service) createProposal(ctx context.Context, userID, sessionID int64, turnID string, p *tools.Proposal, mediaRefs []any, turnParts []map[string]any) (int64, error) {
+	params, err := json.Marshal(p.Params)
+	if err != nil {
+		return 0, err
+	}
+	previewJSON, err := json.Marshal(p)
+	if err != nil {
+		return 0, err
+	}
+	actionID, err := s.db.CreateConfirmAction(ctx, userID, p.Intent, string(params), string(previewJSON))
+	if err != nil {
+		return 0, err
+	}
+	// parts 展示口径：本轮的思考与工具步骤 + 卡片指针，全在同一行（刷新后可展开）。
+	parts := append(append([]map[string]any{}, turnParts...), map[string]any{"type": "card", "action_id": actionID})
+	partsJSON, _ := json.Marshal(parts)
+	if _, err := s.db.SaveChatMessage(ctx, &store.ChatMessage{
+		UserID: userID, SessionID: sessionID, TurnID: turnID, Role: "assistant",
+		Parts:  string(partsJSON),
+		CardID: sql.NullInt64{Int64: actionID, Valid: true},
+	}); err != nil {
+		return 0, err
+	}
+	// 模型上下文：提案在 pending 时不进（未发生的操作不向模型透露，AI模式设计「上下文组装」）；
+	// resolve 裁决后一次性写入 pinned 往返（见 recordDecision）。
+	return actionID, nil
+}
+
+// proposalEvent 组装 proposal 事件载荷（与 preview_json 同源 + expires_in）。
+func (s *Service) proposalEvent(ctx context.Context, p *tools.Proposal, mediaRefs []any) map[string]any {
+	atts := p.Attachments
+	if len(atts) == 0 && len(mediaRefs) > 0 {
+		atts = refsToAttachments(mediaRefs)
+	}
+	return map[string]any{
+		"intent":      p.Intent,
+		"summary":     p.Summary,
+		"preview":     p.Preview,
+		"warnings":    p.Warnings,
+		"attachments": atts,
+		"expires_in":  proposalTTLSeconds,
+	}
+}
+
+// refsToAttachments 卡阶段引用元数据（media_refs）→ 事件附件清单。
+func refsToAttachments(mediaRefs []any) []tools.AttachmentRef {
+	out := make([]tools.AttachmentRef, 0, len(mediaRefs))
+	for _, r := range mediaRefs {
+		m, ok := r.(map[string]any)
+		if !ok {
+			continue
+		}
+		ref := tools.AttachmentRef{}
+		if s, ok := m["name"].(string); ok {
+			ref.Name = s
+		}
+		if s, ok := m["type"].(string); ok {
+			ref.Type = s
+		}
+		if f, ok := m["size"].(float64); ok {
+			ref.Size = int64(f)
+		}
+		out = append(out, ref)
+	}
+	return out
+}
+
+// ResolveProposal POST /api/v1/chat/proposals/{id}/resolve {decision, media_tokens?}。
+// 裁决口径：approve 原子认领（UPDATE … WHERE status='pending' AND 未过期）→ 执行
+// （ModeExecute）→ 审计 + 回执落库；cancel 只置状态。
+// 客户端据此即时拿到 record（kind+id）做「已发布」反馈，不必等下一轮模型回答。
+func (s *Service) ResolveProposal(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, `{"error":"提案不存在"}`, http.StatusNotFound)
+		return
+	}
 	var req struct {
-		ActionID    int64    `json:"action_id"`
-		Confirmed   bool     `json:"confirmed"`
+		Decision    string   `json:"decision"`
 		MediaTokens []string `json:"media_tokens"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.ActionID == 0 {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"请求格式错误"}`, http.StatusBadRequest)
 		return
 	}
-	action, err := s.db.GetConfirmAction(r.Context(), req.ActionID)
+	if req.Decision != "approve" && req.Decision != "cancel" {
+		http.Error(w, `{"error":"decision 仅支持 approve / cancel"}`, http.StatusBadRequest)
+		return
+	}
+	action, err := s.db.GetConfirmAction(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) || (err == nil && action.UserID != claims.UserID) {
-		http.Error(w, `{"error":"确认卡片不存在"}`, http.StatusNotFound)
+		http.Error(w, `{"error":"提案不存在"}`, http.StatusNotFound)
 		return
 	}
 	if err != nil {
 		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
 		return
 	}
+	// 会话/轮次归属：回执落在载体消息所在会话与轮次
+	sessionID, _ := s.db.SessionIDOfCard(r.Context(), id)
+	turnIDs, _ := s.db.TurnIDsOfCard(r.Context(), id)
+	carrierTurn := ""
+	if len(turnIDs) > 0 {
+		carrierTurn = turnIDs[0]
+	}
 
-	if !req.Confirmed {
-		_ = s.db.ResolveConfirmAction(r.Context(), req.ActionID, "cancelled")
+	if req.Decision == "cancel" {
+		if err := s.db.ResolveConfirmAction(r.Context(), id, "cancelled"); err != nil {
+			if errors.Is(err, store.ErrConfirmExpired) {
+				// 过期前置裁决：置 expired 并回填上下文（口径「已裁决提案归一：过期→未执行」）
+				if uerr := s.db.UpdateConfirmStatus(r.Context(), id, "expired"); uerr == nil {
+					s.recordDecision(r.Context(), claims.UserID, action, sessionID, carrierTurn, "expired", "确认卡片已过期，未执行")
+				}
+			}
+			s.resolveConflict(w, err)
+			return
+		}
+		// 裁决时点审计（出卡时已记 pending；见 invokeTool）——取消也要可追溯
+		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, "cancelled", 0)
+		s.recordDecision(r.Context(), claims.UserID, action, sessionID, carrierTurn, "cancelled", "用户取消了该操作，未执行")
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "cancelled"})
 		return
 	}
@@ -527,116 +1141,337 @@ func (s *Service) Confirm(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"未知工具"}`, http.StatusInternalServerError)
 		return
 	}
-	if err := s.db.ResolveConfirmAction(r.Context(), req.ActionID, "confirmed"); err != nil {
+	// 原子认领：单次有效 + 未过期（并发双确认只有一个能赢）
+	if err := s.db.ResolveConfirmAction(r.Context(), id, "confirmed"); err != nil {
 		if errors.Is(err, store.ErrConfirmExpired) {
-			_ = s.db.ResolveConfirmAction(r.Context(), req.ActionID, "expired")
-			s.writeJSON(w, http.StatusGone, map[string]string{"error": "确认卡片已过期（15 分钟），请重新发起"})
-			return
+			if uerr := s.db.UpdateConfirmStatus(r.Context(), id, "expired"); uerr == nil {
+				s.recordDecision(r.Context(), claims.UserID, action, sessionID, carrierTurn, "expired", "确认卡片已过期，未执行")
+			}
 		}
-		if errors.Is(err, store.ErrConfirmResolved) {
-			s.writeJSON(w, http.StatusConflict, map[string]string{"error": "卡片已处理过（单次有效）"})
-			return
-		}
-		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		s.resolveConflict(w, err)
 		return
 	}
 
 	var args map[string]any
 	_ = json.Unmarshal([]byte(action.ParamsJSON), &args)
+	if args == nil {
+		args = map[string]any{}
+	}
 	if len(req.MediaTokens) > 0 {
 		args["media_tokens"] = req.MediaTokens
 	}
+	toolCtx := tools.WithSessionID(r.Context(), sessionID)
 	startAt := time.Now()
-	out, err := tool.Exec(r.Context(), s.deps, claims.UserID, args)
+	out, err := tool.Invoke(toolCtx, s.deps, claims.UserID, args, tools.ModeExecute)
 	latencyMs := time.Since(startAt).Milliseconds()
 	if err != nil {
-		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON,
-			tools.AuditFailure(err), latencyMs)
-		// 回写 failed：确认已消耗但执行失败，历史回显须是「失败+原因」而不是被 confirmed→executed 洗成已执行
-		if ferr := s.db.ResolveConfirmAction(r.Context(), req.ActionID, "failed"); ferr != nil {
-			slog.Warn("confirm action failed 回写失败", "action_id", req.ActionID, "err", ferr)
+		s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, tools.AuditFailure(err), latencyMs)
+		if ferr := s.db.ResolveConfirmAction(r.Context(), id, "failed"); ferr != nil {
+			slog.Warn("proposal failed 回写失败", "action_id", id, "err", ferr)
 		}
-		_, _ = s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "tool_result",
-			Content: err.Error(), CardID: sql.NullInt64{Int64: req.ActionID, Valid: req.ActionID > 0}})
+		s.recordDecision(r.Context(), claims.UserID, action, sessionID, carrierTurn, "failed", err.Error())
 		s.writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": err.Error()})
 		return
 	}
 	s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, tools.AuditSuccess, latencyMs)
-	msg := out.Content
-	if msgID, err := s.db.SaveChatMessage(r.Context(), &store.ChatMessage{UserID: claims.UserID, Role: "tool_result", Content: msg, CardID: sql.NullInt64{Int64: req.ActionID, Valid: req.ActionID > 0}}); err == nil {
-		_ = msgID
+	s.recordDecision(r.Context(), claims.UserID, action, sessionID, carrierTurn, "executed", out.ModelText)
+	resp := map[string]any{"status": "executed", "result": out.ModelText}
+	if out.Record != nil {
+		resp["record"] = out.Record
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"status": "executed", "result": msg})
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// WithdrawLast POST /api/v1/chat/withdraw-last：停止生成即撤回（REQ §5.1，2026-09-21）——
-// 删除最后一条尚无回复的用户消息；已有回复则不动（withdrawn=false，客户端保留气泡）。
-func (s *Service) WithdrawLast(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.UserFromContext(r.Context())
-	ok, err := s.db.DeleteLastUserMessageIfOrphan(r.Context(), claims.UserID)
-	if err != nil {
+// resolveConflict 认领失败的错误分类：过期 410 / 已裁决 409。
+func (s *Service) resolveConflict(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, store.ErrConfirmExpired):
+		s.writeJSON(w, http.StatusGone, map[string]string{"error": "确认卡片已过期（15 分钟），请重新发起"})
+	case errors.Is(err, store.ErrConfirmResolved):
+		s.writeJSON(w, http.StatusConflict, map[string]string{"error": "卡片已处理过（单次有效）"})
+	default:
 		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
-		return
 	}
-	s.writeJSON(w, http.StatusOK, map[string]any{"withdrawn": ok})
 }
 
-// History GET /api/v1/chat/history。
-func (s *Service) History(w http.ResponseWriter, r *http.Request) {
-	claims, _ := auth.UserFromContext(r.Context())
-	list, err := s.db.ListChatMessages(r.Context(), claims.UserID, 100)
-	if err != nil {
-		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
-		return
+// recordDecision 裁决回执落库：tool_result 行（供历史与模型上下文回放）+ 会话活跃时间推进。
+func (s *Service) recordDecision(ctx context.Context, userID int64, action *store.ConfirmAction, sessionID int64, carrierTurn, status, text string) {
+	if sessionID > 0 {
+		if err := s.db.TouchChatSession(ctx, sessionID); err != nil {
+			slog.Warn("touch chat session failed", "session_id", sessionID, "err", err)
+		}
 	}
-	// 收集所有 card_id，批量查 ConfirmAction 快照（REQ §5.1 恢复确认卡片）；
-	// 同卡片的 tool_result 执行结果并入快照，不再单独成泡（2026-09-21 回显治理）
-	cardIDs := make([]int64, 0)
-	resultByCard := make(map[int64]string)
-	for _, m := range list {
-		if m.CardID.Valid && m.CardID.Int64 > 0 {
-			cardIDs = append(cardIDs, m.CardID.Int64)
-			if m.Role == "tool_result" {
-				resultByCard[m.CardID.Int64] = m.Content // list 时间正序，后者覆盖前者
+	{
+		pj, _ := json.Marshal([]map[string]any{
+			{"type": "tool", "call_id": "", "label": action.ToolName, "status": status, "text": text},
+		})
+		if _, err := s.db.SaveChatMessage(ctx, &store.ChatMessage{
+			UserID: userID, SessionID: sessionID, TurnID: carrierTurn, Role: "assistant",
+			Parts: string(pj), CardID: sql.NullInt64{Int64: action.ID, Valid: true},
+		}); err != nil {
+			slog.Warn("tool_result 落库失败", "action_id", action.ID, "status", status, "err", err)
+		}
+		// 模型上下文：已裁决提案往返（proposal 档，pinned——永不淘汰）。
+		// tool 结果文本 = cardOutcome 归一口径（confirmed→结果 / failed→「执行失败：原因」 /
+		// cancelled→「用户取消了…」/ expired→「确认卡片已过期…」），与模型自述一致。
+		// status 口径（executed/cancelled/failed/expired）→ 归一结果文本：
+		// executed=执行结果原文；failed=「执行失败：原因」；cancelled/expired=固定文案。
+		outcome := text
+		switch status {
+		case "failed":
+			if text != "" {
+				outcome = "执行失败：" + text
+			} else {
+				outcome = "执行失败"
+			}
+		case "cancelled":
+			outcome = "用户取消了该操作，未执行"
+		case "expired":
+			outcome = "确认卡片已过期，未执行"
+		}
+		tc, _ := json.Marshal([]map[string]any{{"id": fmt.Sprintf("card-%d", action.ID), "type": "function",
+			"function": map[string]any{"name": action.ToolName, "arguments": action.ParamsJSON}}})
+		_ = s.db.AppendContext(ctx, userID, sessionID, carrierTurn,
+			"assistant", "", string(tc), "", "", store.ApproxTokens(string(tc)), "proposal", true)
+		_ = s.db.AppendContext(ctx, userID, sessionID, carrierTurn,
+			"tool", outcome, "", fmt.Sprintf("card-%d", action.ID), action.ToolName, store.ApproxTokens(outcome), "proposal", true)
+	}
+}
+
+// persistDisconnectedTurn 意外断连时把本轮已产生内容落库保留（AI模式设计「停止与断连」：
+// 已下发的增量与已完成的工具步骤按 parts 落库保留并标 interrupted；
+// 「落库时机」节同款「中途断连不产生半截行，已下发的内容按 parts 完整保留」）。
+//
+// 与「用户主动停止」的区别：停止 = 整轮回滚（AbortTurn 删除全轮行），本函数只服务意外断连。
+// 因此写库前先查中止登记；写完再查一次，若期间用户点了停止则删掉自己刚写的行（幂等收敛），
+// 避免与 AbortTurn 的 DELETE 并发后留下孤儿 assistant 行。
+//
+// 请求 context 此时已取消，落库必须用独立短超时 context（与 markTurnAborted 同款做法）。
+func (s *Service) persistDisconnectedTurn(userID, sessionID int64, turnID string, turnParts []map[string]any,
+	reasoning, answer string, thinkSeconds int) {
+	if s.abortRequested(userID, turnID) {
+		return // 用户主动停止：整轮回滚，不保留任何内容
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// parts 契约顺序：思考 → 工具* → 正文（AI模式设计「消息 parts 契约」）。
+	// 本轮的思考**必然**还没进 turnParts——本轮只在 chatCallStream 正常返回后才 append
+	// 思考 part，而断连分支在那之前就 return 了，故这里无需去重判断，直接续在末尾即可
+	// （续在末尾 = 按发生顺序：turnParts 里是更早各轮的步骤，本轮思考发生在它们之后）。
+	parts := make([]map[string]any, 0, len(turnParts)+2)
+	parts = append(parts, turnParts...)
+	if reasoning != "" {
+		parts = append(parts, map[string]any{"type": "thinking", "text": reasoning, "seconds": thinkSeconds})
+	}
+	if answer != "" {
+		parts = append(parts, map[string]any{"type": "text", "text": answer})
+	}
+	// 全空（连一个字都没下发、也没跑完任何工具）→ 只标中断，不写空 assistant 行。
+	if len(parts) > 0 {
+		pj, err := json.Marshal(parts)
+		if err != nil {
+			slog.Warn("断连落库序列化失败", "session_id", sessionID, "turn_id", turnID, "err", err)
+		} else {
+			_, err = s.db.SaveChatMessage(ctx, &store.ChatMessage{
+				UserID: userID, SessionID: sessionID, TurnID: turnID, Role: "assistant", Parts: string(pj),
+			})
+			if err != nil {
+				slog.Warn("断连落库失败", "session_id", sessionID, "turn_id", turnID, "err", err)
 			}
 		}
 	}
-	cards, _ := s.db.ListConfirmActionsByIDs(r.Context(), cardIDs)
+	// 写后再查：期间用户点了停止 → AbortTurn 已删全轮，这里补删自己刚写的行。
+	if s.abortRequested(userID, turnID) {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM chat_messages WHERE user_id = ? AND turn_id = ? AND role = 'assistant'`,
+			userID, turnID); err != nil {
+			slog.Warn("断连回滚失败", "session_id", sessionID, "turn_id", turnID, "err", err)
+		}
+		return
+	}
+	s.markTurnAborted(userID, sessionID, turnID)
+}
 
-	type cardSnapshot struct {
-		ActionID  int64           `json:"action_id"`
-		Tool      string          `json:"tool"`
-		Params    json.RawMessage `json:"params"`
-		Status    string          `json:"status"`
-		ExpiresIn int             `json:"expires_in"`
-		Result    string          `json:"result,omitempty"`
+// markTurnAborted 连接断开后给本轮用户消息打标（不删，回显带「已中断」）。
+// 标记即以 parts 追加一个 interrupted part（与 parts 契约一致，不加列、不加 role）。
+// 用独立 context：调用时请求 context 已取消，沿用它写库必失败。
+func (s *Service) markTurnAborted(userID, sessionID int64, turnID string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var (
+		id    int64
+		parts string
+	)
+	err := s.db.QueryRowContext(ctx, `SELECT id, parts FROM chat_messages
+		WHERE user_id = ? AND session_id = ? AND turn_id = ? AND role = 'user'
+		ORDER BY id LIMIT 1`, userID, sessionID, turnID).Scan(&id, &parts)
+	if err != nil {
+		slog.Warn("断连标记读取失败", "session_id", sessionID, "turn_id", turnID, "err", err)
+		return
 	}
-	type item struct {
-		ID        int64           `json:"id"`
-		Role      string          `json:"role"`
-		Content   string          `json:"content"`
-		CardID    int64           `json:"card_id,omitempty"`
-		Card      *cardSnapshot   `json:"card,omitempty"`
-		CreatedAt string          `json:"created_at"`
-		Media     json.RawMessage `json:"media,omitempty"`
+	var list []map[string]any
+	if err := json.Unmarshal([]byte(parts), &list); err != nil {
+		slog.Warn("断连标记解析失败", "session_id", sessionID, "turn_id", turnID, "err", err)
+		return
 	}
-	items := make([]item, 0, len(list))
+	for _, p := range list {
+		if p["type"] == "interrupted" {
+			return // 幂等：已有标记不重复追加
+		}
+	}
+	list = append(list, map[string]any{"type": "interrupted"})
+	pj, err := json.Marshal(list)
+	if err != nil {
+		return
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET parts = ? WHERE id = ?`, string(pj), id); err != nil {
+		slog.Warn("断连标记落库失败", "session_id", sessionID, "turn_id", turnID, "err", err)
+	}
+}
+
+// Abort POST /api/v1/chat/turns/{turn_id}/abort：用户显式中止本轮 → 整轮回滚。
+func (s *Service) Abort(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	turnID := r.PathValue("turn_id")
+	if turnID == "" {
+		http.Error(w, `{"error":"缺少 turn_id"}`, http.StatusBadRequest)
+		return
+	}
+	// 先登记「用户主动停止」，再执行整轮回滚：服务端断连分支据此区分
+	// 「停止」与「意外断连」，不会在回滚之后又把内容写回来（见 persistDisconnectedTurn）。
+	s.MarkAbortIntent(claims.UserID, turnID)
+	ok, err := s.db.AbortTurn(r.Context(), claims.UserID, turnID)
+	if err != nil {
+		s.clearAbortIntent(claims.UserID, turnID)
+		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"aborted": ok})
+}
+
+// sessionTitleFrom 会话自动命名：前 20 字 + 超长省略号；纯媒体空文本回退默认名。
+func sessionTitleFrom(content string) string {
+	t := strings.TrimSpace(content)
+	if t == "" {
+		return "新的会话"
+	}
+	return textutil.TruncMark(t, 20)
+}
+
+// ListSessions GET /api/v1/chat/sessions：当前用户的会话列表（updated_at 倒序）。
+func (s *Service) ListSessions(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	list, err := s.db.ListChatSessions(r.Context(), claims.UserID)
+	if err != nil {
+		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		return
+	}
+	type sessItem struct {
+		ID        int64  `json:"id"`
+		Title     string `json:"title"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	items := make([]sessItem, 0, len(list))
+	for _, sess := range list {
+		items = append(items, sessItem{ID: sess.ID, Title: sess.Title, CreatedAt: sess.CreatedAt, UpdatedAt: sess.UpdatedAt})
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// DeleteSession DELETE /api/v1/chat/sessions/{id}：硬删（会话 + 消息 + 结果集事务同删）。
+func (s *Service) DeleteSession(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id <= 0 {
+		http.Error(w, `{"error":"会话不存在"}`, http.StatusNotFound)
+		return
+	}
+	// 待确认提案存在时拒绝删除：那是一张即将生效的写操作卡，随会话硬删即无声取消
+	// （AI模式设计「会话与历史回显」；数据模型 ConfirmAction）。
+	if n, err := s.db.CountPendingProposals(r.Context(), claims.UserID, id); err == nil && n > 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"会话有待确认的操作卡片，请先处理后再删除"}`))
+		return
+	}
+	deleted, err := s.db.DeleteChatSession(r.Context(), claims.UserID, id)
+	if err != nil {
+		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		http.Error(w, `{"error":"会话不存在"}`, http.StatusNotFound)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
+}
+
+// histItem 历史回显条目（形状：一条消息一行；后续换 parts）。
+type histItem struct {
+	ID   int64  `json:"id"`
+	Role string `json:"role"`
+	// parts 直出：客户端按 part.type 渲染（AI模式设计「消息 parts 契约」）
+	Parts     json.RawMessage   `json:"parts"`
+	CardID    int64             `json:"card_id,omitempty"`
+	Card      *proposalSnapshot `json:"card,omitempty"`
+	CreatedAt string            `json:"created_at"`
+	Quoted    json.RawMessage   `json:"quoted,omitempty"`
+	// 本轮未答完即中断（意外断线、未发 abort）：消息不删，但客户端要知道这里不会再来下文。
+	Interrupted bool `json:"interrupted,omitempty"`
+}
+
+// proposalSnapshot 历史回显的提案快照：直接读 preview_json（工具自构造，永不反推）。
+type proposalSnapshot struct {
+	ActionID    int64                 `json:"action_id"`
+	Intent      string                `json:"intent"`
+	Summary     string                `json:"summary"`
+	Preview     tools.ProposalPreview `json:"preview"`
+	Warnings    []string              `json:"warnings,omitempty"`
+	Attachments []tools.AttachmentRef `json:"attachments,omitempty"`
+	Status      string                `json:"status"` // pending / executed / cancelled / expired / failed
+	ExpiresIn   int                   `json:"expires_in"`
+	Result      string                `json:"result,omitempty"`
+}
+
+// History GET /api/v1/chat/history?session_id=N：按会话回显；缺省/0 → 空列表。
+func (s *Service) History(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	sessionID, _ := strconv.ParseInt(r.URL.Query().Get("session_id"), 10, 64)
+	if sessionID <= 0 {
+		s.writeJSON(w, http.StatusOK, map[string]any{"items": []any{}})
+		return
+	}
+	list, err := s.db.ListChatMessages(r.Context(), claims.UserID, sessionID, 100)
+	if err != nil {
+		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		return
+	}
+	cardIDs := make([]int64, 0)
+	for _, m := range list {
+		if m.CardID.Valid && m.CardID.Int64 > 0 {
+			cardIDs = append(cardIDs, m.CardID.Int64)
+		}
+	}
+	cards, _ := s.db.ListConfirmActionsByIDs(r.Context(), cardIDs)
+	results, _ := s.db.CardResults(r.Context(), cardIDs)
+
+	items := make([]histItem, 0, len(list))
 	for _, m := range list {
 		cardID := int64(0)
 		if m.CardID.Valid {
 			cardID = m.CardID.Int64
 		}
-		media := json.RawMessage("[]")
-		if m.Media != "" {
-			media = json.RawMessage(m.Media)
+		quoted := json.RawMessage("")
+		if m.Quoted != "" && m.Quoted != "null" {
+			quoted = json.RawMessage(m.Quoted)
 		}
-		var card *cardSnapshot
+		var card *proposalSnapshot
 		if cardID > 0 && cards != nil {
 			if ca, ok := cards[cardID]; ok {
-				params := json.RawMessage(ca.ParamsJSON)
-				if ca.ParamsJSON == "" {
-					params = json.RawMessage("{}")
-				}
+				// 卡片本体行以卡片形态回显；预览读 preview_json（提案自包含，永不反推）
+				var p tools.Proposal
+				_ = json.Unmarshal([]byte(ca.PreviewJSON), &p)
 				expiresIn := int(time.Until(ca.ExpiresAt).Seconds())
 				if expiresIn < 0 {
 					expiresIn = 0
@@ -644,38 +1479,306 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 				status := ca.Status
 				switch {
 				case status == "confirmed":
-					status = "executed" // 对齐客户端口径（CardActions 认 executed）
+					status = "executed" // 对齐客户端口径
 				case status == "pending" && !time.Now().Before(ca.ExpiresAt):
-					status = "expired" // 过期前置裁决：回显即只读「已过期」（REQ:419 可见不可确认）
+					status = "expired" // 过期前置裁决：回显即只读「已过期」
 				}
-				card = &cardSnapshot{
-					ActionID:  ca.ID,
-					Tool:      ca.ToolName,
-					Params:    params,
-					Status:    status,
-					ExpiresIn: expiresIn,
-					Result:    resultByCard[cardID],
+				card = &proposalSnapshot{
+					ActionID: ca.ID, Intent: ca.ToolName, Summary: p.Summary, Preview: p.Preview,
+					Warnings: p.Warnings, Attachments: p.Attachments,
+					Status: status, ExpiresIn: expiresIn, Result: results[cardID],
 				}
 			}
 		}
-		// 执行结果已并入卡片快照的 tool_result 不再单独成泡；卡片本体不在窗口内的残留照原样展示
-		if m.Role == "tool_result" && card != nil {
+		items = append(items, histItem{ID: m.ID, Role: m.Role, Parts: json.RawMessage(m.Parts),
+			CardID: cardID, Card: card, CreatedAt: m.CreatedAt, Quoted: quoted})
+	}
+	// 中断标记：断连时已在 parts 里追加 interrupted part（markTurnAborted），这里只读取。
+	// 逐条独立判定（不只认尾条）：后面又有新消息时，早先被中断的那轮仍要显示「已中断」。
+	for i := range items {
+		if items[i].Role != "user" {
 			continue
 		}
-		items = append(items, item{ID: m.ID, Role: m.Role, Content: m.Content, CardID: cardID, Card: card, CreatedAt: m.CreatedAt, Media: media})
+		var mp []map[string]any
+		if json.Unmarshal(items[i].Parts, &mp) != nil {
+			continue
+		}
+		for _, p := range mp {
+			if p["type"] == "interrupted" {
+				items[i].Interrupted = true
+				break
+			}
+		}
+	}
+	// 兜底：尾条是无人回答的 user（断在标记落库之前）：同样视为中断。
+	if n := len(items); n > 0 && items[n-1].Role == "user" && !items[n-1].Interrupted {
+		items[n-1].Interrupted = true
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-// toolSpecs 下发给模型的工具清单。后台停用的工具不下发，
-// 使「工具启停」真正生效而非仅页面展示。
+// buildModelHistory 组装模型上下文：取自 chat_context（模型事实源），按 token 预算裁剪。
+//   - pinned（已裁决提案往返）永不淘汰；read_result 可淘汰，淘汰后留一行残留摘要进 system；
+//   - pending 卡片不进（未发生的操作不向模型透露）；thinking/UI 载荷从不进上下文。
+func (s *Service) buildModelHistory(ctx context.Context, userID, sessionID int64) ([]llm.Message, string) {
+	rows, err := s.db.ListContext(ctx, sessionID)
+	if err != nil {
+		slog.Warn("加载模型上下文失败", "session_id", sessionID, "err", err)
+		return nil, ""
+	}
+	// token 预算裁剪（AI模式设计「上下文组装」）：system 段不算预算；从最新往回收，
+	// pinned 永不淘汰，read_result 超预算时先淘汰并计数。
+	//
+	// 裁剪以「配对单元」为单位（assistant 带 tool_calls 与其后续 tool 行同进同出）：
+	// 逐行淘汰会把这一对拆开，重新造出孤儿 tool 行（AI模式设计「上下文组装」· 协议配对）。
+	const contextTokenBudget = 24000
+	type ctxUnit struct {
+		rows   []store.ContextRow
+		tokens int
+		pinned bool
+		isRead bool
+	}
+	units := make([]ctxUnit, 0, len(rows))
+	for i := 0; i < len(rows); i++ {
+		r := rows[i]
+		if r.Kind == "system" {
+			continue // system 段由 promptTail 组装，不进上下文行
+		}
+		u := ctxUnit{rows: []store.ContextRow{r}, tokens: r.Tokens, pinned: r.Pinned, isRead: r.Kind == "read_result"}
+		if r.Role == "assistant" && r.ToolCalls != "" {
+			for i+1 < len(rows) && rows[i+1].Role == "tool" {
+				i++
+				nxt := rows[i]
+				u.rows = append(u.rows, nxt)
+				u.tokens += nxt.Tokens
+				u.pinned = u.pinned || nxt.Pinned
+				u.isRead = u.isRead || nxt.Kind == "read_result"
+			}
+		}
+		units = append(units, u)
+	}
+	budget := contextTokenBudget
+	keptUnits := make([]ctxUnit, 0, len(units))
+	trimmedRead := 0
+	for i := len(units) - 1; i >= 0; i-- {
+		u := units[i]
+		if u.pinned {
+			keptUnits = append([]ctxUnit{u}, keptUnits...)
+			budget -= u.tokens
+			continue
+		}
+		if budget-u.tokens < 0 {
+			if u.isRead {
+				trimmedRead++ // 按「一对往返」计数，不按行计
+				continue
+			}
+			// dialogue 超预算：现状行为（丢弃该单元后继续往回收更旧的，结果是中间留洞，
+			// 而非注释所称「截断最旧」）。本项不动它——它不制造孤儿 tool 行。
+			continue
+		}
+		budget -= u.tokens
+		keptUnits = append([]ctxUnit{u}, keptUnits...)
+	}
+	kept := make([]store.ContextRow, 0, len(rows))
+	for _, u := range keptUnits {
+		kept = append(kept, u.rows...)
+	}
+	msgs := make([]llm.Message, 0, len(kept))
+	for _, r := range kept {
+		switch r.Role {
+		case "user":
+			msgs = append(msgs, llm.Message{Role: "user", Content: r.Content})
+		case "assistant":
+			if r.ToolCalls != "" {
+				var calls []llm.ToolCall
+				if json.Unmarshal([]byte(r.ToolCalls), &calls) == nil && len(calls) > 0 {
+					msgs = append(msgs, llm.Message{Role: "assistant", ToolCalls: calls})
+					continue
+				}
+			}
+			msgs = append(msgs, llm.Message{Role: "assistant", Content: r.Content})
+		case "tool":
+			msgs = append(msgs, llm.Message{Role: "tool", ToolCallID: r.ToolCallID, ToolName: r.ToolName, Content: r.Content})
+		}
+	}
+	resolvedSummary := ""
+	if trimmedRead > 0 {
+		resolvedSummary = fmt.Sprintf("更早查询过 %d 次，结果已省略", trimmedRead)
+	}
+	return msgs, resolvedSummary
+}
+
+// cardOutcome 卡片裁决状态 → 回放给模型的工具结果文案；pending（未过期）返回 ok=false。
+func cardOutcome(ca *store.ConfirmAction, result string) (string, bool) {
+	switch ca.Status {
+	case "confirmed":
+		if result != "" {
+			return result, true
+		}
+		return "操作已执行", true
+	case "failed":
+		if result != "" {
+			return "执行失败：" + result, true
+		}
+		return "执行失败", true
+	case "cancelled":
+		return "用户取消了该操作，未执行", true
+	case "expired":
+		return "确认卡片已过期，未执行", true
+	case "pending":
+		if !time.Now().Before(ca.ExpiresAt) {
+			return "确认卡片已过期，未执行", true
+		}
+		return "", false
+	}
+	return "", false
+}
+
+// validateQuoted 引用归属校验并转结构化上下文文本（自然语言 + 句柄，不给原始 id 数组）。
+// 校验不通过返回 error（400）；同时返回落库用的 quoted JSON（引用条刷新后回显）。
+// 第三个返回值是本轮勾选并集（按 kind 分组 + 子集句柄），注入工具 ctx 供提案做子集校验
+// （点选优先的硬不变量，AI模式设计「结果集句柄与点选优先」）。
+func (s *Service) validateQuoted(ctx context.Context, sessionID int64, refs []quoteRef) (string, string, tools.QuotedSelection, error) {
+	sel := tools.QuotedSelection{IDs: map[string][]int64{}}
+	if len(refs) == 0 {
+		return "", "", sel, nil
+	}
+	var parts []string
+	for _, ref := range refs {
+		switch {
+		case ref.ResultID != "":
+			rs, err := s.db.GetResultSet(ctx, sessionID, ref.ResultID)
+			if err != nil {
+				return "", "", sel, fmt.Errorf("引用的结果集不存在或不属于本会话")
+			}
+			ids := rs.IDs
+			desc := fmt.Sprintf("%d 条%s", len(ids), kindLabelCN(rs.Kind))
+			if ref.Group != "" {
+				found := false
+				for _, g := range rs.Groups {
+					if g.Key == ref.Group || g.Label == ref.Group {
+						ids = g.IDs
+						found = true
+						break
+					}
+				}
+				if !found {
+					return "", "", sel, fmt.Errorf("结果集里没有分组「%s」", ref.Group)
+				}
+				desc = fmt.Sprintf("%d 条%s（来自你上次查询 %s 的「%s」分组）", len(ids), kindLabelCN(rs.Kind), rs.ResultID, ref.Group)
+			}
+			if len(ref.IDs) == 0 {
+				// 只带 group（或整集引用）不带 ids：展开出的 id 全部计入勾选并集
+				// （AI模式设计「结果集句柄与点选优先」不变量一节）。此路径不落子集句柄
+				// ——父句柄本身就是范围，回填文案据此指引。
+				sel.Enabled = true
+				sel.IDs[rs.Kind] = append(sel.IDs[rs.Kind], ids...)
+				sel.Count += len(ids)
+				if sel.Handle == "" {
+					sel.Handle = ref.ResultID
+				}
+			}
+			if len(ref.IDs) > 0 {
+				// 用户勾选了具体条目：取交集（防伪造）
+				allowed := map[int64]bool{}
+				for _, id := range ids {
+					allowed[id] = true
+				}
+				var picked []int64
+				for _, id := range ref.IDs {
+					if allowed[id] {
+						picked = append(picked, id)
+					}
+				}
+				if len(picked) == 0 {
+					return "", "", sel, fmt.Errorf("勾选的条目不属于该结果集")
+				}
+				ids = picked
+				// 点选优先（AI模式设计「结果集句柄与点选优先」）：勾选交集落成子集结果集，
+				// 换回新句柄 r_M 进上下文——模型拿到的就是「恰好那几条」的句柄，
+				// 而非父全集；父句柄保留不动，下一轮仍可引用。
+				subHandle, serr := s.db.SaveResultSet(ctx, sessionID, rs.Kind, picked, nil)
+				if serr != nil {
+					return "", "", sel, fmt.Errorf("勾选处理失败")
+				}
+				// 勾选并集（按 kind 合并多次引用）：提案目标必须全部落在其中，超出即驳回。
+				// 子集句柄 r_M 即「恰好那几条」，回填文案让模型改用 r_M 重试。
+				sel.Enabled = true
+				sel.IDs[rs.Kind] = append(sel.IDs[rs.Kind], picked...)
+				sel.Count += len(picked)
+				if sel.Handle == "" {
+					sel.Handle = subHandle
+				}
+				desc = fmt.Sprintf("你勾选的 %d 条%s（来自你上次查询 %s）；本轮操作范围以勾选为准", len(ids), kindLabelCN(rs.Kind), rs.ResultID)
+				parts = append(parts, fmt.Sprintf("用户引用了：%s；引用句柄 %s；父集合 %s 仍可引用", desc, subHandle, ref.ResultID))
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("用户引用了：%s；引用句柄 %s", desc, ref.ResultID))
+		case ref.Kind != "" && ref.ID > 0:
+			allowed, err := s.db.ResultSetIDsByKind(ctx, sessionID, ref.Kind)
+			if err != nil {
+				return "", "", sel, fmt.Errorf("引用校验失败")
+			}
+			if !allowed[ref.ID] {
+				return "", "", sel, fmt.Errorf("引用的资源不在本会话查询结果中")
+			}
+			// 单条引用同样构成范围约束（模型不得借它扩大到同 kind 的其它记录）
+			sel.Enabled = true
+			sel.IDs[ref.Kind] = append(sel.IDs[ref.Kind], ref.ID)
+			sel.Count++
+			parts = append(parts, fmt.Sprintf("用户引用了：%s #%d", kindLabelCN(ref.Kind), ref.ID))
+		default:
+			return "", "", sel, fmt.Errorf("引用格式无效")
+		}
+	}
+	quotedJSON, _ := json.Marshal(refs)
+	return "【用户引用】" + strings.Join(parts, "；"), string(quotedJSON), sel, nil
+}
+
+func kindLabelCN(kind string) string {
+	switch kind {
+	case "post":
+		return "动态"
+	case "media":
+		return "媒体"
+	case "album":
+		return "相册"
+	case "anniversary":
+		return "纪念日"
+	case "place":
+		return "地点"
+	case "comment":
+		return "评论"
+	}
+	return kind
+}
+
+// mediaRefsFrom 客户端随消息携带的媒体引用（仅 name/type/size，无 data_url）。
+// 返回 []any：args 走 map[string]any，断言口径与 json.Unmarshal 回读一致。
+func mediaRefsFrom(media []chatMedia) []any {
+	if len(media) == 0 {
+		return nil
+	}
+	refs := make([]any, 0, len(media))
+	for _, m := range media {
+		refs = append(refs, map[string]any{"name": m.Name, "type": m.Type, "size": m.Size})
+	}
+	return refs
+}
+
+func userStyle(u *store.User) string {
+	if u == nil {
+		return ""
+	}
+	return u.AIStyle
+}
+
+// toolSpecs 下发给模型的工具清单。后台停用的工具不下发。
 func (s *Service) toolSpecs(ctx context.Context) []llm.Tool {
 	disabled, err := s.db.DisabledTools(ctx)
 	if err != nil {
-		// 读配置失败按「全部启用」降级，不因配置读取问题阻断对话。
 		disabled = nil
 	}
-
 	specs := make([]llm.Tool, 0, len(s.reg))
 	for _, t := range tools.Registry() {
 		if disabled[t.Name] {
@@ -703,7 +1806,6 @@ func (s *Service) sseHeader(w http.ResponseWriter) (http.Flusher, bool) {
 func (s *Service) sseEvent(w http.ResponseWriter, f http.Flusher, event string, data any) {
 	b, err := json.Marshal(data)
 	if err != nil {
-		// 响应体序列化失败不能静默丢弃：发一条 error 事件让客户端知道本轮流不完整
 		b = []byte(`{"error":"响应序列化失败"}`)
 		event = "error"
 	}

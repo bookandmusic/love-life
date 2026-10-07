@@ -11,6 +11,10 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+	// ToolName 仅用于协议内关联（gemini 的 functionResponse 靠工具名而非 call-id）：
+	// 历史回放的往返 ID 形如 card-<n>，反解不出名字；不上网（json:"-"），
+	// 其余协议各自用 ID 关联、忽略本字段。
+	ToolName string `json:"-"`
 }
 
 type ToolCall struct {
@@ -60,20 +64,30 @@ func NewForProtocol(baseURL, apiKey, model, apiType string) (*Client, error) {
 type ChatRequest struct {
 	Messages []Message `json:"messages"`
 	Tools    []Tool    `json:"tools,omitempty"`
-	// Temperature / MaxTokens 模型级采样参数（DESIGN §4.1）：nil = 未设置，native 请求
+	// Temperature / MaxTokens 模型级采样参数：nil = 未设置，native 请求
 	// 组装时不传（各协议必填项由 adapter 用自己的安全默认兜底）。ChatRequest 不直接序列化。
 	Temperature *float64
 	MaxTokens   *int64
 }
 
+// ChoiceMessage 归一化的模型回复：正文 + 思考链 + 工具调用。
+type ChoiceMessage struct {
+	Content string `json:"content"`
+	// 思考链：OpenAI 兼容协议的 reasoning_content（DeepSeek-R1 /
+	// SiliconFlow 思考模型等）。仅展示转发用，不进模型历史（回传会污染后续轮次）；
+	// 其他协议不下发该字段时为零值，上层按「无思考」处理
+	Reasoning string     `json:"reasoning_content,omitempty"`
+	ToolCalls []ToolCall `json:"tool_calls"`
+}
+
+// Choice 归一化的单候选响应。
+type Choice struct {
+	Message      ChoiceMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
+}
+
 type ChatResponse struct {
-	Choices []struct {
-		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	} `json:"choices"`
+	Choices []Choice
 	// Usage 上游返回的 token 用量。各协议字段名不同，由各 adapter 归一化后填入；
 	// 上游未返回 usage 时为零值（不视为错误，统计侧如实记 0）。
 	Usage Usage `json:"usage"`
@@ -92,4 +106,10 @@ type Usage struct {
 // Chat 委托给当前协议的 adapter（规范化 ↔ native 由 adapter 负责）。
 func (c *Client) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
 	return c.adp.Chat(ctx, c.BaseURL, c.APIKey, c.Model, req)
+}
+
+// StreamChat 流式：协议差异封进 adapter（分片归组/usage 末帧/finish_reason），
+// 调用方只消费归一化 Delta（AI模式设计「模型网关」）。
+func (c *Client) StreamChat(ctx context.Context, req *ChatRequest, onDelta func(Delta)) (string, error) {
+	return c.adp.StreamChat(ctx, c.BaseURL, c.APIKey, c.Model, req, onDelta)
 }

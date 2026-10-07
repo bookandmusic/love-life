@@ -33,7 +33,7 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 		ID       int64  `json:"id"`
 		Nickname string `json:"nickname"`
 		Role     string `json:"role"`
-		Avatar   string `json:"avatar"` // GAP16：头像签名 URL；无头像时空串（前端 fallback 首字母）
+		Avatar   string `json:"avatar"` // 头像签名 URL；无头像时空串（前端 fallback 首字母）
 	}
 	members := []member{}
 	for _, u := range users {
@@ -65,11 +65,11 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 		Date      string `json:"date,omitempty"`
 		DaysUntil int    `json:"days_until"`
 	}
-	// 计数供 APP 首页空态判定（S5）：单看 next_anniversary 无法区分「没有纪念日」
+	// 计数供 APP 首页空态判定：单看 next_anniversary 无法区分「没有纪念日」
 	// 与「纪念日存在但日期全部无效」，会把有数据的空间误判成全新部署
 	anniversaryCount := 0
 	albumCount := 0
-	if list, err := a.db.ListAlbums(r.Context(), true); err == nil {
+	if list, err := a.db.ListAlbums(r.Context()); err == nil {
 		albumCount = len(list)
 	}
 	if list, err := a.db.ListAnniversaries(r.Context()); err == nil {
@@ -126,22 +126,19 @@ func (a *profileAPI) updateSpace(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// me PATCH /api/v1/me：昵称/生日/输出风格/对话保留时长（个人资料与 AI 偏好，需求 §4.7）。
-// 字段缺省 = 不修改（对齐 mock 契约：APP 设置页只发偏好字段时不得清空昵称）。
+// me PATCH /api/v1/me：仅 AI 偏好（输出风格）。昵称 / 生日等资料由后台维护
+// （PRODUCT「设置」），APP 侧不发、服务端不收。
 func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	var req struct {
-		Nickname      *string `json:"nickname"`
-		Birthday      *string `json:"birthday"`
-		AIStyle       *string `json:"ai_style"`
-		RetentionDays *int    `json:"chat_retention_days"`
+		AIStyle *string `json:"ai_style"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.AIStyle != nil {
-		// ai_style 存风格名；空 = 跟随全局默认（AD2）。合法性 = 风格库中存在。
+		// ai_style 存风格名；空 = 跟随全局默认。合法性 = 风格库中存在。
 		if name := strings.TrimSpace(*req.AIStyle); name != "" {
 			styles, err := a.db.ListStyles(r.Context())
 			if err != nil {
@@ -162,15 +159,7 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 			req.AIStyle = &name
 		}
 	}
-	if req.RetentionDays != nil {
-		switch *req.RetentionDays {
-		case 7, 30, 90, -1: // -1 = 永久
-		default:
-			writeError(w, http.StatusBadRequest, "保留时长仅支持 7/30/90 天或永久(-1)")
-			return
-		}
-	}
-	if err := a.db.UpdateUserSelf(r.Context(), claims.UserID, req.Nickname, req.Birthday, req.AIStyle, req.RetentionDays); err != nil {
+	if err := a.db.UpdateUserSelf(r.Context(), claims.UserID, req.AIStyle); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return

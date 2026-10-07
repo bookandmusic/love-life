@@ -30,25 +30,21 @@ type loginRequest struct {
 }
 
 type userResponse struct {
-	ID                int64  `json:"id"`
-	Username          string `json:"username"`
-	Role              string `json:"role"`
-	Nickname          string `json:"nickname"`
-	Birthday          string `json:"birthday"`
-	AIStyle           string `json:"ai_style"`
-	ChatRetentionDays int    `json:"chat_retention_days"`
+	ID       int64  `json:"id"`
+	Username string `json:"username"`
+	Role     string `json:"role"`
+	Nickname string `json:"nickname"`
+	AIStyle  string `json:"ai_style"`
 }
 
 // newUserResponse 组装用户响应（login/refresh/me 同源，对齐 mock userById 契约）。
 func newUserResponse(u *store.User) userResponse {
 	return userResponse{
-		ID:                u.ID,
-		Username:          u.Username,
-		Role:              u.Role,
-		Nickname:          u.Nickname,
-		Birthday:          u.Birthday.String,
-		AIStyle:           u.AIStyle,
-		ChatRetentionDays: u.ChatRetentionDays,
+		ID:       u.ID,
+		Username: u.Username,
+		Role:     u.Role,
+		Nickname: u.Nickname,
+		AIStyle:  u.AIStyle,
 	}
 }
 

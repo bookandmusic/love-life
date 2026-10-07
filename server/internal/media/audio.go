@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-// audioDuration 音频时长（秒，REAL，DESIGN 12）——零依赖手写解析：
+// audioDuration 音频时长（秒，REAL）——零依赖手写解析：
 // wav 精确（data 大小/字节率）；m4a 读 mvhd；mp3 按首帧码率估算（VBR 有误差，产品可接受）。
 func audioDuration(path string) (float64, error) {
 	bs, err := os.ReadFile(path)

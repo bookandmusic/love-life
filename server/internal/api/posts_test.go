@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -171,7 +172,7 @@ func TestPostsMediaLoop(t *testing.T) {
 	}
 }
 
-// S3 那年今日（REQUIREMENTS §4.1）：memories=1 只列历年在今天同月同日发布的动态，
+// 那年今日：memories=1 只列历年在今天同月同日发布的动态，
 // 不含当年；且过滤发生在分页之前（total 为过滤后总数，契约同 mock）。
 func TestListPostsMemories(t *testing.T) {
 	ts, _, girlToken := newPostTestEnv(t)
@@ -229,5 +230,35 @@ func TestListPostsMemories(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusOK || out.Total != 1 || len(out.Items) != 1 || out.Items[0].Content != "去年今天的回忆" {
 		t.Fatalf("GET ?memories=1: status=%d total=%d items=%+v", res.StatusCode, out.Total, out.Items)
+	}
+}
+
+// TestPostMediaCapMatchesApp：单条动态媒体数上限与 APP 发布页 MAX_FILES 同口径。
+// 历史上后端是 18、前端是 9（互不相认），这条守卫把两者钉在一起——改一处必须改另一处。
+func TestPostMediaCapMatchesApp(t *testing.T) {
+	if maxPostMedia != 9 {
+		t.Fatalf("maxPostMedia = %d，APP 发布页是 9：两侧必须同口径（改上限要同时改 app/src/views/PublishView.vue 的 MAX_FILES）", maxPostMedia)
+	}
+	ts, adminToken, _ := newPostTestEnv(t)
+	toks := make([]string, 0, maxPostMedia+1)
+	for i := 0; i <= maxPostMedia; i++ {
+		tok, _ := uploadMedia(t, ts.URL, adminToken, fmt.Sprintf("cap%d.jpg", i), genJPEG(t))
+		toks = append(toks, tok)
+	}
+	// 恰好上限：放行
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{
+		"content": "上限内", "media_tokens": toks[:maxPostMedia],
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("上限 %d 个应放行，实得 %d", maxPostMedia, res.StatusCode)
+	}
+	// 超一个：拒绝
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{
+		"content": "超限", "media_tokens": toks,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("超过 %d 个应拒绝，实得 %d", maxPostMedia, res.StatusCode)
 	}
 }

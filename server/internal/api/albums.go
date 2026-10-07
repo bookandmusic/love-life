@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"strconv"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
@@ -19,25 +20,23 @@ type albumsAPI struct {
 	dp *notify.Dispatcher
 }
 
+// monthKeyRe 月度分组路径参数：YYYY-MM。
+var monthKeyRe = regexp.MustCompile(`^\d{4}-\d{2}$`)
+
 type albumResponse struct {
 	ID          int64  `json:"id"`
-	Type        string `json:"type"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	MonthKey    string `json:"month_key,omitempty"`
-	IsHidden    bool   `json:"is_hidden"`
 	ItemCount   int    `json:"item_count"`
 	CoverURL    string `json:"cover_url,omitempty"`
-	// CreatedBy 供 APP 判断「删的是不是对方创建的」（决定是否提示会通知对方）；
-	// 用户 ID 从 1 起，0 表示月度相册（无创建者）→ omitempty 省略该字段。
+	// CreatedBy 供 APP 判断「删的是不是对方创建的」（决定是否提示会通知对方）。
 	CreatedBy int64 `json:"created_by,omitempty"`
 }
 
 func (a *albumsAPI) toResponse(ctx context.Context, al *store.Album) albumResponse {
 	resp := albumResponse{
-		ID: al.ID, Type: al.Type, Name: al.Name, Description: al.Description.String,
-		MonthKey: al.MonthKey.String, IsHidden: al.IsHidden, ItemCount: al.ItemCount,
-		CreatedBy: al.CreatedBy.Int64, // Valid=false（月度相册）时为 0 → omitempty 省略
+		ID: al.ID, Name: al.Name, Description: al.Description.String,
+		ItemCount: al.ItemCount, CreatedBy: al.CreatedBy.Int64,
 	}
 	if al.CoverMediaID.Valid {
 		resp.CoverURL = a.mp.SignedURL(al.CoverMediaID.Int64, "thumb")
@@ -48,8 +47,7 @@ func (a *albumsAPI) toResponse(ctx context.Context, al *store.Album) albumRespon
 }
 
 func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
-	includeHidden := r.URL.Query().Get("include_hidden") == "1"
-	list, err := a.db.ListAlbums(r.Context(), includeHidden)
+	list, err := a.db.ListAlbums(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
@@ -59,6 +57,50 @@ func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
 		items = append(items, a.toResponse(r.Context(), al))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// monthGroups 集合视图的按月分组（PRODUCT「相册（独立底部 tab）」月度相册：展示形态非实体）。
+type monthGroupResponse struct {
+	MonthKey  string `json:"month_key"`
+	ItemCount int    `json:"item_count"`
+	CoverURL  string `json:"cover_url,omitempty"`
+}
+
+func (a *albumsAPI) months(w http.ResponseWriter, r *http.Request) {
+	groups, err := a.db.ListMonthGroups(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	items := make([]monthGroupResponse, 0, len(groups))
+	for _, g := range groups {
+		item := monthGroupResponse{MonthKey: g.MonthKey, ItemCount: g.ItemCount}
+		if g.CoverMediaID.Valid {
+			item.CoverURL = a.mp.SignedURL(g.CoverMediaID.Int64, "thumb")
+		}
+		items = append(items, item)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+// monthMedia 某月未归属媒体的分页列表（月度分组详情，口径 = ListMonthlyMedia）。
+func (a *albumsAPI) monthMedia(w http.ResponseWriter, r *http.Request) {
+	monthKey := r.PathValue("month_key")
+	if !monthKeyRe.MatchString(monthKey) {
+		writeError(w, http.StatusBadRequest, errInvalidID)
+		return
+	}
+	medias, err := a.db.ListMonthlyMedia(r.Context(), monthKey)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	items, err := a.mediaItemsOut(r.Context(), medias)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"month_key": monthKey, "media": items})
 }
 
 func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
@@ -71,13 +113,13 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "相册名称不能为空")
 		return
 	}
-	id, err := a.db.CreateAlbum(r.Context(), "manual", req.Name, req.Description, "", claims.UserID)
+	id, err := a.db.CreateAlbum(r.Context(), req.Name, req.Description, claims.UserID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 
-	// 相册上新：站内通知另一方（自建静默，admin 不在情侣里）+ 按订阅外推（需求 §4.8）
+	// 相册上新：站内通知另一方（自建静默，admin 不在情侣里）+ 按订阅外推
 	snapshot, _ := json.Marshal(map[string]any{"name": req.Name, "operator": claims.Username})
 	ids, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
 	a.dp.Dispatch(r.Context(), ids, "album_created", "album", id, string(snapshot),
@@ -107,13 +149,7 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	var medias []*store.MediaRow
-	if al.Type == "monthly" {
-		// 月度相册虚拟口径（D4）：该月未归属手动相册的媒体
-		medias, err = a.db.ListMonthlyMedia(r.Context(), al.MonthKey.String)
-	} else {
-		medias, err = a.db.ListAlbumMedia(r.Context(), id)
-	}
+	medias, err := a.db.ListAlbumMedia(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
@@ -129,7 +165,7 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // mediaItem mock timelineItemOut 契约：mediaOut + post_id/taken_at/author_id/album_id/album_name；
-// D5 归属字段供 APP 选图器区分「已在本相册/已归属他相册」；duration 仅音频（DESIGN 12）。
+// 归属字段供 APP 选图器区分「已在本相册/已归属他相册」；duration 仅音频。
 type mediaItem struct {
 	ID        int64    `json:"id"`
 	Kind      string   `json:"kind"`
@@ -192,17 +228,12 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	// 月度相册不可删除、仅可隐藏（需求 §4.5）
-	if al.Type == "monthly" {
-		writeError(w, http.StatusForbidden, "月度相册不可删除，仅可隐藏")
-		return
-	}
 	if err := a.db.SoftDeleteAlbum(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	// 删除对方创建的手动相册 → 站内通知创建者（自删静默）。内容删除仅站内，
-	// 不走 dp.Dispatch（那会触发外部 Webhook 推送，REQUIREMENTS §4.8）。
+	// 不走 dp.Dispatch（那会触发外部 Webhook 推送）。
 	if al.CreatedBy.Valid {
 		_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
 			CreatorID: al.CreatedBy.Int64, DeleterID: claims.UserID, DeleterName: claims.Username,
@@ -210,32 +241,8 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 			Extra: map[string]any{"name": al.Name},
 		})
 	}
-	// DESIGN §13.3：删除一律 204 No Content
+	// ：删除一律 204 No Content
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *albumsAPI) setHidden(w http.ResponseWriter, r *http.Request) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, errInvalidID)
-		return
-	}
-	var req struct {
-		Hidden bool `json:"hidden"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, errBadRequest)
-		return
-	}
-	if err := a.db.SetAlbumHidden(r.Context(), id, req.Hidden); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "相册不存在")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, errInternal)
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
@@ -291,8 +298,9 @@ func (a *albumsAPI) removePhotos(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "item_count": itemCount})
 }
 
-// timeline 媒体时间轴分页（D5，mock 契约）：page/size(size≤50) → {items,total,page,size,has_more}；
+// timeline 媒体时间轴分页（mock 契约）：page/size(size≤50) → {items,total,page,size,has_more}；
 // item=timelineItemOut 全字段；排序 taken_at||created_at 倒序。year/month 参数不再暴露（cron 走 store 原方法）。
+// 口径（2026-09-22 确认）：默认只返回未归档媒体（时间轴=未归档）；scope=all 返回全部（选图器灰显用）。
 func (a *albumsAPI) timeline(w http.ResponseWriter, r *http.Request) {
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
 	size, _ := strconv.Atoi(r.URL.Query().Get("size"))
@@ -305,7 +313,7 @@ func (a *albumsAPI) timeline(w http.ResponseWriter, r *http.Request) {
 	if size > 50 {
 		size = 50
 	}
-	medias, total, err := a.db.ListTimelineMediaPaged(r.Context(), page, size)
+	medias, total, err := a.db.ListTimelineMediaPaged(r.Context(), page, size, r.URL.Query().Get("scope") == "all")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return

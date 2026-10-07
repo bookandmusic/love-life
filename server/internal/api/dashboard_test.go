@@ -8,8 +8,8 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
-// 端到端：L5 落库 → AD3 的 ai-usage 聚合 → AD7 的审计 latency 显示。
-// 这条链路是台账 AD3/AD7 依赖 L5 的实质含义，必须整体验证而非各测一半。
+// 端到端： 落库 → 的 ai-usage 聚合 → 的审计 latency 显示。
+// 这条链路是台账 / 依赖 的实质含义，必须整体验证而非各测一半。
 func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 	ts, adminToken, girlToken := newPostTestEnv(t)
 	ctx := t.Context()
@@ -34,7 +34,7 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 		t.Fatalf("empty ai-usage: %d %+v", res.StatusCode, usage)
 	}
 
-	// 写入 L5 统计（模拟两次成功 + 一次失败）
+	// 写入 统计（模拟两次成功 + 一次失败）
 	for _, l := range []*store.AIUsageLog{
 		{ProviderID: 1, Model: "gpt-4o", PromptTokens: 100, CompletionTokens: 20, TotalTokens: 120, LatencyMs: 800, Status: "success"},
 		{ProviderID: 1, Model: "gpt-4o", PromptTokens: 200, CompletionTokens: 40, TotalTokens: 240, LatencyMs: 1200, Status: "success"},
@@ -45,7 +45,7 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 		}
 	}
 
-	// AD3：ai-usage 聚合为一天
+	// ai-usage 聚合为一天
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/dashboard/ai-usage", adminToken, nil)
 	_ = json.NewDecoder(res.Body).Decode(&usage)
 	res.Body.Close()
@@ -64,7 +64,7 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 		t.Fatalf("avgLatencyMs = %v, want ~3666", got)
 	}
 
-	// AD3：alerts 含失败调用（error 级）
+	// alerts 含失败调用（error 级）
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/dashboard/alerts", adminToken, nil)
 	var alerts struct {
 		Items []map[string]any `json:"items"`
@@ -81,7 +81,7 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 		t.Fatalf("failed AI call should raise an error alert: %+v", alerts.Items)
 	}
 
-	// AD3：stats 形状
+	// stats 形状
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/dashboard/stats", adminToken, nil)
 	var stats []map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&stats)
@@ -100,7 +100,7 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 		}
 	}
 
-	// AD7：审计日志形状 + latencyMs 语义（ai 有值、user 为 null）
+	// 审计日志形状 + latencyMs 语义（ai 有值、user 为 null）
 	if err := ts.db.InsertAuditLogFull(ctx, store.ActorTypeAI, 1, "search_posts", "digest", `query: "海边"`, "success", ptrInt64(1320)); err != nil {
 		t.Fatal(err)
 	}

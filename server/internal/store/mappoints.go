@@ -8,7 +8,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/geo"
 )
 
-// MapPoint 地图点位（DESIGN §4.7：双来源同池——动态带地点自动同步 / 手动与 AI 创建；
+// MapPoint 地图点位（双来源同池——动态带地点自动同步 / 手动与 AI 创建；
 // 同名复用同一点位，坐标以先创建者为准，不做邻近合并）。
 type MapPoint struct {
 	ID          int64
@@ -62,13 +62,20 @@ func (d *DB) ListPoints(ctx context.Context) ([]*MapPoint, error) {
 	return list, rows.Err()
 }
 
-// SearchPoints 按名称/描述模糊搜索未删点位（get_location_posts 前置的 search_locations）。
+// SearchPoints 按名称/描述模糊搜索未删点位。
+// limit <= 0 表示不限（find_places 翻页要取全量再切片：SQL 先 LIMIT 再跳 offset
+// 会让 offset 超过 limit 的页永远为空）。
 func (d *DB) SearchPoints(ctx context.Context, query string, limit int) ([]*MapPoint, error) {
 	like := "%" + query + "%"
-	rows, err := d.QueryContext(ctx,
-		`SELECT `+mapPointColumns+` FROM map_points
+	sql := `SELECT ` + mapPointColumns + ` FROM map_points
 		WHERE deleted_at IS NULL AND (name LIKE ? OR description LIKE ?)
-		ORDER BY created_at DESC, id DESC LIMIT ?`, like, like, limit)
+		ORDER BY created_at DESC, id DESC`
+	args := []any{like, like}
+	if limit > 0 {
+		sql += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := d.QueryContext(ctx, sql, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +95,22 @@ func (d *DB) SearchPoints(ctx context.Context, query string, limit int) ([]*MapP
 func (d *DB) GetPoint(ctx context.Context, id int64) (*MapPoint, error) {
 	p, err := scanMapPoint(d.QueryRowContext(ctx,
 		`SELECT `+mapPointColumns+` FROM map_points WHERE id = ?`, id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	return p, nil
+}
+
+// GetPointActive 单个未删点位；不存在或已软删返回 ErrNotFound。
+// 供「不该看见回收站数据」的读取路径使用（AI 工具 get_record / 删除预览）——
+// ARCHITECTURE「删除与恢复流程」：AI Agent 无法搜索 / 访问已删除内容。
+// 注意不要用 GetPoint 代替：那条「含已删」语义是软删前取行（拿名称与创建者）所必需的。
+func (d *DB) GetPointActive(ctx context.Context, id int64) (*MapPoint, error) {
+	p, err := scanMapPoint(d.QueryRowContext(ctx,
+		`SELECT `+mapPointColumns+` FROM map_points WHERE id = ? AND deleted_at IS NULL`, id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound

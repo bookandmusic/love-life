@@ -1,12 +1,16 @@
 -- 001_init.sql — 全量初始 schema（压缩版）
 -- 来源：原 001~013 迁移演进收敛（2026-09-06 重新初始化提交时合并）。
--- 实体与字段以 DESIGN 第 12 章为准；含全部最终修正：
+-- 实体与字段以 ARCHITECTURE「数据模型」为准；含全部最终修正：
 --   media.kind 收 audio（011）；album_items UNIQUE(media_id) 一文件一相册（011）；
 --   anniversaries.type solar|lunar（012）；webhook_channels 空间级无用户归属（007）；
---   chat_messages.media 附件回显列（013）。
+--   chat_messages 附件与回显统一由 parts 承载（不再有 media / content 列）；
+--   chat_sessions 表 + chat_messages.session_id 多会话归属、role 收窄 user|assistant、
+--   chat_messages.turn_id 按轮回滚（2026-09-22）；
+--   confirm_actions.preview_json 提案自构造预览落库、chat_result_sets 结果集句柄（2026-09-23）；
+--   provider_models.kind + chain_order 模型按类型分链、chat_context 上下文事实源（2026-09-26）。
 -- 本文件一次性建出最新库：新部署空库直接应用，无历史升级路径。
 
--- ============ 账号与配置（DESIGN 12.1） ============
+-- ============ 账号与配置（ARCHITECTURE「数据模型」） ============
 CREATE TABLE users (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     username            TEXT    NOT NULL UNIQUE,
@@ -16,7 +20,6 @@ CREATE TABLE users (
     birthday            TEXT,
     avatar_path         TEXT,
     ai_style            TEXT    NOT NULL DEFAULT '文艺',
-    chat_retention_days INTEGER NOT NULL DEFAULT 30,
     created_at          TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -29,19 +32,17 @@ CREATE TABLE refresh_tokens (
 );
 CREATE INDEX idx_refresh_tokens_user ON refresh_tokens(user_id);
 
--- ============ 内容（DESIGN 12.2） ============
+-- ============ 内容（ARCHITECTURE「数据模型」） ============
 CREATE TABLE posts (
     id                     INTEGER PRIMARY KEY AUTOINCREMENT,
     author_id              INTEGER NOT NULL REFERENCES users(id),
-    title                  TEXT,
     content                TEXT    NOT NULL,
     mood                   TEXT,
     point_id               INTEGER,
     location_name          TEXT,
-    related_anniversary_id INTEGER,
     created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
     deleted_at             TEXT,
-    -- 删除者归属（AD5 回收站「删除者」列，DESIGN §9）；软删除时与 deleted_at 一并写入
+    -- 删除者归属（回收站「删除者」列）；软删除时与 deleted_at 一并写入
     deleted_by             INTEGER REFERENCES users(id),
     deleted_by_type        TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
@@ -92,23 +93,19 @@ CREATE TABLE comments (
 );
 CREATE INDEX idx_comments_post ON comments(post_id, id DESC);
 
+-- 相册只有手动相册实体；集合视图里的按月分组由查询即时聚合
+-- （该月未归属媒体的按月计数），不落月度行（PRODUCT「相册（独立底部 tab）」）。
 CREATE TABLE albums (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
-    type           TEXT    NOT NULL DEFAULT 'manual' CHECK (type IN ('manual', 'monthly')),
     name           TEXT    NOT NULL,
     description    TEXT,
-    month_key      TEXT,
-    is_hidden      INTEGER NOT NULL DEFAULT 0,
     cover_media_id INTEGER,
     created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
-    -- 创建者：手动相册为真实用户；月度相册由系统生成、无创建者，故可空
-    -- （不可加 NOT NULL，否则每月 1 号的 checkMonthlyAlbum 会失败）
     created_by     INTEGER REFERENCES users(id),
     deleted_at     TEXT,
     deleted_by      INTEGER REFERENCES users(id),
     deleted_by_type TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
-CREATE UNIQUE INDEX idx_albums_month ON albums(month_key) WHERE type = 'monthly' AND month_key IS NOT NULL;
 
 CREATE TABLE album_items (
     album_id  INTEGER NOT NULL REFERENCES albums(id),
@@ -152,11 +149,11 @@ CREATE TABLE anniversaries (
     deleted_by_type    TEXT    CHECK (deleted_by_type IN ('user', 'ai'))
 );
 
--- ============ 通知与 AI（DESIGN 12.3） ============
+-- ============ 通知与 AI（ARCHITECTURE「数据模型」） ============
 CREATE TABLE webhook_channels (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     name          TEXT    NOT NULL DEFAULT '',
-    method        TEXT    NOT NULL DEFAULT 'POST' CHECK (method IN ('GET', 'POST', 'PUT')),
+    method        TEXT    NOT NULL DEFAULT 'POST' CHECK (method IN ('GET', 'POST')),
     url           TEXT    NOT NULL,
     headers_json  TEXT    NOT NULL DEFAULT '{}',
     body_template TEXT    NOT NULL DEFAULT '',
@@ -177,28 +174,95 @@ CREATE TABLE notifications (
 );
 CREATE INDEX idx_notifications_recipient ON notifications(recipient_id, created_at DESC);
 
+-- 一条消息 = 一行，parts 是有序 JSON 数组（一轮助手消息的思考、工具步骤、正文、
+-- 确认卡全在同一行，ARCHITECTURE「数据模型」ChatMessage）。附件只存本机元数据
+-- {name,mime,size,w?,h?}（无 ref、无 base64，AI模式设计「图片处理与存储」）。
 CREATE TABLE chat_messages (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id    INTEGER NOT NULL REFERENCES users(id),
-    role       TEXT    NOT NULL CHECK (role IN ('user', 'assistant', 'tool_result')),
-    content    TEXT    NOT NULL,
+    -- 归属会话（多会话）：0 = 懒创建前的兜底，正常消息恒由服务端落真实会话 id；
+    -- 不加 REFERENCES（0 兜底语义），归属一致性由服务层保证
+    session_id INTEGER NOT NULL DEFAULT 0,
+    -- role 收窄为 user / assistant；tool 步骤、思考链、卡片全部进 parts
+    role       TEXT    NOT NULL CHECK (role IN ('user', 'assistant')),
+    -- 有序 parts：[{type:text|thinking|tool|card|attachment|quote|interrupted,...}]
+    parts      TEXT    NOT NULL DEFAULT '[]',
+    -- 确认卡指针（card part 只存 action_id；渲染与回显读 confirm_actions.preview_json）
     card_id    INTEGER,
-    media      TEXT    NOT NULL DEFAULT '',
+    -- 用户引用的资源（quote part 回显）：[{result_id, group?, ids?, kind?, id?}]
+    quoted     TEXT    NOT NULL DEFAULT '',
+    -- 所属对话轮次：服务端每轮生成一次，同一轮的所有消息共享。
+    -- 「停止生成」按轮整轮回滚：只删除 (user_id, turn_id) 命中的行，
+    -- 不会误删下一轮；旧行与异常路径下为空串（不参与回滚）
+    turn_id    TEXT    NOT NULL DEFAULT '',
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_chat_messages_user ON chat_messages(user_id, id DESC);
+CREATE INDEX idx_chat_messages_session ON chat_messages(session_id, id DESC);
 
-CREATE TABLE confirm_actions (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id     INTEGER NOT NULL REFERENCES users(id),
-    tool_name   TEXT    NOT NULL,
-    params_json TEXT    NOT NULL,
-    status      TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'cancelled', 'expired', 'failed')),
-    expires_at  TEXT    NOT NULL,
-    resolved_at TEXT,
+-- 模型上下文（模型事实源，与 chat_messages 展示存储彻底分离，ARCHITECTURE「数据模型」ChatContext）：
+-- 追加写；组装时按 seq 取、按 tokens 裁剪。kind 四分类定淘汰策略；
+-- pinned=1（已裁决提案往返）永不淘汰。
+CREATE TABLE chat_context (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    session_id INTEGER NOT NULL REFERENCES chat_sessions(id) ON DELETE CASCADE,
+    turn_id    TEXT    NOT NULL DEFAULT '',
+    seq        INTEGER NOT NULL,
+    role       TEXT    NOT NULL CHECK (role IN ('system', 'user', 'assistant', 'tool')),
+    content    TEXT    NOT NULL,
+    -- assistant 轮的 tool_calls（name+arguments 原样存，回放时还原协议配对）
+    tool_calls_json TEXT,
+    tool_call_id   TEXT,
+    tool_name      TEXT,
+    tokens      INTEGER NOT NULL DEFAULT 0,
+    kind        TEXT    NOT NULL CHECK (kind IN ('system', 'dialogue', 'read_result', 'proposal')),
+    pinned      INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+CREATE INDEX idx_chat_context_session ON chat_context(session_id, seq);
+
+-- 会话：懒创建（首条消息送达时建，标题=首条消息摘要）；updated_at 随消息推进，
+-- 抽屉按其倒序；硬删 = 连同消息事务删除（聊天为过程性数据，不进回收站）
+CREATE TABLE chat_sessions (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    title      TEXT    NOT NULL DEFAULT '新的会话',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_chat_sessions_user ON chat_sessions(user_id, updated_at DESC);
+
+CREATE TABLE confirm_actions (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id),
+    tool_name    TEXT    NOT NULL,
+    params_json  TEXT    NOT NULL,
+    -- 提案自构造的目标形态预览（Proposal JSON：Kind/Summary/Preview/Warnings/Attachments）。
+    -- 工具在 Exec 内构造（非事后从 params 反推），出卡即落库：刷新/跨设备回显直接读，永不反推
+    preview_json TEXT    NOT NULL DEFAULT '',
+    status       TEXT    NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'confirmed', 'cancelled', 'expired', 'failed')),
+    expires_at   TEXT    NOT NULL,
+    resolved_at  TEXT,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX idx_confirm_actions_user ON confirm_actions(user_id, id DESC);
+
+-- 结果集句柄（D10）：读工具执行时把结果 id 列表存下来，返回 result_id（r_N）；
+-- 提案工具用 source={result_id, group?} 引用整组资源，出提案时即展开为具体 id——
+-- 模型不搬运 id 列表（80 张规模必漏必造）。落库而非内存：提案 15 分钟 TTL 期间可能跨重启，
+-- 且会话硬删 / janitor 清理需能跟着走表。随会话硬删同删。
+CREATE TABLE chat_result_sets (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id INTEGER NOT NULL,
+    result_id  TEXT    NOT NULL,
+    kind       TEXT    NOT NULL,
+    ids_json   TEXT    NOT NULL,
+    -- 分组信息（find_media group_by 时）：[{key, label, ids}]，无分组为空
+    groups_json TEXT   NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX idx_chat_result_sets_session ON chat_result_sets(session_id, id DESC);
 
 CREATE TABLE audit_logs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -215,7 +279,7 @@ CREATE TABLE audit_logs (
 );
 CREATE INDEX idx_audit_logs_created ON audit_logs(created_at DESC);
 
--- 个人访问令牌 PAT（AD8，DESIGN §8.2）：单实例双通道的外部通道凭证。
+-- 个人访问令牌 PAT（对外集成）：单实例双通道的外部通道凭证。
 -- 仅绑定情侣用户（girl/boy），admin 不签发；明文只在生成响应中出现一次，库内只存哈希。
 CREATE TABLE personal_access_tokens (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,7 +308,7 @@ CREATE TABLE ai_usage_logs (
 );
 CREATE INDEX idx_ai_usage_created ON ai_usage_logs(created_at DESC);
 
--- 回收站恢复日志（AD5）：操作人/时间/恢复内容摘要；不可删除，永久保留（DESIGN §5/§9）
+-- 回收站恢复日志：操作人/时间/恢复内容摘要；不可删除，永久保留（ARCHITECTURE「回收站机制」）
 CREATE TABLE restore_logs (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     operator   TEXT    NOT NULL,
@@ -253,7 +317,7 @@ CREATE TABLE restore_logs (
 );
 CREATE INDEX idx_restore_logs_created ON restore_logs(created_at DESC);
 
--- ============ 情侣空间与地图（DESIGN 12.1 / 4.7） ============
+-- ============ 情侣空间与地图（ARCHITECTURE「数据模型」） ============
 CREATE TABLE space (
     id              INTEGER PRIMARY KEY CHECK (id = 1),
     name            TEXT    NOT NULL DEFAULT '我们的空间',
@@ -273,29 +337,31 @@ CREATE TABLE map_sources (
 );
 CREATE UNIQUE INDEX idx_map_sources_enabled ON map_sources(enabled) WHERE enabled = 1;
 
--- 模型供应商（DESIGN §12.1）：api_type 决定协议，sort_order = 故障切换链顺序；
--- default_model 存模型 ID 字符串（供应商内唯一）；api_key_enc 加密存储。
+-- 模型供应商（ARCHITECTURE「数据模型」ModelProvider）：api_type 决定协议；api_key_enc 加密存储。
+-- 用哪个模型、按什么顺序重试，全部由模型条目的链序决定，供应商本身无默认模型。
 CREATE TABLE model_providers (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    api_type      TEXT    NOT NULL DEFAULT 'openai-chat'
-                  CHECK (api_type IN ('openai-chat', 'openai-responses', 'anthropic', 'gemini')),
-    name          TEXT    NOT NULL,
-    base_url      TEXT    NOT NULL,
-    api_key_enc   TEXT    NOT NULL DEFAULT '',
-    default_model TEXT    NOT NULL DEFAULT '',
-    sort_order    INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    api_type    TEXT    NOT NULL DEFAULT 'openai-chat'
+                CHECK (api_type IN ('openai-chat', 'openai-responses', 'anthropic', 'gemini')),
+    name        TEXT    NOT NULL,
+    base_url    TEXT    NOT NULL,
+    api_key_enc TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
--- 模型级参数（temperature/max_tokens 可空 = 调用不传，用供应商默认）
+-- 模型条目：kind 决定属于哪条链（chat / embedding），chain_order 是同类型内的全局链序
+-- （跨供应商，重试即按它依次走）；嵌入类型只允许 openai-chat 供应商（应用层校验）。
+-- temperature/max_tokens 可空 = 调用不传，用供应商默认。
 CREATE TABLE provider_models (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id INTEGER NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
+    kind        TEXT    NOT NULL CHECK (kind IN ('chat', 'embedding')),
     model_id    TEXT    NOT NULL,
     temperature REAL,
     max_tokens  INTEGER,
+    chain_order INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-    UNIQUE (provider_id, model_id)
+    UNIQUE (provider_id, kind, model_id)
 );
 
 -- 输出风格库：内置固化（builtin=1）+ 后台自定义；全局默认落 app_settings.default_style_id
@@ -307,7 +373,7 @@ CREATE TABLE output_styles (
     sort_order INTEGER,
     created_at TEXT    NOT NULL DEFAULT (datetime('now'))
 );
--- 内置风格固化（REQUIREMENTS §4.1「文艺 / 幽默 / 简洁」，与 mock fixtures.styles 逐字一致）；
+-- 内置风格固化（PRODUCT「设置」输出风格「文艺 / 幽默 / 简洁」，与 mock fixtures.styles 逐字一致）；
 -- 自然自增即 id 1/2/3，「文艺」= id 1 与下方 default_style_id 对应。
 INSERT INTO output_styles (name, prompt, builtin, sort_order) VALUES
     ('文艺', '语气文艺有文采，善用比喻和意象，像写给彼此的信一样温柔。', 1, 1),

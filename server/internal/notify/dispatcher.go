@@ -1,11 +1,9 @@
-// Package notify 通知分发器（DESIGN 4.6）：站内全量入库 + 外部按渠道事件订阅推送。
+// Package notify 通知分发器：站内全量入库 + 外部按渠道事件订阅推送。
 package notify
 
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -16,7 +14,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
-// 站内事件类型 → 外部订阅键（内容删除类仅站内，需求 §4.8）
+// 站内事件类型 → 外部订阅键（内容删除类仅站内）
 var externalEventKey = map[string]string{
 	"post_created":         "new_post",
 	"post_liked":           "like",
@@ -114,7 +112,7 @@ type httpError struct{ status int }
 
 func (e *httpError) Error() string { return "webhook returned non-2xx status" }
 
-// render 模板占位符替换：{{title}}/{{content}}/{{time}}/{{type}}（需求 §4.7）。
+// render 模板占位符替换：{{title}}/{{content}}/{{time}}/{{type}}。
 func render(tpl string, vars map[string]string) string {
 	for k, v := range vars {
 		tpl = strings.ReplaceAll(tpl, "{{"+k+"}}", v)
@@ -136,43 +134,6 @@ func jsonEscape(s string) string {
 		}
 	}
 	return buf.String()
-}
-
-// CheckMonthlyAlbum 每月 1 日聚合上月照片为月度相册（幂等：已存在跳过；该月无照片不生成）。
-func (d *Dispatcher) CheckMonthlyAlbum(ctx context.Context, now time.Time) {
-	if now.Day() != 1 {
-		return
-	}
-	last := now.AddDate(0, 0, -1)
-	monthKey := last.Format("2006-01")
-	if _, err := d.db.GetMonthlyAlbum(ctx, monthKey); err == nil {
-		return
-	}
-	// 该月是否有照片
-	media, err := d.db.ListTimelineMedia(ctx, last.Format("2006"), monthKey, 1)
-	if err != nil || len(media) == 0 {
-		return
-	}
-	users, _ := d.db.ListUsers(ctx)
-	var uid int64
-	if len(users) > 0 {
-		uid = users[0].ID
-	}
-	name := fmt.Sprintf("%d年%d月", last.Year(), int(last.Month()))
-	if _, err := d.db.CreateMonthlyAlbum(ctx, monthKey, name, uid); err != nil {
-		slog.Warn("create monthly album failed", "month", monthKey, "err", err)
-		return
-	}
-	slog.Info("monthly album created", "month", monthKey)
-
-	// 相册上新：月度相册生成通知双方（站内全量 + 按订阅外推，需求 §4.8）
-	snapshot, _ := json.Marshal(map[string]any{"name": name, "monthly": true})
-	ids := make([]int64, 0, len(users))
-	for _, u := range users {
-		ids = append(ids, u.ID)
-	}
-	d.Dispatch(ctx, ids, "album_created", "album", 0, string(snapshot),
-		"相册上新", "月度相册「"+name+"」已生成")
 }
 
 // CheckAnniversaries 每日提醒检查（cron 幂等：当日已发跳过）。

@@ -44,7 +44,7 @@ func humanizeTime(raw string) string {
 	}
 }
 
-// dashboardAPI 仪表盘（AD3，DESIGN §9）。ai-usage 数据源为 L5 的 ai_usage_logs。
+// dashboardAPI 仪表盘。ai-usage 数据源为 的 ai_usage_logs。
 type dashboardAPI struct {
 	db *store.DB
 }
@@ -152,7 +152,7 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 }
 
 // aiUsage GET /api/v1/admin/dashboard/ai-usage
-// 契约：{items:[{date:"08-15", calls, tokens, avgLatencyMs}]}，近 14 天（L5 数据源）。
+// 契约：{items:[{date:"08-15", calls, tokens, avgLatencyMs}]}，近 14 天（数据源）。
 func (a *dashboardAPI) aiUsage(w http.ResponseWriter, r *http.Request) {
 	points, err := a.db.AIUsageSince(r.Context(), 14)
 	if err != nil {
@@ -177,7 +177,7 @@ func (a *dashboardAPI) aiUsage(w http.ResponseWriter, r *http.Request) {
 // 契约：{items:[{id, level:'error'|'warning', message, time}]}。
 //
 // 数据源限定为「库里真实可判定」的异常：
-//   - error：失败的 AI 调用（L5 落库，含模型名与耗时）
+// - error：失败的 AI 调用（落库，含模型名与耗时）
 //   - warning：已到期的纪念日提醒（remind_days_before 窗口内且当天未处理）
 //
 // 注：webhook 投递失败当前无落库（webhook_channels 无投递时间列、无投递日志表），
@@ -238,7 +238,7 @@ func (a *dashboardAPI) alerts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": out})
 }
 
-// auditAPI 审计日志查询（AD7，DESIGN §9）。
+// auditAPI 审计日志查询。
 type auditAPI struct {
 	db *store.DB
 }

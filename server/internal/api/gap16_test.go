@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// TestGAP16AvatarBirthday 覆盖头像上传、生日更新、头像公开读取、签名校验（GAP16 独立通道）。
+// TestGAP16AvatarBirthday 覆盖头像上传、生日更新、头像公开读取、签名校验（独立通道）。
 func TestGAP16AvatarBirthday(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 

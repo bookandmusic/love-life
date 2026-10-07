@@ -2,7 +2,7 @@ package store
 
 import "time"
 
-// 时间口径（DESIGN §12）：库内 created_at/deleted_at 一律存 UTC（`datetime('now')`，
+// 时间口径：库内 created_at/deleted_at 一律存 UTC（`datetime('now')`，
 // 形如 `YYYY-MM-DD HH:MM:SS` 或 RFC3339）；**用户可见的「日期」按部署者本地时区判定**
 // （进程 TZ，可用环境变量 `TZ=Asia/Shanghai` 覆盖）。EXIF taken_at 是相机墙钟时间、
 // 无时区信息，不得参与本换算。

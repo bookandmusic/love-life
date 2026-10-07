@@ -86,13 +86,7 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
 	}
 
-	var choice struct {
-		Message struct {
-			Content   string     `json:"content"`
-			ToolCalls []ToolCall `json:"tool_calls"`
-		} `json:"message"`
-		FinishReason string `json:"finish_reason"`
-	}
+	var choice Choice
 	c := raw.Candidates[0]
 	choice.FinishReason = c.FinishReason
 	for idx, part := range c.Content.Parts {
@@ -171,7 +165,12 @@ func buildGeminiContents(msgs []Message) (system string, contents []any) {
 			if err := json.Unmarshal([]byte(m.Content), &responseObj); err != nil {
 				responseObj = map[string]any{"result": m.Content}
 			}
-			name := toolNameFromCallID(m.ToolCallID)
+			// 工具名优先取 ToolName（历史回放的往返 ID 形如 card-<n>，反解不出名字）；
+			// 缺省回落 call-id 反解（本协议在途往返的合成 ID）
+			name := m.ToolName
+			if name == "" {
+				name = toolNameFromCallID(m.ToolCallID)
+			}
 			contents = append(contents, map[string]any{
 				"role": "user",
 				"parts": []any{map[string]any{
@@ -225,4 +224,31 @@ func buildGeminiTools(tools []Tool) []any {
 		return nil
 	}
 	return []any{map[string]any{"functionDeclarations": decls}}
+}
+
+// StreamChat 过渡实现：整块请求一次，拆成单个 Delta 回调（不阻塞 D3 其余部分；
+// 各协议原生流式随后逐个补齐—— anthropic content_block_delta / openai-responses
+// response.*.delta / gemini alt=sse）。
+func (self geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+	out, err := self.Chat(ctx, baseURL, apiKey, model, req)
+	if err != nil {
+		return "", err
+	}
+	if len(out.Choices) == 0 {
+		return "", nil
+	}
+	m := out.Choices[0].Message
+	if m.Reasoning != "" {
+		onDelta(Delta{Reasoning: m.Reasoning})
+	}
+	if m.Content != "" {
+		onDelta(Delta{Content: m.Content})
+	}
+	for i := range m.ToolCalls {
+		onDelta(Delta{ToolCall: &ToolCallDelta{Index: i, ID: m.ToolCalls[i].ID, Name: m.ToolCalls[i].Function.Name,
+			Arguments: m.ToolCalls[i].Function.Arguments}})
+	}
+	u := out.Usage
+	onDelta(Delta{Usage: &u})
+	return out.Choices[0].FinishReason, nil
 }

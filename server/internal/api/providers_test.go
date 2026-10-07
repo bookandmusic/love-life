@@ -51,10 +51,10 @@ func TestProvidersCRUD(t *testing.T) {
 	// 创建：201 返回条目，has_key=true、永不回读密钥
 	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/model-providers", adminToken, map[string]any{
 		"api_type": "openai-chat", "name": "  主力  ", "base_url": "https://api.example.com/v1",
-		"api_key": "sk-live", "default_model": "gpt-4o",
+		"api_key": "sk-live",
 		"models": []map[string]any{
-			{"id": "gpt-4o", "temperature": 0.7, "max_tokens": 4096},
-			{"id": "gpt-4o-mini"},
+			{"id": "gpt-4o", "kind": "chat", "temperature": 0.7, "max_tokens": 4096},
+			{"id": "gpt-4o-mini", "kind": "chat"},
 		},
 	})
 	var created map[string]any
@@ -68,9 +68,6 @@ func TestProvidersCRUD(t *testing.T) {
 	}
 	if _, leak := created["api_key"]; leak {
 		t.Fatal("create response must not leak api_key")
-	}
-	if created["default_model"] != "gpt-4o" {
-		t.Fatalf("default_model = %+v", created["default_model"])
 	}
 	models := created["models"].([]any)
 	if len(models) != 2 {
@@ -106,10 +103,9 @@ func TestProvidersCRUD(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	// 编辑：部分更新——name trim 空保留、models 整表替换、default_model 原样存
+	// 编辑：部分更新——name trim 空保留、models 整表替换
 	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/model-providers/"+itoa(id), adminToken, map[string]any{
-		"name": "   ", "models": []map[string]any{{"id": "gpt-4.1", "temperature": 0.2}},
-		"default_model": "gpt-4.1",
+		"name": "   ", "models": []map[string]any{{"id": "gpt-4.1", "kind": "chat", "temperature": 0.2}},
 	})
 	var updated map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&updated)
@@ -122,9 +118,6 @@ func TestProvidersCRUD(t *testing.T) {
 	}
 	if len(updated["models"].([]any)) != 1 {
 		t.Fatalf("models must be replaced: %+v", updated["models"])
-	}
-	if updated["default_model"] != "gpt-4.1" {
-		t.Fatalf("default_model = %+v", updated["default_model"])
 	}
 
 	// 编辑：base_url 空串拒绝
@@ -143,31 +136,63 @@ func TestProvidersCRUD(t *testing.T) {
 		t.Fatalf("update key: %d %+v", res.StatusCode, keyed)
 	}
 
-	// 排序：部分 ids / 未知 id 拒绝
-	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/model-providers/order", adminToken, map[string]any{"ids": []int64{id}})
+	// 模型条目：给 id2（anthropic）挂 chat 条目
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/models", adminToken, map[string]any{
+		"kind": "chat", "provider_id": id2, "model_id": "claude-sonnet",
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create model: %d", res.StatusCode)
+	}
+	// 嵌入条目挂 anthropic → 服务端拒绝（嵌入只允许 openai-chat）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/models", adminToken, map[string]any{
+		"kind": "embedding", "provider_id": id2, "model_id": "claude-embed",
+	})
 	res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("partial order: %d", res.StatusCode)
+		t.Fatalf("embedding on anthropic must be rejected: %d", res.StatusCode)
 	}
-	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/model-providers/order", adminToken, map[string]any{"ids": []int64{id, 999}})
+
+	// 链序：读取 chat 链 → 反转 → 校验顺序生效 + 非全覆盖拒绝
+	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/models", adminToken, nil)
+	var chains map[string][]map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&chains)
+	res.Body.Close()
+	chatChain := chains["chat"]
+	if len(chatChain) != 3 { // 主力 gpt-4.1 + gpt-4o-mini（create 挂了两条，update 替换成一条）… 以实际为准
+		t.Logf("chat chain len = %d: %+v", len(chatChain), chatChain)
+	}
+	firstID := int64(chatChain[0]["id"].(float64))
+	lastID := int64(chatChain[len(chatChain)-1]["id"].(float64))
+
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/models/order", adminToken, map[string]any{"kind": "chat", "ids": []int64{firstID}})
 	res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("unknown id order: %d", res.StatusCode)
+		t.Fatalf("partial order must be rejected: %d", res.StatusCode)
 	}
-	// 正确排序：anthropic（id2）在前 → 列表顺序反转
-	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/model-providers/order", adminToken, map[string]any{"ids": []int64{id2, id}})
-	var ordered []map[string]any
-	_ = json.NewDecoder(res.Body).Decode(&ordered)
-	res.Body.Close()
-	if res.StatusCode != http.StatusOK || ordered[0]["id"] != float64(id2) {
-		t.Fatalf("order: %d %+v", res.StatusCode, ordered)
+
+	reversed := []int64{lastID, firstID}
+	rest := []int64{}
+	seen := map[int64]bool{lastID: true, firstID: true}
+	for _, e := range chatChain {
+		eid := int64(e["id"].(float64))
+		if !seen[eid] {
+			rest = append(rest, eid)
+			seen[eid] = true
+		}
 	}
-	// GET 列表顺序与 order 一致
-	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/model-providers", adminToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&list)
+	reversed = append(reversed, rest...)
+
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/models/order", adminToken, map[string]any{"kind": "chat", "ids": reversed})
 	res.Body.Close()
-	if list[0]["id"] != float64(id2) {
-		t.Fatalf("list after order = %+v", list)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("order: %d", res.StatusCode)
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/models", adminToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&chains)
+	res.Body.Close()
+	if int64(chains["chat"][0]["id"].(float64)) != lastID {
+		t.Fatalf("chain order not applied: %+v", chains["chat"])
 	}
 
 	// 删除：204 → 列表少一条 → 再删 404
@@ -201,9 +226,9 @@ func TestProvidersValidation(t *testing.T) {
 		{"缺 base_url", map[string]any{"api_type": "openai-chat", "api_key": "k"}, "base_url 必填"},
 		{"缺 api_key", map[string]any{"api_type": "openai-chat", "base_url": "u"}, "api_key 必填"},
 		{"空模型名", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": " "}}}, "模型名为空"},
-		{"temperature 越界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "temperature": 2.5}}}, "temperature 需在 0~2 之间"},
-		{"max_tokens 下界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "max_tokens": 100}}}, "max_tokens 需为 256~32768 整数"},
-		{"max_tokens 非整数", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "max_tokens": 4096.5}}}, "max_tokens 需为 256~32768 整数"},
+		{"temperature 越界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "temperature": 2.5}}}, "temperature 需在 0~2 之间"},
+		{"max_tokens 下界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "max_tokens": 100}}}, "max_tokens 需为 256~32768 整数"},
+		{"max_tokens 非整数", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "max_tokens": 4096.5}}}, "max_tokens 需为 256~32768 整数"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

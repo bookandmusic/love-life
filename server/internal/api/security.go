@@ -20,7 +20,7 @@ func parseID(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
-// securityAPI 数据安全设置（AD6，DESIGN §9 / 需求 §8.3）。
+// securityAPI 数据安全设置。
 type securityAPI struct {
 	db *store.DB
 }
@@ -34,17 +34,15 @@ func (a *securityAPI) get(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"recycleRetentionDays": s.RecycleRetentionDays,
-		"chatRetention":        s.ChatRetention,
 	})
 }
 
 // put PUT /api/v1/admin/security —— 部分更新：只提交变更字段，服务端按字段合并，
-// 不得整体覆盖（DESIGN §9 记录该语义；契约对齐 mock routes.mjs /admin/security）。
+// 不得整体覆盖（ 记录该语义；契约对齐 mock routes.mjs /admin/security）。
 // 前端两个保存入口各自只发一个字段，故两字段均为可选。
 func (a *securityAPI) put(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		RecycleRetentionDays *int64  `json:"recycleRetentionDays"`
-		ChatRetention        *string `json:"chatRetention"`
+		RecycleRetentionDays *int64 `json:"recycleRetentionDays"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
@@ -58,12 +56,7 @@ func (a *securityAPI) put(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if req.ChatRetention != nil && !store.ValidChatRetention(*req.ChatRetention) {
-		writeError(w, http.StatusBadRequest, "对话保留时长仅支持 7 / 30 / 90 / permanent")
-		return
-	}
-
-	if err := a.db.SaveSecuritySettings(r.Context(), req.RecycleRetentionDays, req.ChatRetention); err != nil {
+	if err := a.db.SaveSecuritySettings(r.Context(), req.RecycleRetentionDays); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
@@ -76,16 +69,15 @@ func (a *securityAPI) put(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"recycleRetentionDays": s.RecycleRetentionDays,
-		"chatRetention":        s.ChatRetention,
 	})
 }
 
-// recycleAPI 回收站管理（AD5，DESIGN §5 / §9）。
+// recycleAPI 回收站管理。
 type recycleAPI struct {
 	db *store.DB
 }
 
-// list GET /api/v1/admin/recycle —— 六类已删除内容按删除时间倒序。
+// list GET /api/v1/admin/recycle —— 五类已删除内容按删除时间倒序。
 func (a *recycleAPI) list(w http.ResponseWriter, r *http.Request) {
 	items, err := a.db.ListRecycle(r.Context())
 	if err != nil {

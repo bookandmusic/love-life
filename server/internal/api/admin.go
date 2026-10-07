@@ -14,7 +14,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
-// adminAPI 后台成员管理（需求 §8.3：本空间信息与成员，含 girl/boy 密码重置）。
+// adminAPI 后台成员管理（本空间信息与成员，含 girl/boy 密码重置）。
 type adminAPI struct {
 	db *store.DB
 	mp *media.Pipeline
@@ -31,8 +31,8 @@ func (a *adminAPI) listUsers(w http.ResponseWriter, r *http.Request) {
 		Username string `json:"username"`
 		Role     string `json:"role"`
 		Nickname string `json:"nickname"`
-		Birthday string `json:"birthday"` // GAP16：仅后台展示（需求 §4.1 关系卡未列）
-		Avatar   string `json:"avatar"`   // GAP16：头像签名 URL；无则空串
+		Birthday string `json:"birthday"` // 仅后台展示（关系卡未列）
+		Avatar   string `json:"avatar"`   // 头像签名 URL；无则空串
 	}
 	out := make([]item, 0, len(users))
 	for _, u := range users {
@@ -48,7 +48,7 @@ func (a *adminAPI) listUsers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// createCouple 情侣账户原子创建（AD9，DESIGN §9；契约与校验顺序对齐 mock routes.mjs / mock-check C1-C4）：
+// createCouple 情侣账户原子创建（；契约与校验顺序对齐 mock routes.mjs / mock-check C1-C4）：
 // 必填 → 双方同名 → 格式 → 情侣已存在 → 用户名冲突，以上均 400（C4 明确情侣已存在不得返 409）。
 func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -132,7 +132,7 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateNickname 仅允许更新昵称（AD9：用户名/角色为登录身份与数据归属，不可修改）。
+// updateNickname 仅允许更新昵称（用户名/角色为登录身份与数据归属，不可修改）。
 func (a *adminAPI) updateNickname(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -196,7 +196,7 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// uploadAvatar POST /api/v1/admin/users/{id}/avatar：admin 上传头像（GAP16 独立通道）。
+// uploadAvatar POST /api/v1/admin/users/{id}/avatar：admin 上传头像（独立通道）。
 // multipart/form-data 字段 avatar；仅接受照片格式。替换时删旧文件。
 func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -252,7 +252,7 @@ func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateBirthday PUT /api/v1/admin/users/{id}/birthday：仅后台维护，不下发 APP（GAP16）。
+// updateBirthday PUT /api/v1/admin/users/{id}/birthday：仅后台维护，不下发 APP。
 func (a *adminAPI) updateBirthday(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
@@ -283,7 +283,7 @@ func (a *adminAPI) updateBirthday(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// serveAvatar GET /api/v1/avatar/{userID}：公开（签名即凭证，DESIGN 4.5 同媒体文件通道）。
+// serveAvatar GET /api/v1/avatar/{userID}：公开（签名即凭证， 同媒体文件通道）。
 // 不走 Bearer：APP 内 <img> 无法附加 header；签名 HMAC 命名空间与媒体隔离（avatar:<id>）。
 func (a *adminAPI) serveAvatar(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("userID"), 10, 64)
@@ -327,7 +327,7 @@ func (a *adminAPI) serveAvatar(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, f)
 }
 
-// requireAdmin 在认证之上叠加角色校验：后台路由仅 admin（需求 §8.3）。
+// requireAdmin 在认证之上叠加角色校验：后台路由仅 admin。
 func requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims, ok := auth.UserFromContext(r.Context())

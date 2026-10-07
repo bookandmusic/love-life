@@ -9,7 +9,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// ActorType 常量：审计日志 actor_type 字段的取值（DESIGN §8.2）。
+// ActorType 常量：审计日志 actor_type 字段的取值。
 const (
 	ActorTypeUser = "user"
 	ActorTypeAI   = "ai"
@@ -25,7 +25,7 @@ type DB struct {
 // PostIndexer 动态向量索引的写侧钩子（由 search.Index 实现）。
 // 接口定义在 store 侧以隔离依赖：store 不 import search。
 type PostIndexer interface {
-	IndexPost(ctx context.Context, id int64, title, content, location string) error
+	IndexPost(ctx context.Context, id int64, content, location string) error
 	UnindexPost(ctx context.Context, id int64) error
 }
 

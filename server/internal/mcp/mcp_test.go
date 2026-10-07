@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -92,25 +93,24 @@ func TestMCPTierFiltering(t *testing.T) {
 	}
 
 	roTools, rwTools := list(ro), list(rw)
-	// DESIGN §8.3：只读 11 个、读写 21 个（11 读 + 10 写）；删除类 5 个永不出现
-	if len(roTools) != 11 {
-		t.Fatalf("readonly tools = %d, want 11", len(roTools))
+	// 16 工具分档：读 7（两通道均开放）、提案 8（readwrite 档直接执行）、删除 1（AppOnly 永不出现）
+	if len(roTools) != 7 {
+		t.Fatalf("readonly tools = %d, want 7", len(roTools))
 	}
-	if len(rwTools) != 21 {
-		t.Fatalf("readwrite tools = %d, want 21", len(rwTools))
+	if len(rwTools) != 15 {
+		t.Fatalf("readwrite tools = %d, want 15（读 7 + 提案 8）", len(rwTools))
 	}
-	forbidden := map[string]bool{"delete_post": true, "delete_comment": true, "delete_album": true, "delete_anniversary": true, "delete_map_point": true}
 	for _, tools := range [][]map[string]any{roTools, rwTools} {
 		for _, tl := range tools {
-			if forbidden[tl["name"].(string)] {
-				t.Fatalf("delete tool %v must not be exposed to any token", tl["name"])
+			if tl["name"] == "propose_delete" {
+				t.Fatalf("删除类工具 %v 不得对任何令牌开放", tl["name"])
 			}
 		}
 	}
-	// readonly 不得含写工具
+	// readonly 不得含提案类工具
 	for _, tl := range roTools {
-		if tl["name"] == "create_post" {
-			t.Fatal("readonly must not expose write tools")
+		if strings.HasPrefix(tl["name"].(string), "propose_") {
+			t.Fatalf("readonly must not expose propose tools: %v", tl["name"])
 		}
 	}
 }
@@ -134,7 +134,7 @@ func TestMCPWriteToolBlockedForReadonly(t *testing.T) {
 	}
 }
 
-// 后台停用的工具对外部通道同样不可见/不可调用（AD4 一致性）。
+// 后台停用的工具对外部通道同样不可见/不可调用（一致性）。
 func TestMCPDisabledToolHidden(t *testing.T) {
 	db, svc, _, _ := newEnv(t)
 	ctx := t.Context()

@@ -5,7 +5,7 @@ import (
 	"strconv"
 )
 
-// defaultMediaMaxMB 单媒体文件软限默认值（MB，DESIGN 4.8）；可用 MEDIA_MAX_MB 覆盖。
+// defaultMediaMaxMB 单媒体文件软限默认值（MB）；可用 MEDIA_MAX_MB 覆盖。
 const defaultMediaMaxMB = 500
 
 // Config 全部来自环境变量——部署口径是"单二进制 + 一个数据目录"，不引入配置文件。
@@ -14,7 +14,7 @@ type Config struct {
 	DataDir       string // 自包含数据目录（SQLite/向量库/媒体）
 	AdminUser     string // 部署时内置 admin 账号
 	AdminPass     string
-	MediaMaxBytes int64 // 单媒体文件软限（DESIGN 4.8 默认 500MB）
+	MediaMaxBytes int64 // 单媒体文件软限（默认 500MB）
 }
 
 func Load() Config {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -16,6 +17,9 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/store"
 	"github.com/bookandmusic/love-life/server/internal/textutil"
 )
+
+// maxPostMedia 单条动态的媒体文件数上限（与 APP 发布页 MAX_FILES 同口径：3×3 方格铺满一屏）。
+const maxPostMedia = 9
 
 type postsAPI struct {
 	db *store.DB
@@ -44,7 +48,8 @@ func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer file.Close()
-	up, err := a.mp.SaveTemp(file, header.Filename)
+	claims, _ := auth.UserFromContext(r.Context())
+	up, err := a.mp.SaveTemp(file, header.Filename, claims.UserID)
 	if err != nil {
 		if errors.Is(err, media.ErrUnsupportedFormat) {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -149,8 +154,8 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "请至少填写文字、心情、地点或媒体")
 		return
 	}
-	if len(req.MediaTokens) > 18 {
-		writeError(w, http.StatusBadRequest, "单条动态最多 18 个媒体文件")
+	if len(req.MediaTokens) > maxPostMedia {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("单条动态最多 %d 个媒体文件", maxPostMedia))
 		return
 	}
 
@@ -193,7 +198,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 
 	postID, err := a.db.CreatePostWithMedia(r.Context(), &store.Post{
 		AuthorID: claims.UserID, Content: req.Content,
-		Title: sql.NullString{}, Mood: nullStr(req.Mood),
+		Mood:         nullStr(req.Mood),
 		LocationName: nullStr(locName), PointID: pointID,
 	}, medias)
 	if err != nil {
@@ -233,7 +238,7 @@ func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
 	if pageSize > 50 {
 		pageSize = 50 // 夹紧上限（mock 无上限，有意收紧防 DoS）
 	}
-	// 那年今日（REQUIREMENTS §4.1）：只取历年在今天同月同日发布的动态，不含当年；
+	// 那年今日：只取历年在今天同月同日发布的动态，不含当年；
 	// 过滤在分页之前（契约同 mock），故 total 为过滤后总数。
 	memories := r.URL.Query().Get("memories") == "1"
 	posts, total, err := a.db.ListPosts(r.Context(), page, pageSize, memories)
@@ -315,20 +320,20 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	// 双方可删任意内容（需求 §7.1）；删对方发布的内容 → 站内通知，自删静默
+	// 双方可删任意内容；删对方发布的内容 → 站内通知，自删静默
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
 		CreatorID: p.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
 		EventType: "post_deleted", TargetType: "post", TargetID: id,
 		Extra: map[string]any{"content": textutil.TruncMark(p.Content, 50)},
 	})
-	// DESIGN §13.3：删除一律 204 No Content
+	// ：删除一律 204 No Content
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---- 媒体文件服务（签名 URL，无 Authorization 头） ----
 
-// reurlMedia 批量重签媒体 URL（D1）：{ids ≤200} → {items:[{id,thumb_url,url}]}；
-// 无效/已删 id 跳过不报错；签名 TTL 与现有媒体一致（15 分钟，DESIGN 4.5）。
+// reurlMedia 批量重签媒体 URL：{ids ≤200} → {items:[{id,thumb_url,url}]}；
+// 无效/已删 id 跳过不报错；签名 TTL 与现有媒体一致（15 分钟）。
 func (a *postsAPI) reurlMedia(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		IDs []int64 `json:"ids"`
@@ -383,7 +388,7 @@ func (a *postsAPI) serveMediaFile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if variant == "thumb" {
-		// 视频/音频缩略图 = 占位图（零 ffmpeg，DESIGN 4.8；音频对齐 mock 蓝底 SVG）
+		// 视频/音频缩略图 = 占位图（零 ffmpeg，；音频对齐 mock 蓝底 SVG）
 		if m.Kind == "video" {
 			ct, body := media.PlaceholderThumb()
 			w.Header().Set("Content-Type", ct)
@@ -521,4 +526,26 @@ func fileExt(p string) string {
 		}
 	}
 	return ""
+}
+
+// discardMedia POST /api/v1/media/discard：放弃 / 取消 / 把关作废时主动撤销已上传的临时文件。
+// 体 {tokens:[...]}；幂等，归属不符跳过；上限与单次上传媒体数同量级（100）。
+func (a *postsAPI) discardMedia(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	var req struct {
+		Tokens []string `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadRequest)
+		return
+	}
+	if len(req.Tokens) == 0 {
+		writeJSON(w, http.StatusOK, map[string]int{"discarded": 0})
+		return
+	}
+	if len(req.Tokens) > 100 {
+		writeError(w, http.StatusBadRequest, "单次最多撤销 100 个临时文件")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"discarded": a.mp.Discard(req.Tokens, claims.UserID)})
 }

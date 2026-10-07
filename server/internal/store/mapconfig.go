@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// MapSource 瓦片源（DESIGN §4.7：多卡片管理，类型限 public/tianditu，至多一个使用中；
+// MapSource 瓦片源（多卡片管理，类型限 public/tianditu，至多一个使用中；
 // 密钥加密存储、永不下发 APP）。
 type MapSource struct {
 	ID            int64

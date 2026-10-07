@@ -92,7 +92,7 @@ func TestMCPMalformedAuthHeadersRejected(t *testing.T) {
 func TestMCPAuditAttributesToTokenID(t *testing.T) {
 	db, svc := newMCPEnv(t)
 	plain, tok, _ := db.CreatePAT(t.Context(), "MyAgent", 2, "readonly")
-	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_posts","arguments":{"query":"海边"}}}`
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"find_posts","arguments":{"query":"海边"}}}`
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/mcp", bytes.NewBufferString(body))
 	req.Header.Set("Authorization", "Bearer "+plain)
@@ -141,7 +141,7 @@ func TestMCPAuditAttributesToTokenID(t *testing.T) {
 	if latency == nil {
 		t.Fatal("pat 行 latency_ms 不应为 null（AD7 口径：ai/pat 有值）")
 	}
-	// params 存人类可读摘要、params_digest 存原始 JSON（DESIGN §12 AuditLog 口径）。
+	// params 存人类可读摘要、params_digest 存原始 JSON（ AuditLog 口径）。
 	if got, _ := params.(string); got != `query: "海边"` {
 		t.Fatalf("pat 行 params=%q want 人类可读摘要 %q", got, `query: "海边"`)
 	}

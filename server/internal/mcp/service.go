@@ -1,9 +1,9 @@
-// Package mcp 外部 MCP 服务通道（DESIGN §7/§8）：单实例双通道中的外部通道，
-// 用 PAT 认证、按档位过滤工具、Streamable HTTP 传输（唯一传输，§8.5）。
+// Package mcp 外部 MCP 服务通道：单实例双通道中的外部通道，
+// 用 PAT 认证、按档位过滤工具、Streamable HTTP 传输（唯一传输）。
 //
 // 与内部通道（APP Agent，走 /api/v1/chat/，JWT + 确认卡片）共用同一套工具注册表
 // 与业务逻辑；差异在鉴权与工具可见范围：
-//   - AppOnly 工具（删除类）不对任何令牌开放（AGENTS §5 铁律 / DESIGN §8.3）
+// - AppOnly 工具（删除类）不对任何令牌开放（ 铁律 / ）
 //   - readonly 档只见读工具；readwrite 档见读 + 写工具
 package mcp
 
@@ -126,7 +126,7 @@ func allowed(t *tools.Tool, tier string) bool {
 }
 
 // toolList 下发工具清单（MCP tools/list 形状：name/description/inputSchema）。
-// 后台停用的工具不下发（AD4 与外部通道一致）。
+// 后台停用的工具不下发（与外部通道一致）。
 func (s *Service) toolList(ctx context.Context, pat *store.PersonalAccessToken) []map[string]any {
 	disabled, _ := s.db.DisabledTools(ctx)
 	out := make([]map[string]any, 0, len(tools.Registry()))
@@ -147,17 +147,17 @@ func (s *Service) toolList(ctx context.Context, pat *store.PersonalAccessToken) 
 // toolAnnotations 派生 MCP 工具注解（2025-06-18 规范）。
 // 规范默认值：readOnlyHint=false、destructiveHint=true、idempotentHint=false、openWorldHint=true。
 // 本服务工具全部操作本地封闭数据集，openWorldHint 固定 false（覆盖默认）。
-// 不发 idempotentHint：toggle_like/toggle_favorite 名为 toggle 但重复调用切换状态，
-// 不满足规范「相同参数产生相同结果」语义。
+// 提案类工具已改幂等「设为」语义（propose_reaction），读工具天然幂等 → 发 idempotentHint=true。
 func toolAnnotations(t *tools.Tool) map[string]any {
 	return map[string]any{
-		"readOnlyHint":  !t.IsWrite,
+		"readOnlyHint":    !t.IsWrite,
 		"destructiveHint": t.IsWrite && t.AppOnly,
-		"openWorldHint": false,
+		"idempotentHint":  true,
+		"openWorldHint":   false,
 	}
 }
 
-// handleCall 执行 tools/call。审计记 actor_type=pat、actor_id=令牌 ID（DESIGN §8.2）。
+// handleCall 执行 tools/call。审计记 actor_type=pat、actor_id=令牌 ID。
 func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequest, pat *store.PersonalAccessToken) {
 	var params struct {
 		Name      string         `json:"name"`
@@ -195,11 +195,13 @@ func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequ
 		args = map[string]any{}
 	}
 
-	// 审计：params 存人类可读摘要、digest 存原始 JSON，latency_ms 记本次调用耗时（DESIGN §12）
+	// 审计：params 存人类可读摘要、digest 存原始 JSON，latency_ms 记本次调用耗时
 	digest, _ := json.Marshal(args)
 	paramsText := tools.FormatParams(args)
 	started := nowMillis()
-	out, err := target.Exec(r.Context(), s.deps, pat.UserID, args)
+	// 外部通道一律直接执行（提案类不走确认卡）：MCP 规范的 User Interaction Model 由
+	// 客户端（外部 Agent）负责二次确认，服务端通过 tools/list 注解声明风险属性。
+	out, err := target.Invoke(r.Context(), s.deps, pat.UserID, args, tools.ModeExecute)
 	elapsed := nowMillis() - started
 
 	if err != nil {
@@ -212,8 +214,9 @@ func (s *Service) handleCall(w http.ResponseWriter, r *http.Request, req rpcRequ
 	}
 
 	_ = s.db.InsertAuditLogFull(r.Context(), store.ActorTypePAT, pat.ID, target.Name, string(digest), paramsText, tools.AuditSuccess, &elapsed)
+	// 给外部 Agent 的文本 = ModelText（含 id 与结论，便于它接力）；UI 载荷不出通道
 	s.writeResult(w, req.ID, map[string]any{
-		"content": []map[string]any{{"type": "text", "text": out.Content}},
+		"content": []map[string]any{{"type": "text", "text": out.ModelText}},
 	})
 }
 

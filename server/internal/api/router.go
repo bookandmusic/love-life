@@ -38,7 +38,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("POST /api/v1/admin/users/couple", adminAPI.createCouple)
 	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}", adminAPI.updateNickname)
 	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/reset-password", adminAPI.resetPassword)
-	// GAP16 头像/生日（独立通道）：admin 上传头像、设置生日
+	// 头像/生日（独立通道）：admin 上传头像、设置生日
 	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/avatar", adminAPI.uploadAvatar)
 	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}/birthday", adminAPI.updateBirthday)
 	hooksAPI := &webhooksAPI{db: db, dp: dp}
@@ -56,14 +56,15 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("GET /api/v1/admin/model-providers", providersAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/model-providers", providersAPI.create)
 	adminMux.HandleFunc("POST /api/v1/admin/model-providers/fetch-models", providersAPI.fetchModels)
-	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/order", providersAPI.order)
 	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}/key", providersAPI.updateKey)
 	adminMux.HandleFunc("PUT /api/v1/admin/model-providers/{id}", providersAPI.update)
 	adminMux.HandleFunc("DELETE /api/v1/admin/model-providers/{id}", providersAPI.remove)
-	// 嵌入模型配置（语义检索）：复用供应商地址与 Key，未配置 = 关闭
-	embeddingAPI := &embeddingAPI{db: db}
-	adminMux.HandleFunc("GET /api/v1/admin/embedding-config", embeddingAPI.get)
-	adminMux.HandleFunc("PUT /api/v1/admin/embedding-config", embeddingAPI.put)
+	// 模型条目与链序（kind 区分 chat / embedding，两条链共享 CRUD）
+	adminMux.HandleFunc("GET /api/v1/admin/models", providersAPI.modelsList)
+	adminMux.HandleFunc("POST /api/v1/admin/models", providersAPI.modelsCreate)
+	adminMux.HandleFunc("PUT /api/v1/admin/models/order", providersAPI.modelsOrder)
+	adminMux.HandleFunc("PUT /api/v1/admin/models/{id}", providersAPI.modelsUpdate)
+	adminMux.HandleFunc("DELETE /api/v1/admin/models/{id}", providersAPI.modelsRemove)
 	stylesAPI := &stylesAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/styles", stylesAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/styles", stylesAPI.create)
@@ -72,37 +73,37 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("DELETE /api/v1/admin/styles/{id}", stylesAPI.remove)
 	adminMux.HandleFunc("GET /api/v1/admin/system-prompt", stylesAPI.getPrompt)
 	adminMux.HandleFunc("PUT /api/v1/admin/system-prompt", stylesAPI.setPrompt)
-	// 数据安全设置（AD6）：PUT 为部分更新，按字段合并
+	// 数据安全设置：PUT 为部分更新，按字段合并
 	securityAPI := &securityAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/security", securityAPI.get)
 	adminMux.HandleFunc("PUT /api/v1/admin/security", securityAPI.put)
-	// 回收站管理（AD5）：列表 / 单条恢复 / 批量恢复 / 回收站操作日志
+	// 回收站管理：列表 / 单条恢复 / 批量恢复 / 回收站操作日志
 	recycleAPI := &recycleAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/recycle", recycleAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/recycle/restore", recycleAPI.restoreMany)
 	adminMux.HandleFunc("GET /api/v1/admin/recycle/restore-log", recycleAPI.restoreLog)
 	adminMux.HandleFunc("POST /api/v1/admin/recycle/{id}/restore", recycleAPI.restoreOne)
-	// MCP 工具注册表与启停（AD4）：清单 + 单项启停
+	// MCP 工具注册表与启停：清单 + 单项启停
 	mcpToolsAPI := &mcpToolsAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/mcp-tools", mcpToolsAPI.list)
 	adminMux.HandleFunc("PATCH /api/v1/admin/mcp-tools/{name}", mcpToolsAPI.patch)
-	// 个人访问令牌（AD8）：列表 / 签发（明文仅一次）/ 吊销
+	// 个人访问令牌：列表 / 签发（明文仅一次）/ 吊销
 	patAPI := &patAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/tokens", patAPI.list)
 	adminMux.HandleFunc("POST /api/v1/admin/tokens", patAPI.create)
 	adminMux.HandleFunc("POST /api/v1/admin/tokens/{id}/revoke", patAPI.revoke)
-	// 仪表盘（AD3）：统计 / 近期活动 / AI 用量时序（L5 数据源）/ 异常告警
+	// 仪表盘：统计 / 近期活动 / AI 用量时序（数据源）/ 异常告警
 	dashAPI := &dashboardAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/dashboard/stats", dashAPI.stats)
 	adminMux.HandleFunc("GET /api/v1/admin/dashboard/activity", dashAPI.activity)
 	adminMux.HandleFunc("GET /api/v1/admin/dashboard/ai-usage", dashAPI.aiUsage)
 	adminMux.HandleFunc("GET /api/v1/admin/dashboard/alerts", dashAPI.alerts)
-	// 审计日志查询（AD7）
+	// 审计日志查询
 	auditAPI := &auditAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/audit", auditAPI.list)
 	mux.Handle("/api/v1/admin/", authSvc.RequireAuth(requireAdmin(adminMux)))
 
-	// 输出风格列表（登录用户，形状同 admin 列表；AI 偏好属个人体验项，需求 §7.1）
+	// 输出风格列表（登录用户，形状同 admin 列表；AI 偏好属个人体验项）
 	mux.Handle("GET /api/v1/styles", authSvc.RequireAuth(http.HandlerFunc(stylesAPI.list)))
 
 	// 地图（登录用户；瓦片走服务端代理，密钥不下发）
@@ -113,7 +114,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mapMux.HandleFunc("GET /api/v1/map/tile", mapAPI.tile)
 	mux.Handle("/api/v1/map/tile", mapMux)
 
-	// 地图点位（登录用户；双来源同池、同名复用，软删进回收站体系——DESIGN §4.7）
+	// 地图点位（登录用户；双来源同池、同名复用，软删进回收站体系——）
 	pointsAPI := &mapPointsAPI{db: db, dp: dp}
 	pointsMux := http.NewServeMux()
 	pointsMux.HandleFunc("GET /api/v1/map/points", pointsAPI.list)
@@ -132,18 +133,23 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	chatSvc := chat.NewService(db, tm.Secret(), deps)
 	chatMux := http.NewServeMux()
 	chatMux.HandleFunc("GET /api/v1/chat/status", chatSvc.Status)
+	chatMux.HandleFunc("GET /api/v1/chat/bootstrap", chatSvc.Bootstrap)
 	chatMux.HandleFunc("POST /api/v1/chat/message", chatSvc.Message)
-	chatMux.HandleFunc("POST /api/v1/chat/confirm", chatSvc.Confirm)
-	chatMux.HandleFunc("POST /api/v1/chat/withdraw-last", chatSvc.WithdrawLast)
+	// 提案裁决（approve/cancel）替代旧 /chat/confirm——confirm 一词只覆盖同意、不覆盖取消
+	chatMux.HandleFunc("POST /api/v1/chat/proposals/{id}/resolve", chatSvc.ResolveProposal)
+	// 显式中止本轮（整轮回滚）——取代 withdraw-last：撤回只由用户意图触发，不由连接状态触发
+	chatMux.HandleFunc("POST /api/v1/chat/turns/{turn_id}/abort", chatSvc.Abort)
+	chatMux.HandleFunc("GET /api/v1/chat/sessions", chatSvc.ListSessions)
+	chatMux.HandleFunc("DELETE /api/v1/chat/sessions/{id}", chatSvc.DeleteSession)
 	chatMux.HandleFunc("GET /api/v1/chat/history", chatSvc.History)
 	mux.Handle("/api/v1/chat/", authSvc.RequireAuth(chatMux))
 
-	// 外部 MCP 通道（DESIGN §7/§8）：PAT 认证（非 JWT），Streamable HTTP 唯一传输。
+	// 外部 MCP 通道：PAT 认证（非 JWT），Streamable HTTP 唯一传输。
 	// 与内部通道共用工具注册表；AppOnly 删除类工具经 allowed() 过滤，不对任何令牌开放。
 	mcpSvc := mcp.NewService(db, deps)
 	mux.HandleFunc("POST /api/v1/mcp", mcpSvc.Handle)
 
-	// 空间信息与个人资料（登录用户；配置信息可修改，需求 §7.1）
+	// 空间信息与个人资料（登录用户；配置信息可修改）
 	profileAPI := &profileAPI{db: db, mp: mp}
 	profileMux := http.NewServeMux()
 	profileMux.HandleFunc("GET /api/v1/space", profileAPI.getSpace)
@@ -156,20 +162,11 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	// 动态与媒体（登录用户）
 	postsAPI := &postsAPI{db: db, mp: mp, dp: dp}
 	interAPI := &interactionsAPI{db: db, dp: dp}
-	// 独立媒体接口已停用（需求 §4.5/166：媒体仅随动态；mock 契约 410）
-	mux.HandleFunc("POST /api/v1/media", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"error":"INDEPENDENT_MEDIA_DISABLED","message":"媒体仅随动态发布，不再支持独立上传"}`))
-	})
-	mux.Handle("DELETE /api/v1/media/{id}", authSvc.RequireAuth(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusGone)
-		_, _ = w.Write([]byte(`{"error":"INDEPENDENT_MEDIA_DISABLED","message":"媒体仅随动态发布，不再支持独立删除（删除媒体=删除整条动态）"}`))
-	})))
-	// reurl 批量重签（D1）：客户端可见媒体签名 URL 临期刷新（主 mux 直挂，避免与 {id} 通配冲突）
+	// reurl 批量重签：客户端可见媒体签名 URL 临期刷新（主 mux 直挂，避免与 {id} 通配冲突）
 	mux.Handle("POST /api/v1/media/reurl", authSvc.RequireAuth(http.HandlerFunc(postsAPI.reurlMedia)))
 	mux.Handle("POST /api/v1/media/upload", authSvc.RequireAuth(http.HandlerFunc(postsAPI.uploadMedia)))
+	// 主动撤销：放弃 / 取消 / 把关作废时清临时文件（幂等，归属校验）
+	mux.Handle("POST /api/v1/media/discard", authSvc.RequireAuth(http.HandlerFunc(postsAPI.discardMedia)))
 	postsMux := http.NewServeMux()
 	postsMux.HandleFunc("POST /api/v1/posts", postsAPI.createPost)
 	postsMux.HandleFunc("GET /api/v1/posts", postsAPI.listPosts)
@@ -199,10 +196,11 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	annivMux.HandleFunc("DELETE /api/v1/anniversaries/{id}", annivAPI.remove)
 	albumsAPI := &albumsAPI{db: db, mp: mp, dp: dp}
 	annivMux.HandleFunc("GET /api/v1/albums", albumsAPI.list)
+	annivMux.HandleFunc("GET /api/v1/albums/months", albumsAPI.months)
+	annivMux.HandleFunc("GET /api/v1/albums/months/{month_key}", albumsAPI.monthMedia)
 	annivMux.HandleFunc("POST /api/v1/albums", albumsAPI.create)
 	annivMux.HandleFunc("GET /api/v1/albums/{id}", albumsAPI.get)
 	annivMux.HandleFunc("DELETE /api/v1/albums/{id}", albumsAPI.remove)
-	annivMux.HandleFunc("PATCH /api/v1/albums/{id}/hidden", albumsAPI.setHidden)
 	annivMux.HandleFunc("POST /api/v1/albums/{id}/photos", albumsAPI.addPhotos)
 	annivMux.HandleFunc("DELETE /api/v1/albums/{id}/photos", albumsAPI.removePhotos)
 	mux.Handle("GET /api/v1/media/timeline", authSvc.RequireAuth(http.HandlerFunc(albumsAPI.timeline)))
@@ -210,9 +208,9 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mux.Handle("/api/v1/anniversaries/", authSvc.RequireAuth(annivMux))
 	mux.Handle("/api/v1/albums", authSvc.RequireAuth(annivMux))
 	mux.Handle("/api/v1/albums/", authSvc.RequireAuth(annivMux))
-	// 媒体文件：签名即凭证（DESIGN 4.5 短期签名 URL），不走 Bearer
+	// 媒体文件：签名即凭证（短期签名 URL），不走 Bearer
 	mux.HandleFunc("GET /api/v1/media/file/{id}", postsAPI.serveMediaFile)
-	// 头像：签名即凭证（GAP16 独立命名空间），不走 Bearer
+	// 头像：签名即凭证（独立命名空间），不走 Bearer
 	mux.HandleFunc("GET /api/v1/avatar/{userID}", adminAPI.serveAvatar)
 
 	// 后台管理页面静态资源（构建产物由 webui.Dist 内嵌）

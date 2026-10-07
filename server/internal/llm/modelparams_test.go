@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// 模型级参数（DESIGN §4.1）：ChatRequest 的 Temperature/MaxTokens 按协议 native 形状下发；
+// 模型级参数：ChatRequest 的 Temperature/MaxTokens 按协议 native 形状下发；
 // 未设置时不传（协议必填项由各自安全默认兜底）。字段名写错、恒传/恒不传都会被本组测试捕获。
 
 const (

@@ -87,7 +87,12 @@ func (u *fakeUpstream) setTable(table map[string][]float32) {
 }
 
 func fixedResolver(cfg Config, ok bool) Resolver {
-	return func(context.Context) (Config, bool) { return cfg, ok }
+	return func(context.Context) ([]Config, bool) {
+		if !ok {
+			return nil, false
+		}
+		return []Config{cfg}, true
+	}
 }
 
 func TestIndexDisabled(t *testing.T) {
@@ -158,7 +163,7 @@ func TestIndexUpsertQueryRemove(t *testing.T) {
 func TestIndexModelSwitch(t *testing.T) {
 	up := newFakeUpstream(t, map[string][]float32{"海边": {1, 0, 0}})
 	cfg := Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "m1"}
-	ix, err := Open(t.TempDir(), func(context.Context) (Config, bool) { return cfg, true })
+	ix, err := Open(t.TempDir(), func(context.Context) ([]Config, bool) { return []Config{cfg}, true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +261,7 @@ func TestIndexModelSwitchDropsOldCollection(t *testing.T) {
 	up := newFakeUpstream(t, map[string][]float32{"海边": {1, 0, 0}})
 	old := Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "m1"}
 	cfg := old
-	ix, err := Open(t.TempDir(), func(context.Context) (Config, bool) { return cfg, true })
+	ix, err := Open(t.TempDir(), func(context.Context) ([]Config, bool) { return []Config{cfg}, true })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,5 +279,33 @@ func TestIndexModelSwitchDropsOldCollection(t *testing.T) {
 	}
 	if _, ok := ix.db.ListCollections()[oldName]; ok {
 		t.Fatalf("换模型后旧集合应被删除: %v", ix.db.ListCollections())
+	}
+}
+
+// 相关性下限（2026-09-22）：低于 minSimilarity 的余弦相似度结果不得返回——
+// 无阈值时无关查询会返回全部文档（chromem 无条件 top-k），「语义落空→关键词兜底」永不触发。
+func TestIndexSimilarityThreshold(t *testing.T) {
+	up := newFakeUpstream(t, map[string][]float32{
+		"海边日落": {1, 0}, // 与查询同向（sim=1）
+		"完全无关": {0, 1}, // 与查询垂直（sim=0 < 0.5）
+		"查海":   {1, 0},
+	})
+	ix, err := Open(t.TempDir(), fixedResolver(Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "fake-embed"}, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := ix.Upsert(ctx, 1, "海边日落"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ix.Upsert(ctx, 2, "完全无关"); err != nil {
+		t.Fatal(err)
+	}
+	ids, err := ix.Query(ctx, "查海", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 1 || ids[0] != 1 {
+		t.Fatalf("ids = %v, want 只有 [1]（id 2 相似度 0 应被阈值过滤）", ids)
 	}
 }

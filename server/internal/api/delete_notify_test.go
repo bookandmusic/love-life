@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// GAP2：删除对方创建的内容 → 站内通知创建者；自删静默。覆盖相册 / 纪念日 / 足迹三类（REST 通道）。
+// 删除对方创建的内容 → 站内通知创建者；自删静默。覆盖相册 / 纪念日 / 足迹三类（REST 通道）。
 func TestDeleteContentNotifiesCreator(t *testing.T) {
 	ts, adminToken, girlToken := newPostTestEnv(t)
 
@@ -88,7 +88,7 @@ func TestDeleteContentNotifiesCreator(t *testing.T) {
 	}
 
 	// 删除通知仅站内：不进外部 Webhook（无渠道时也不应报错，此处断言 Dispatch 未被使用——
-	// 通过通知表行数已覆盖；外部渠道订阅不含内容删除，见 REQUIREMENTS §4.8）
+	// 通过通知表行数已覆盖；外部渠道订阅不含内容删除）
 }
 
 // 相册 / 纪念日列表必须回传 created_by，APP 才能判断是否提示「对方会收到站内通知」。

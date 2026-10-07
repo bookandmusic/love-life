@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// TestSecuritySettingsPartialUpdate 覆盖 AD6：GET 默认值、PUT 部分更新按字段合并、
-// 范围与档位校验。契约对齐 mock routes.mjs /admin/security（DESIGN §9 记录部分更新语义）。
+// TestSecuritySettingsPartialUpdate 覆盖 ：GET 默认值、PUT 部分更新按字段合并、
+// 范围与档位校验。契约对齐 mock routes.mjs /admin/security（ 记录部分更新语义）。
 func TestSecuritySettingsPartialUpdate(t *testing.T) {
 	ts, adminToken, girlToken := newPostTestEnv(t)
 
@@ -18,36 +18,28 @@ func TestSecuritySettingsPartialUpdate(t *testing.T) {
 		t.Fatalf("girl security: want 403, got %d", res.StatusCode)
 	}
 
-	// 未设置 → 默认 30 / "30"
+	// 未设置 → 默认 30（对话历史不设保留时长，响应无 chatRetention 字段）
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/security", adminToken, nil)
 	var got map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&got)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || got["recycleRetentionDays"].(float64) != 30 || got["chatRetention"] != "30" {
+	if res.StatusCode != http.StatusOK || got["recycleRetentionDays"].(float64) != 30 || got["chatRetention"] != nil {
 		t.Fatalf("defaults: %d %+v", res.StatusCode, got)
 	}
 
-	// 只提交 recycleRetentionDays → chatRetention 必须保持原值（按字段合并，不整体覆盖）
+	// 部分更新：只提交 recycleRetentionDays → 200 且持久化
 	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/security", adminToken, map[string]any{"recycleRetentionDays": 90})
 	_ = json.NewDecoder(res.Body).Decode(&got)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || got["recycleRetentionDays"].(float64) != 90 || got["chatRetention"] != "30" {
-		t.Fatalf("partial update 1: %d %+v", res.StatusCode, got)
-	}
-
-	// 再只提交 chatRetention → recycleRetentionDays 必须保持 90
-	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/security", adminToken, map[string]any{"chatRetention": "permanent"})
-	_ = json.NewDecoder(res.Body).Decode(&got)
-	res.Body.Close()
-	if res.StatusCode != http.StatusOK || got["chatRetention"] != "permanent" || got["recycleRetentionDays"].(float64) != 90 {
-		t.Fatalf("partial update 2: %d %+v", res.StatusCode, got)
+	if res.StatusCode != http.StatusOK || got["recycleRetentionDays"].(float64) != 90 {
+		t.Fatalf("partial update: %d %+v", res.StatusCode, got)
 	}
 
 	// 持久化确认
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/security", adminToken, nil)
 	_ = json.NewDecoder(res.Body).Decode(&got)
 	res.Body.Close()
-	if got["recycleRetentionDays"].(float64) != 90 || got["chatRetention"] != "permanent" {
+	if got["recycleRetentionDays"].(float64) != 90 {
 		t.Fatalf("persisted: %+v", got)
 	}
 
@@ -60,14 +52,6 @@ func TestSecuritySettingsPartialUpdate(t *testing.T) {
 		if res.StatusCode != http.StatusBadRequest || e["error"] != "回收站保留期限需在 7 ~ 365 天之间" {
 			t.Fatalf("range %d: %d %+v", bad, res.StatusCode, e)
 		}
-	}
-	// 校验：档位
-	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/security", adminToken, map[string]any{"chatRetention": "15"})
-	var e map[string]any
-	_ = json.NewDecoder(res.Body).Decode(&e)
-	res.Body.Close()
-	if res.StatusCode != http.StatusBadRequest {
-		t.Fatalf("bad retention tier: %d %+v", res.StatusCode, e)
 	}
 	// 边界值可用
 	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/security", adminToken, map[string]any{"recycleRetentionDays": 7})
@@ -82,7 +66,7 @@ func TestSecuritySettingsPartialUpdate(t *testing.T) {
 	}
 }
 
-// TestRecycleListAndRestore 覆盖 AD5：列表聚合六类、单条/批量恢复、非法 ids、
+// TestRecycleListAndRestore 覆盖 ：列表聚合六类、单条/批量恢复、非法 ids、
 // 未找到 404、恢复日志与「删除者」归属。契约对齐 mock routes.mjs /admin/recycle。
 func TestRecycleListAndRestore(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
@@ -120,11 +104,12 @@ func TestRecycleListAndRestore(t *testing.T) {
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/recycle", adminToken, nil)
 	_ = json.NewDecoder(res.Body).Decode(&list)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(list) != 3 {
+	// 删动态连带 3 张媒体软删，但列表只出现动态与评论两条（照片不单列）
+	if res.StatusCode != http.StatusOK || len(list) != 2 {
 		t.Fatalf("recycle after delete: %d len=%d %+v", res.StatusCode, len(list), list)
 	}
 
-	// 形状与「删除者」：动态与照片各一条，deletedBy 解析为用户显示名
+	// 形状与「删除者」：动态与评论各一条，deletedBy 解析为用户显示名
 	byType := map[string]map[string]any{}
 	for _, it := range list {
 		byType[it["type"].(string)] = it
@@ -144,15 +129,11 @@ func TestRecycleListAndRestore(t *testing.T) {
 	if post["deletedBy"] == "" || post["deletedBy"] == nil {
 		t.Fatalf("deletedBy must resolve to a display name: %+v", post)
 	}
-	// 照片摘要取文件名（不是整条路径）
-	photo, ok := byType["照片"]
-	if !ok {
-		t.Fatalf("photo entry missing (media cascade): %+v", list)
+	// 照片不单列：媒体随动态进回收站，列表不得出现「照片」类型
+	if _, ok := byType["照片"]; ok {
+		t.Fatalf("photo must not be listed as its own type: %+v", list)
 	}
-	if photo["summary"] != "IMG_001.jpg" {
-		t.Fatalf("photo summary = %v, want file name", photo["summary"])
-	}
-	// AI 通道删除 → deletedBy 显示「AI 助手」（DESIGN §9 回收站「删除者」列）
+	// AI 通道删除 → deletedBy 显示「AI 助手」（ 回收站「删除者」列）
 	comment, ok := byType["评论"]
 	if !ok {
 		t.Fatalf("comment entry missing: %+v", list)
@@ -191,6 +172,18 @@ func TestRecycleListAndRestore(t *testing.T) {
 	}
 	if mediaStillDeleted != 0 {
 		t.Fatalf("restoring a post must restore its cascaded media, %d still soft-deleted", mediaStillDeleted)
+	}
+
+	// 拿照片条目的合成 id 调恢复 → 404（照片不可单独恢复；校验前置，不做半恢复）
+	var mediaID int64
+	if err := ts.db.QueryRow(`SELECT id FROM media WHERE post_id = ? LIMIT 1`, postID).Scan(&mediaID); err != nil {
+		t.Fatal(err)
+	}
+	photoEnc := int64(3)*1_000_000_000 + mediaID // 照片在 recycleSources 的表序号 2（0 基）→ (3)*stride
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/recycle/"+itoa(photoEnc)+"/restore", adminToken, nil)
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("restore photo directly: want 404, got %d", res.StatusCode)
 	}
 
 	// 未找到 → 404

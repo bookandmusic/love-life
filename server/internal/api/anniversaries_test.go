@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -49,7 +50,7 @@ func TestAnniversaryLunarType(t *testing.T) {
 		t.Fatalf("create lunar anniversary: %d", res.StatusCode)
 	}
 
-	// S2：未传 remind_days_before → 默认提前 1 天（REQUIREMENTS §4.6）
+	// 未传 remind_days_before → 默认提前 1 天
 	res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
 		"name": "缺省提醒", "date": "2026-11-11",
 	})
@@ -65,7 +66,7 @@ func TestAnniversaryLunarType(t *testing.T) {
 		t.Fatalf("未传提醒天数应为 1（提前 1 天），got %d", defaultRemind)
 	}
 
-	// S2：显式 0 → 当天提醒，不得被缺省逻辑改写
+	// 显式 0 → 当天提醒，不得被缺省逻辑改写
 	res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
 		"name": "当天提醒", "date": "2026-12-12", "remind_days_before": 0,
 	})
@@ -153,7 +154,20 @@ func TestAnniversaryLunarType(t *testing.T) {
 	}
 
 	// /space：next_anniversary.date 为换算公历（不硬编码期望日，避免随真实日期翻年脆裂；
-	// 换算正确性由 internal/lunar 的 TS 对拍黄金用例独立保证）
+	// 换算正确性由 internal/lunar 的 TS 对拍黄金用例独立保证）。
+	// 先删掉两个固定日期的对照夹具：真实日期越过中秋后，「下一次」会落在他俩头上
+	// （2026-09-26 实测翻车——农历八月十五的下一次从 2026-09-25 翻到 2027-09-15，晚于 11-11）。
+	for _, name := range []string{"缺省提醒", "当天提醒", "公历项"} {
+		var id int64
+		if err := ts.db.QueryRow(`SELECT id FROM anniversaries WHERE name = ?`, name).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		res = doJSON(t, "DELETE", ts.URL+"/api/v1/anniversaries/"+strconv.FormatInt(id, 10), girlToken, nil)
+		res.Body.Close()
+		if res.StatusCode != http.StatusNoContent {
+			t.Fatalf("delete fixture %s: %d", name, res.StatusCode)
+		}
+	}
 	res = doJSON(t, "GET", ts.URL+"/api/v1/space", girlToken, nil)
 	var spaceResp struct {
 		NextAnniversary struct {

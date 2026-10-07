@@ -9,7 +9,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
-// patAPI 个人访问令牌签发与管理（AD8，DESIGN §8.2）。
+// patAPI 个人访问令牌签发与管理。
 type patAPI struct {
 	db *store.DB
 }

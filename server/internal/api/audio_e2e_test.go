@@ -50,7 +50,7 @@ func uploadAudio(t *testing.T, ts *testEnv, token string) (string, int) {
 	return out.MediaToken, res.StatusCode
 }
 
-// TestAudioEndToEnd 音频主链路（D4）：上传带时长 → 发布落库 → 时间轴带 duration →
+// TestAudioEndToEnd 音频主链路：上传带时长 → 发布落库 → 时间轴带 duration →
 // thumb=蓝底 SVG 占位、raw=按扩展名 Content-Type。
 func TestAudioEndToEnd(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)

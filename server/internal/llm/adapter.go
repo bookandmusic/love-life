@@ -23,6 +23,29 @@ var ErrUnsupportedAPIType = errors.New("api_type 不支持（openai-chat / opena
 // 翻译回规范化 ChatResponse。具体协议各自实现；工厂按 api_type 选用。
 type adapter interface {
 	Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error)
+	// StreamChat 流式：回调收到归一化增量（AI模式设计「模型网关」：真增量逐字下发）；
+	// usage 在末帧到达；返回 finish_reason。
+	StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error)
+}
+
+// Delta 归一化流式增量（四协议 adapter 归一后统一形状，chat 层零感知协议差异）。
+type Delta struct {
+	// Reasoning 思考链增量（逐字）；空串 = 本帧无思考内容
+	Reasoning string
+	// Content 正文增量（逐字）；空串 = 本帧无正文
+	Content string
+	// ToolCall 工具调用分片（按上游 index 归组后回传完整片段；arguments 为拼串）
+	ToolCall *ToolCallDelta
+	// Usage 末帧用量（仅最后一帧非 nil）
+	Usage *Usage
+}
+
+// ToolCallDelta 流式工具调用分片：Index 用于跨帧归组（同一调用的 arguments 分片拼接）。
+type ToolCallDelta struct {
+	Index     int
+	ID        string
+	Name      string
+	Arguments string // 增量片段（调用方按 index 累积，finish 后才解析）
 }
 
 // selectAdapter 按 api_type 选 adapter。所有协议 adapter 均已实现。

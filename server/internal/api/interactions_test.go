@@ -42,7 +42,7 @@ func TestInteractionsAndNotifications(t *testing.T) {
 		t.Fatalf("admin view: like_count=%d liked=%v", detail.LikeCount, detail.Liked)
 	}
 
-	// 自赞也通知另一方（需求 §4.8）：admin 给自己点赞 → girl 收到
+	// 自赞也通知另一方：admin 给自己点赞 → girl 收到
 	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/like", adminToken, nil)
 	res.Body.Close()
 
@@ -53,7 +53,7 @@ func TestInteractionsAndNotifications(t *testing.T) {
 		t.Fatalf("comment: %d", res.StatusCode)
 	}
 
-	// admin 的通知：D6 后 girl 的赞/评不进 admin（admin 不在情侣里）= 0 条
+	// admin 的通知： 后 girl 的赞/评不进 admin（admin 不在情侣里）= 0 条
 	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications", adminToken, nil)
 	var notif struct {
 		Items []struct {
@@ -155,7 +155,7 @@ func TestInteractionsAndNotifications(t *testing.T) {
 	}
 }
 
-// TestInteractionNotifyD6 D6 口径：任何一方动作（含自操作）都通知另一方；
+// TestInteractionNotifyD6 口径：任何一方动作（含自操作）都通知另一方；
 // 覆盖 自赞/自藏/自评 + 互赞四情形（双方各一次点赞均产生通知，取消不产生）。
 // 需 girl+boy 两位非 admin 用户才能表达「双方」——admin 动作→girl/boy 收，
 // girl/boy 动作→彼此收（操作者被排除，admin 不在情侣里）。
@@ -263,7 +263,7 @@ func TestInteractionNotifyD6(t *testing.T) {
 	_ = adminToken // admin 仅参与环境与上方反断言
 }
 
-// TestInteractionNotifyPartnerScope D6 边界：ListPartnerIDs 收件人域——
+// TestInteractionNotifyPartnerScope 边界：ListPartnerIDs 收件人域——
 // 非 admin 且非操作者（admin 不在情侣里）。
 func TestInteractionNotifyPartnerScope(t *testing.T) {
 	ts, _, _ := newPostTestEnv(t)

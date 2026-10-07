@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// DB2 交叉一致性：Go 与 APP(TS) 两份农历表必须逐项一致。
+// 农历表交叉一致性（ARCHITECTURE「数据模型」Anniversary 护栏）：Go 与 APP(TS) 两份必须逐项一致。
 //
 // 两处实现是「同源同表」的双份拷贝（server/internal/lunar/lunar.go 与 app/src/utils/lunar.ts），
 // 任一侧单独改表都会造成 APP 与服务端算出的纪念日不一致——这类漂移不会 panic，
