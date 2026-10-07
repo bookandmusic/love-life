@@ -1,4 +1,4 @@
-// 双服务地址探测与优选（AP1，DESIGN §11.2）：
+// 双服务地址探测与优选（AP1）：
 // 在家走局域网直连、在外走公网域名；并行 ping /api/v1/health（无鉴权、轻量），
 // 内网通优先选内网，否则公网；全不通保持现状（不猜测）。
 import { getLanBase, getWanBase, setBase } from '../api/client'

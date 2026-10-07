@@ -346,10 +346,12 @@ const transformStyle = computed(() => ({
           <button class="pv-btn" :disabled="saveState === 'saving'" @click="onSave">
             <Download :size="15" stroke-width="2" /> {{ saveState === 'saving' ? '保存中…' : '保存' }}
           </button>
-          <button v-if="mode === 'timeline' && cur.post_id" class="pv-btn" @click="emit('gopost', cur.post_id)">
+          <!-- 时间轴与相册都提供「查看所属动态」（PRODUCT「动态」：三处统一定位入口含相册） -->
+          <button v-if="(mode === 'timeline' || mode === 'album') && cur.post_id" class="pv-btn" @click="emit('gopost', cur.post_id)">
             查看动态
           </button>
-          <button v-else-if="mode === 'album'" class="pv-btn danger" @click="emit('remove', cur.id)">
+          <!-- 相册模式：查看所属动态与移出当前相册可并存（两者不是互斥选择） -->
+          <button v-if="mode === 'album'" class="pv-btn danger" @click="emit('remove', cur.id)">
             <Trash2 :size="15" stroke-width="2" /> 移出当前相册
           </button>
         </div>

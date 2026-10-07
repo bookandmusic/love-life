@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { MapPin, Send, ImagePlus, Music, Play, X, Search, Loader2 } from 'lucide-vue-next'
+import { MapPin, Send, ImagePlus, Music, Play, X, Search } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
 import AppToast from '../components/AppToast.vue'
 import PageLayout from '../components/PageLayout.vue'
@@ -16,15 +16,67 @@ const mood = ref('')
 const moodPresets = ['温馨', '开心', '想念', '浪漫', '平静']
 const customMood = ref('')
 
-// 媒体（可选）：方格网格预览，最后一个格子是「添加 +」；阶段5.3：可追加选择，设有上限
+// 媒体（可选）：方格网格预览，最后一个格子是「添加 +」；可追加选择，设有上限
 const MAX_FILES = 9
 const files = ref<File[]>([])
 const previews = ref<{ url: string; kind: string }[]>([])
-const uploading = ref(false)
 const error = ref('')
 const toast = ref('')
 function showToast(msg: string) {
   toast.value = msg
+}
+
+// —— 提交时才上传 + 整批把关（PRODUCT「发布动态」「提交时才上传」，与 AI 模式同一规则）——
+// 选择阶段仅本机 blob 预览、零网络请求；点 [发布] 后逐个上传，全部就绪自动发创建请求。
+type UpState = 'pending' | 'uploading' | 'ok' | 'failed'
+const upStates = ref<UpState[]>([])
+const tokens = ref<(string | null)[]>([])
+const phase = ref<'idle' | 'uploading' | 'partial' | 'submitting'>('idle')
+const uploading = computed(() => phase.value === 'uploading' || phase.value === 'submitting')
+const failedCount = computed(() => upStates.value.filter((s) => s === 'failed').length)
+
+function resetUploadState() {
+  upStates.value = files.value.map(() => 'pending')
+  tokens.value = files.value.map(() => null)
+}
+
+async function uploadOne(i: number): Promise<boolean> {
+  upStates.value[i] = 'uploading'
+  const attempts = 3 // 首传 + 自动重试 2 次（指数退避），之后转手动重传
+  for (let a = 0; a < attempts; a++) {
+    try {
+      const form = new FormData()
+      form.append('file', files.value[i])
+      const up = await api<{ media_token: string }>('/api/v1/media/upload', { method: 'POST', body: form })
+      tokens.value[i] = up.media_token
+      upStates.value[i] = 'ok'
+      return true
+    } catch {
+      if (a < attempts - 1) await new Promise((r) => setTimeout(r, 500 * 3 ** a))
+    }
+  }
+  upStates.value[i] = 'failed'
+  return false
+}
+
+// 手动重传单个失败文件；全部就绪后自动续提交（无需再点发布）
+async function retryOne(i: number) {
+  if (phase.value !== 'partial') return
+  phase.value = 'uploading'
+  const okFlag = await uploadOne(i)
+  if (!okFlag) {
+    phase.value = 'partial'
+    return
+  }
+  if (tokens.value.every((t) => t !== null)) await finalize()
+  else phase.value = 'partial'
+}
+
+// 放弃 / 取消 / 关闭：已上传 token 立即撤销（fire-and-forget，失败静默——有 24h 兜底）
+function discardUploaded() {
+  const ts = tokens.value.filter((t): t is string => t !== null)
+  if (ts.length === 0) return
+  void api('/api/v1/media/discard', { method: 'POST', body: JSON.stringify({ tokens: ts }) }).catch(() => {})
 }
 const acceptTypes = 'image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,audio/mpeg,audio/mp4,audio/wav,audio/x-wav'
 
@@ -58,9 +110,30 @@ function pickFiles(e: Event) {
 const atLimit = computed(() => files.value.length >= MAX_FILES)
 
 function removeFile(i: number) {
+  // 已上传成功的文件被移除：立即撤销其临时文件
+  const tk = tokens.value[i]
+  if (tk) void api('/api/v1/media/discard', { method: 'POST', body: JSON.stringify({ tokens: [tk] }) }).catch(() => {})
   URL.revokeObjectURL(previews.value[i].url)
   previews.value.splice(i, 1)
   files.value.splice(i, 1)
+  if (upStates.value.length) {
+    upStates.value.splice(i, 1)
+    tokens.value.splice(i, 1)
+  }
+}
+
+// 把关态：一键重传全部失败文件（就绪文件不重来）
+async function retryAll() {
+  if (phase.value !== 'partial') return
+  phase.value = 'uploading'
+  for (let i = 0; i < files.value.length; i++) {
+    if (upStates.value[i] === 'failed') await uploadOne(i)
+  }
+  if (tokens.value.some((t) => t === null)) {
+    phase.value = 'partial'
+    return
+  }
+  await finalize()
 }
 
 async function searchLocation() {
@@ -111,42 +184,51 @@ function clearLocation() {
 }
 
 onBeforeUnmount(() => {
+  // 放弃发布：未随动态发出的已上传临时文件立即撤销，服务端零驻留
+  discardUploaded()
   previews.value.forEach((p) => URL.revokeObjectURL(p.url))
 })
 
 const canSubmit = computed(
   () =>
-    !uploading.value &&
+    phase.value === 'idle' &&
     (content.value.trim() !== '' || files.value.length > 0 || !!loc.value || moodValue.value !== ''),
 )
 
 async function submit() {
   if (!canSubmit.value) return
-  uploading.value = true
   error.value = ''
+  resetUploadState()
+  phase.value = 'uploading'
+  // 逐个上传（单文件独立重试，互不影响）；个别失败不半发——转入把关态等重传
+  for (let i = 0; i < files.value.length; i++) {
+    if (tokens.value[i] !== null) continue // 重传场景：已就绪的文件不重来
+    await uploadOne(i)
+  }
+  if (tokens.value.some((t) => t === null)) {
+    phase.value = 'partial'
+    return
+  }
+  await finalize()
+}
+
+// 全部就绪：自动发出创建请求（无需二次点击）
+async function finalize() {
+  phase.value = 'submitting'
   try {
-    const tokens: string[] = []
-    for (const f of files.value) {
-      const form = new FormData()
-      form.append('file', f)
-      const up = await api<{ media_token: string }>('/api/v1/media/upload', {
-        method: 'POST',
-        body: form,
-      })
-      tokens.push(up.media_token)
-    }
     const body: Record<string, unknown> = {
       content: content.value,
       mood: moodValue.value,
-      media_tokens: tokens,
+      media_tokens: tokens.value,
     }
     if (loc.value) body.location = { name: loc.value.name, lat: loc.value.lat, lng: loc.value.lng }
     await api('/api/v1/posts', { method: 'POST', body: JSON.stringify(body) })
     router.replace('/posts')
   } catch (e) {
-    error.value = errText(e, '发布失败')
-  } finally {
-    uploading.value = false
+    // 服务端整批把关失败（token 失效等）：整体重来，不产生缺图半条
+    phase.value = 'idle'
+    resetUploadState()
+    error.value = errText(e, '发布失败，请重试')
   }
 }
 </script>
@@ -155,7 +237,7 @@ async function submit() {
   <PageLayout title="记动态" back @back="router.back()">
     <template #nav-right>
       <button class="primary" :disabled="!canSubmit" @click="submit">
-        <Send :size="15" stroke-width="1.8" />{{ uploading ? '发布中…' : '发布' }}
+        <Send :size="15" stroke-width="1.8" />{{ phase === 'submitting' ? '发布中…' : uploading ? '上传中…' : '发布' }}
       </button>
     </template>
     <div class="body">
@@ -177,13 +259,16 @@ async function submit() {
 
       <!-- 媒体网格：已选为方格，最后一个格子是「添加 +」 -->
       <div class="previews">
-        <div v-for="(p, i) in previews" :key="i" class="pv">
+        <div v-for="(p, i) in previews" :key="i" class="pv" :class="{ failed: upStates[i] === 'failed' }">
           <img v-if="p.kind === 'image'" :src="p.url" alt="" />
           <div v-else-if="p.kind === 'video'" class="pv-v"><Play :size="24" fill="currentColor" /></div>
           <div v-else class="pv-v pv-audio"><Music :size="24" stroke-width="1.8" /></div>
           <button class="pv-x" aria-label="移除" @click="removeFile(i)">
             <X :size="13" stroke-width="2.5" />
           </button>
+          <span v-if="upStates[i] === 'uploading'" class="pv-state"><span class="glow" /></span>
+          <span v-else-if="upStates[i] === 'failed'" class="pv-state fail-tag">失败</span>
+          <button v-if="upStates[i] === 'failed'" class="pv-retry" @click="retryOne(i)">重试</button>
         </div>
         <label v-if="!atLimit" class="add-tile" :class="{ single: previews.length === 0 }">
           <input type="file" multiple :accept="acceptTypes" @change="pickFiles" />
@@ -192,7 +277,13 @@ async function submit() {
         </label>
       </div>
 
-      <p v-if="previews.length" class="pick-hint">共 {{ previews.length }} 个（最多 {{ MAX_FILES }} 个）</p>
+      <p v-if="previews.length" class="pick-hint">
+        共 {{ previews.length }} 个（最多 {{ MAX_FILES }} 个）{{ uploading ? ` · 上传中 ${tokens.filter((t) => t !== null).length}/${files.length}` : '' }}
+        <template v-if="phase === 'partial'">
+          · {{ failedCount }} 个失败
+          <button class="retry-all" @click="retryAll">全部重传</button>
+        </template>
+      </p>
 
       <!-- 地点 -->
       <div class="loc-row">
@@ -217,7 +308,7 @@ async function submit() {
       <div class="loc-search">
         <input v-model="locSearch" class="loc-new" placeholder="如：杭州 / 厦门 · 鼓浪屿" @keyup.enter="searchLocation" />
         <button class="loc-go" :disabled="searching || !locSearch.trim()" @click="searchLocation">
-          <Loader2 v-if="searching" :size="15" class="spin" />
+          <span v-if="searching" class="glow" />
           <Search v-else :size="15" stroke-width="1.8" />
         </button>
       </div>
@@ -372,6 +463,45 @@ async function submit() {
 :root[data-theme='dark'] .pv-v {
   background: linear-gradient(135deg, #2c2c2e, #1c1c1e);
 }
+.pv.failed {
+  outline: 2px solid var(--danger);
+  outline-offset: -2px;
+}
+.pv-state {
+  position: absolute;
+  left: 5px;
+  bottom: 5px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 10px;
+}
+.pv-state.fail-tag {
+  background: var(--danger);
+}
+.pv-retry {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  border: none;
+  border-radius: 999px;
+  padding: 2px 8px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 10px;
+  cursor: pointer;
+}
+.retry-all {
+  border: none;
+  background: none;
+  color: var(--tint);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+}
 .pv-x {
   position: absolute;
   top: 5px;
@@ -492,12 +622,31 @@ async function submit() {
 .loc-go:disabled {
   opacity: 0.4;
 }
-.spin {
-  animation: spin 1s linear infinite;
+/* 加载态：缓慢呼吸的光晕（PRODUCT「体验规范」明确排除旋转菊花）。
+   节奏偏慢（1.8s）与「慢、柔、稳」的整体调性一致；尊重系统的减弱动效偏好。 */
+.glow {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tint);
+  animation: breathe 1.8s ease-in-out infinite;
 }
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+    transform: scale(0.8);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.15);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .glow {
+    animation: none;
+    opacity: 0.7;
   }
 }
 .loc-pick-list {

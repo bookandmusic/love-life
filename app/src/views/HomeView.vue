@@ -18,7 +18,7 @@ const spaceStore = useSpace()
 type PostItem = Pick<Post, 'id' | 'content' | 'mood' | 'location_name' | 'created_at' | 'media'>
 
 const posts = ref<PostItem[]>([])
-// 那年今日：服务端按同月同日过滤后再分页（D8），避免只在最新 50 条里找
+// 那年今日：服务端按同月同日过滤后再分页，避免只在最新 50 条里找
 const memories = ref<PostItem[]>([])
 const loading = ref(false)
 const error = ref('')
@@ -69,7 +69,7 @@ function localMMDD(s: string): string {
   if (Number.isNaN(d.getTime())) return `${(s || '').slice(5, 7)}${(s || '').slice(8, 10)}`
   return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 }
-// 「历史」年份：当年今天发的动态不算那年今日（REQUIREMENTS §4.1「同月同日历史回忆」），
+// 「历史」年份：当年今天发的动态不算那年今日（「同月同日历史回忆」），
 // 与服务端 ListPosts(memories) / mock 同口径。
 function localYear(s: string): number {
   const d = new Date(s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
@@ -97,7 +97,7 @@ const upcoming = computed(() => {
   ]
 })
 
-// 全新部署空态（REQUIREMENTS §4.1）：无动态 + 无纪念日 + 无相册，三者皆空才算首启。
+// 全新部署空态：无动态 + 无纪念日 + 无相册，三者皆空才算首启。
 // 用计数而不是 next_anniversary.name：纪念日存在但日期全部无效时名称也是空，
 // 旧判定会把有数据的空间误显示成空态。
 // 不可放宽为 posts.length === 0：否则「有相册/纪念日但没发过动态」的空间会被空态整页遮挡，
@@ -129,7 +129,7 @@ async function load() {
   }
 }
 
-// 每次进入首页：重抽一批回忆（满足 REQUIREMENTS:109「每次进入可刷新」）+ 静默刷新数据
+// 每次进入首页：重抽一批回忆（满足 「每次进入可刷新」）+ 静默刷新数据
 onActivated(() => {
   refreshMemories()
   void load()
@@ -165,7 +165,7 @@ onActivated(() => {
               在一起 · {{ space.love_start_date.replace(/-/g, '.') }} 开始
             </div>
           </template>
-          <!-- 未设恋爱日期（§4.7：空间信息由后台维护，文案不指 APP 内入口） -->
+ <!-- 未设恋爱日期（空间信息由后台维护，文案不指 APP 内入口） -->
           <div v-else class="hero-days-unset">在一起的日子，从定下的那天开始数</div>
           <div v-if="nextAnniv" class="hero-next" @click="router.push('/anniversaries')">
             <Cake :size="14" stroke-width="2" />
@@ -391,7 +391,7 @@ onActivated(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  /* 着色点（非交互）→ 暖粉，与 REQUIREMENTS:285「暖粉只用于着色点/FAB/选中」一致；
+ /* 着色点（非交互）→ 暖粉，与 「暖粉只用于着色点/FAB/选中」一致；
      操作类文字/图标控件才用 --tint（蓝） */
   background: rgba(255, 143, 171, 0.18);
   color: var(--primary-deep);

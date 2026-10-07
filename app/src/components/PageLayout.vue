@@ -42,9 +42,12 @@ onActivated(() => {
 <template>
   <div class="page" :class="{ 'page-col': standalone }">
     <header class="navbar glass">
-      <button v-if="back" class="nav-btn" aria-label="返回" @click="$emit('back')">
-        <ChevronLeft :size="22" stroke-width="2.5" />
-      </button>
+      <!-- 左侧默认渲染返回按钮；提供 nav-left 插槽的页面（如 AI 对话的会话抽屉）整侧自管 -->
+      <slot name="nav-left">
+        <button v-if="back" class="nav-btn" aria-label="返回" @click="$emit('back')">
+          <ChevronLeft :size="22" stroke-width="2.5" />
+        </button>
+      </slot>
       <span class="title">{{ title }}</span>
       <span class="nav-right">
         <slot name="nav-right" />
@@ -56,6 +59,8 @@ onActivated(() => {
       <slot />
     </div>
     <slot name="footer" />
+    <!-- 页内浮层（会话抽屉等）：锚定本页框架而非浏览器视口——桌面档落在浮动卡片内、随卡片圆角裁切 -->
+    <slot name="overlay" />
   </div>
 </template>
 
@@ -65,6 +70,8 @@ onActivated(() => {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* overlay 插槽（absolute 浮层）的定位基准；relative 不影响布局与 fixed 子元素 */
+  position: relative;
   /* 页面底色钩子：页面经 class 注入 --page-bg（如 AI 对话页注入 var(--ai-bg)）；
      未注入时 transparent，保持全局 body 底色不变 */
   background: var(--page-bg, transparent);
@@ -80,7 +87,9 @@ onActivated(() => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: calc(10px + env(safe-area-inset-top)) var(--side-pad) 10px;
+  /* 桌面档 --side-pad 为 0（内容内边距由浮窗外距承担），但导航栏图标贴卡片边缘会显挤，
+     给导航栏保底 12px；手机/平板档 --side-pad(16/24px) 大于保底值，取原值不变 */
+  padding: calc(10px + env(safe-area-inset-top)) max(12px, var(--side-pad)) 10px;
   flex-shrink: 0;
   z-index: 10;
 }
@@ -110,7 +119,7 @@ onActivated(() => {
   overscroll-behavior: contain;
   /* 必须 border-box：本组件同时声明 width:100% 与 padding-inline，
      全局未设 border-box 时 content-box 会让内容区比视口宽 2×side-pad（手机 32px、平板 48px），
-     表现为整页内容右移、右侧被裁。横向 padding 只归本组件（见 DESIGN §15）。 */
+ 表现为整页内容右移、右侧被裁。横向 padding 只归本组件。 */
   box-sizing: border-box;
   width: 100%;
   max-width: var(--col-max);

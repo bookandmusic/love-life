@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onActivated, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Heart, Music, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
+import { Heart, Music, Play, Star, MessageCircle, MapPin, PenLine } from 'lucide-vue-next'
 import { api, errText, fmtDateTime } from '../api/client'
 import AppToast from '../components/AppToast.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
@@ -23,7 +23,7 @@ defineOptions({ name: 'PostsView' })
 const route = useRoute()
 const router = useRouter()
 
-// D8 那年今日（REQUIREMENTS:110）：?memories=1 只列同月同日回忆（服务端过滤后再分页）
+// 那年今日：?memories=1 只列同月同日回忆（服务端过滤后再分页）
 const memoriesOnly = computed(() => route.query.memories === '1')
 function listPath(p: number): string {
   return `/api/v1/posts?page=${p}&page_size=${PAGE_SIZE}${memoriesOnly.value ? '&memories=1' : ''}`
@@ -57,7 +57,7 @@ const viewer = ref<{ index: number; post: PostItem } | null>(null)
 function openViewer(p: PostItem, index: number) {
   viewer.value = { index, post: p }
 }
-// ?focus=<id>：通知 / 首页回忆卡 / 相册跳过来时定位并短暂高亮该条（与地图 D3 同做法）
+// ?focus=<id>：通知 / 首页回忆卡 / 相册跳过来时定位并短暂高亮该条（与地图 同做法）
 const hlId = ref<number | null>(null)
 const auth = useAuth()
 // 长按 = 低频操作入口（移入回收站）：卡片与评论行共用一套手势
@@ -69,6 +69,9 @@ const showDeleteComment = ref(false)
 
 const noMore = computed(() => posts.value.length > 0 && posts.value.length >= total.value)
 const PAGE_SIZE = 20
+// ?focus=<id> 定位的翻页上限：目标不存在/已删时避免无限翻页（最多 10 页 / 500 条）
+const FOCUS_MAX_PAGES = 10
+const FOCUS_MAX_POSTS = 500
 
 // 按 author_id 映射真实 role（girl/boy），替代昵称长度猜色
 async function load() {
@@ -116,6 +119,45 @@ function onScroll(e: Event) {
 const { toggleLike, toggleFav, submitComment: postComment } = usePostInteractions({
   onError: (m) => (toast.value = m),
 })
+
+// 点赞/收藏的微粒子扩散（PRODUCT「动效规范」：微粒子扩散，非夸张）：
+// 点击瞬间在图标中心撒 6 颗小点向外扩散淡出，图标同步轻微回弹；粒子的角度与距离带随机，
+// 避免机械重复。系统开启「减弱动效」时整体不播放（可访问性优先）。
+type BurstParticle = { dx: number; dy: number; d: number }
+const bursts = ref<Record<string, BurstParticle[]>>({})
+
+function reducedMotion(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+}
+
+function spawnBurst(key: string) {
+  if (reducedMotion()) return
+  bursts.value = {
+    ...bursts.value,
+    [key]: Array.from({ length: 6 }, (_, i) => {
+      const angle = (Math.PI * 2 * i) / 6 + (Math.random() - 0.5) * 0.5
+      const dist = 12 + Math.random() * 6
+      return { dx: Math.cos(angle) * dist, dy: Math.sin(angle) * dist, d: Math.round(Math.random() * 60) }
+    }),
+  }
+  window.setTimeout(() => {
+    const next = { ...bursts.value }
+    delete next[key]
+    bursts.value = next
+  }, 650)
+}
+
+/** 点赞：仅「点亮」时撒粒子（取消点赞不撒），请求前就播以保证手感跟手 */
+function onLike(p: PostItem) {
+  if (!p.liked) spawnBurst(`like:${p.id}`)
+  void toggleLike(p)
+}
+
+/** 收藏：同上，仅「加上收藏」时撒粒子 */
+function onFav(p: PostItem) {
+  if (!p.favorited) spawnBurst(`fav:${p.id}`)
+  void toggleFav(p)
+}
 
 async function toggleComments(p: PostItem) {
   if (expanded.value === p.id) {
@@ -199,8 +241,27 @@ async function applyFocus() {
   const id = Number(route.query.focus)
   if (!id) return
   if (!posts.value.length) await load()
+  await nextTick() // 先让首页 DOM 落地，避免第一页就能命中时白翻一页
+  // 目标可能在第 2 页之后：循环翻页直到出现。带上限（10 页 / 500 条）——
+  // 目标是已删动态或本就不存在时不能无限翻页（客户端设计「手机 APP 职责」跳转定位契约）。
+  while (
+    !document.getElementById(`post-${id}`) &&
+    !noMore.value &&
+    page.value < FOCUS_MAX_PAGES &&
+    posts.value.length < FOCUS_MAX_POSTS
+  ) {
+    const before = posts.value.length
+    await loadMore()
+    if (posts.value.length === before) break // 拉不动了（请求失败或无更多）
+  }
   await nextTick()
-  document.getElementById(`post-${id}`)?.scrollIntoView({ block: 'center' })
+  const el = document.getElementById(`post-${id}`)
+  if (!el) {
+    // 静默失败会让用户以为「跳转没反应」：明确说一句
+    toast.value = '未找到该条，可能已删除'
+    return
+  }
+  el.scrollIntoView({ block: 'center' })
   hlId.value = id
   window.setTimeout(() => {
     hlId.value = null
@@ -214,7 +275,7 @@ onActivated(async () => {
     // 长按是隐形手势：首次进入提示一次（本地记住后不再打扰）
     if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按动态或评论可移入回收站'
   } else if (page.value === 1) {
-    // 停在顶部：静默重取第一页（发布新动态即时可见），不亮骨架屏、不扰动已翻页的用户
+    // 停在顶部：静默重取第一页（发布新动态即时可），不亮骨架屏、不扰动已翻页的用户
     void load()
   }
 })
@@ -262,9 +323,12 @@ watch(() => route.query.focus, () => {
           :class="{ single: p.media.length === 1, dual: p.media.length === 2 }"
         >
           <template v-for="(m, mi) in p.media" :key="m.id">
-            <video v-if="m.kind === 'video'" class="ph" controls playsinline :poster="mediaSrc(m, 'thumb')" preload="none" @pointerdown.stop @click.stop>
-              <source :src="mediaSrc(m, 'raw')" />
-            </video>
+            <!-- 视频只放缩略图 + 播放角标（与时间轴 TimelineGrid 同一做法）：播放交给全屏查看器，
+                 卡片内不再内嵌 <video>（内嵌会把点击吞掉，进不了查看器也就没有「保存」入口） -->
+            <div v-if="m.kind === 'video'" class="ph video-ph" @pointerdown.stop @click="openViewer(p, mi)">
+              <img :src="mediaSrc(m, 'thumb')" loading="lazy" alt="" />
+              <span class="video-mark"><Play :size="9" fill="currentColor" /></span>
+            </div>
             <div v-else-if="m.kind === 'audio'" class="ph audio-ph" @click="openViewer(p, mi)">
               <Music :size="22" stroke-width="1.6" />
               <audio controls preload="none" :src="mediaSrc(m, 'raw')" @pointerdown.stop @click.stop />
@@ -278,13 +342,27 @@ watch(() => route.query.focus, () => {
         </div>
 
         <div class="actions" @pointerdown.stop>
-          <button class="act" :class="{ on: p.liked }" @click="toggleLike(p)">
+          <button class="act" :class="{ on: p.liked, bounce: bursts[`like:${p.id}`] }" @click="onLike(p)">
             <Heart :size="18" :fill="p.liked ? 'currentColor' : 'none'" stroke-width="1.8" />
             <b class="num">{{ p.like_count || '' }}</b>
+            <span v-if="bursts[`like:${p.id}`]" class="burst" aria-hidden="true">
+              <i
+                v-for="(pt, bi) in bursts[`like:${p.id}`]"
+                :key="bi"
+                :style="{ '--dx': pt.dx + 'px', '--dy': pt.dy + 'px', '--d': pt.d + 'ms' }"
+              />
+            </span>
           </button>
-          <button class="act" :class="{ on: p.favorited }" @click="toggleFav(p)">
+          <button class="act" :class="{ on: p.favorited, bounce: bursts[`fav:${p.id}`] }" @click="onFav(p)">
             <Star :size="18" :fill="p.favorited ? 'currentColor' : 'none'" stroke-width="1.8" />
             <b class="num">{{ p.favorite_count || '' }}</b>
+            <span v-if="bursts[`fav:${p.id}`]" class="burst" aria-hidden="true">
+              <i
+                v-for="(pt, bi) in bursts[`fav:${p.id}`]"
+                :key="bi"
+                :style="{ '--dx': pt.dx + 'px', '--dy': pt.dy + 'px', '--d': pt.d + 'ms' }"
+              />
+            </span>
           </button>
           <button class="act" @click="toggleComments(p)">
             <MessageCircle :size="18" stroke-width="1.8" />
@@ -368,6 +446,26 @@ watch(() => route.query.focus, () => {
 /* ?focus=<id> 定位高亮（与地图点位列表同一套语言） */
 .post.hl {
   box-shadow: 0 0 0 2px var(--primary), var(--shadow);
+}
+/* 视频媒体格：缩略图 + 右下播放角标（与时间轴 TimelineGrid 同一套视觉语言）。
+   角标是绝对定位浮层，故容器必须是定位上下文——TimelineGrid 的 .video-mark 规则
+   是 scoped 的，不会作用到这里，必须在本文件自带一份。 */
+.video-ph {
+  position: relative;
+  cursor: pointer;
+}
+.video-mark {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 /* 音频媒体格（原详情页能力，列表页补齐） */
 .audio-ph {
@@ -473,6 +571,7 @@ watch(() => route.query.focus, () => {
   padding: 10px 14px 12px;
 }
 .act {
+  position: relative; /* 粒子扩散的锚点 */
   display: flex;
   align-items: center;
   gap: 4px;
@@ -485,6 +584,59 @@ watch(() => route.query.focus, () => {
 }
 .act.on {
   color: var(--primary-deep);
+}
+/* 微粒子扩散（PRODUCT「动效规范」）：6 颗小点自图标中心向外扩散淡出，约 450ms，非夸张 */
+.burst {
+  position: absolute;
+  left: 9px; /* 图标 18px 的中心 */
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.burst i {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  margin: -2px 0 0 -2px;
+  border-radius: 50%;
+  background: var(--primary-deep);
+  opacity: 0;
+  animation: burst-out 450ms ease-out forwards;
+  animation-delay: var(--d, 0ms);
+}
+@keyframes burst-out {
+  0% {
+    opacity: 0.9;
+    transform: translate(0, 0) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(0.4);
+  }
+}
+/* 图标轻微回弹，与粒子同步 */
+.act.bounce :deep(svg) {
+  animation: act-bounce 260ms ease-out;
+}
+@keyframes act-bounce {
+  0% {
+    transform: scale(1);
+  }
+  40% {
+    transform: scale(1.25);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .burst {
+    display: none;
+  }
+  .act.bounce :deep(svg) {
+    animation: none;
+  }
 }
 .act b {
   font-size: 12px;

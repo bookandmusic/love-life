@@ -19,12 +19,22 @@ const route = useRoute()
 const router = useRouter()
 const albumID = computed(() => String(route.params.id))
 const albumIdNum = computed(() => Number(albumID.value))
+// 月度分组模式（/albums/month/:key）：查询即时聚合的展示形态——只读，无添加/移出/删除
+const isMonth = computed(() => route.name === 'album-month')
+const monthKey = computed(() => String(route.params.key ?? ''))
+const pageTitle = computed(() => {
+  if (!isMonth.value) return album.value?.name ?? '…'
+  const [y, m] = monthKey.value.split('-')
+  return `${y}年${Number(m)}月`
+})
 
 interface MediaItem {
   id: number
   kind: string
   url: string
   thumb_url: string
+  /** 所属动态 id（服务端随相册媒体一并下发）：用于「查看所属动态」跳转定位 */
+  post_id?: number | null
 }
 
 interface TimelineItem {
@@ -36,16 +46,22 @@ interface TimelineItem {
   album_name?: string
 }
 
-const album = ref<{ name: string; type: string } | null>(null)
+const album = ref<{ name: string } | null>(null)
 const media = ref<MediaItem[]>([])
 const loading = ref(false)
 
 async function load() {
   loading.value = true
   try {
-    const res = await api<{ album: { name: string; type: string }; media: MediaItem[] }>(`/api/v1/albums/${albumID.value}`)
-    album.value = res.album
-    media.value = res.media
+    if (isMonth.value) {
+      const res = await api<{ month_key: string; media: MediaItem[] }>(`/api/v1/albums/months/${monthKey.value}`)
+      media.value = res.media
+      album.value = null
+    } else {
+      const res = await api<{ album: { name: string }; media: MediaItem[] }>(`/api/v1/albums/${albumID.value}`)
+      album.value = res.album
+      media.value = res.media
+    }
   } catch (e) {
     album.value = null
     media.value = []
@@ -64,7 +80,7 @@ const { viewer, openViewer, closeViewer } = useViewer()
 const { pressing, down: pressDown, move: pressMove, up: pressUp, click: pressClick } = useLongPress()
 // 成功提示（移出相册用；错误仍走 actionError 常驻待点关闭）
 const toast = ref('')
-// B9 错误 toast
+// 错误 toast
 const actionError = ref('')
 
 // —— 时间轴选择页（与相册时间轴 tab 一致） ——
@@ -90,7 +106,8 @@ async function openPick() {
       let page = 1
       // 选择场景数据量小：全量拉取保证跨月可见（mock size 上限 50）
       for (;;) {
-        const res = await api<{ items: TimelineItem[]; has_more: boolean }>(`/api/v1/media/timeline?page=${page}&size=50`)
+        // scope=all：选图器需要全部媒体（已归属的灰显禁止选择），默认口径是未归档
+        const res = await api<{ items: TimelineItem[]; has_more: boolean }>(`/api/v1/media/timeline?page=${page}&size=50&scope=all`)
         items.push(...res.items)
         if (!res.has_more || res.items.length === 0) break
         page += 1
@@ -131,8 +148,7 @@ async function confirmAdd() {
 
 // 长按 = 移出当前相册（与其它列表同一套手势：500ms、位移 >8px 取消、按住有反馈）
 function askRemovePhoto(m: MediaItem) {
-  // 只有手动相册能移出（月度相册按月份自动组织，DESIGN §12.2）
-  if (album.value?.type !== 'manual') return
+  if (isMonth.value) return // 月度分组只读：媒体随动态存在，归档去手动相册操作
   removingPhoto.value = m
   showRemovePhoto.value = true
 }
@@ -170,18 +186,18 @@ async function confirmRemovePhoto() {
 // 卸载时清掉可能仍在计时的长按（否则 500ms 后回调会去改已销毁组件的状态）
 
 
-// 路由参数变化（如相册间跳转）必须重载：此前只在 setup 时取一次，切换后仍是旧数据
-watch(() => route.params.id, load)
+// 路由参数变化（相册间跳转 / 月度切换）必须重载：此前只在 setup 时取一次，切换后仍是旧数据
+watch(() => [route.params.id, route.params.key], load)
 
 onMounted(load)
 </script>
 
 <template>
-  <PageLayout :title="album?.name ?? '…'" back @back="router.back()">
+  <PageLayout :title="pageTitle" back @back="router.back()">
     <div class="body">
       <SkeletonState v-if="loading" variant="grid" :rows="6" />
       <div v-else class="grid">
-        <EmptyState v-if="media.length === 0" class="ade-empty" :icon="Images" title="这个相册还空着" sub="添加几张照片，让它慢慢丰富起来。" :action="album?.type === 'manual' ? '添加照片' : undefined" @action="openPick()" />
+        <EmptyState v-if="media.length === 0" class="ade-empty" :icon="Images" :title="isMonth ? '这个月还没有照片' : '这个相册还空着'" :sub="isMonth ? '发一条带媒体的动态，照片会按月出现在这里。' : '添加几张照片，让它慢慢丰富起来。'" :action="!isMonth ? '添加照片' : undefined" @action="openPick()" />
         <template v-for="(m, index) in media" :key="m.id">
           <div class="thumb-cell pressable"
             :class="{ pressing: pressing === m.id }"
@@ -202,8 +218,8 @@ onMounted(load)
             <img v-else :src="fullUrl(mediaUrl(m).thumb)" class="thumb" loading="lazy" alt="" />
           </div>
         </template>
-        <!-- 添加入口：做成最后一个图片图标（仅手动相册）；空相册时由 EmptyState 的 CTA 承担，避免重复入口 -->
-        <button v-if="album?.type === 'manual' && media.length > 0" class="add-cell" aria-label="从时间轴添加照片" @click="openPick">
+        <!-- 添加入口：做成最后一个图片图标（仅手动相册，月度分组只读）；空相册时由 EmptyState 的 CTA 承担，避免重复入口 -->
+        <button v-if="!isMonth && media.length > 0" class="add-cell" aria-label="从时间轴添加照片" @click="openPick">
           <Plus :size="26" stroke-width="1.8" />
         </button>
       </div>
@@ -217,6 +233,7 @@ onMounted(load)
       :album-name="album?.name"
       @close="closeViewer"
       @remove="onViewerRemove"
+      @gopost="(id: number) => router.push('/posts?focus=' + id)"
     />
 
     <!-- C3 移出照片 sheet -->

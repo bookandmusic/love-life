@@ -2,7 +2,7 @@ import { ref } from 'vue'
 import { defineStore } from 'pinia'
 import { api } from '../api/client'
 
-// 共享未读数 store（阶段5.2 B14：NavActions 每次挂载拉 unread-count 收敛到单一 store）
+// 共享未读数 store（NavActions 每次挂载拉 unread-count 收敛到单一 store）
 export const useUnread = defineStore('unread', () => {
   const count = ref(0)
 
@@ -19,7 +19,7 @@ export const useUnread = defineStore('unread', () => {
     count.value = 0
   }
 
-  /** D7：单条标记已读成功后减 1（失败不减；不为负——总数会在下次 refresh 对齐） */
+  /** ：单条标记已读成功后减 1（失败不减；不为负——总数会在下次 refresh 对齐） */
   function decrement() {
     count.value = Math.max(0, count.value - 1)
   }

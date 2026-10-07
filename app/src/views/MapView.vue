@@ -142,7 +142,7 @@ onActivated(async () => {
   if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按足迹可移入回收站'
 })
 
-// D3：通知「足迹」→ /map?focus=<id>：切回地图视图并居中高亮该点位
+// 通知「足迹」→ /map?focus=<id>：切回地图视图并居中高亮该点位
 async function applyFocus() {
   const id = Number(route.query.focus)
   if (!id) return

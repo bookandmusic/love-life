@@ -1,4 +1,4 @@
-// Tauri 窗口大小/位置记忆（阶段5.4 B20）：仅 Tauri 环境启用，浏览器内置静默退化
+// Tauri 窗口大小/位置记忆：仅 Tauri 环境启用，浏览器内置静默退化
 import { PhysicalPosition, PhysicalSize } from '@tauri-apps/api/dpi'
 import { KEYS } from './storage'
 

@@ -3,11 +3,11 @@ import { getToken } from '../api/client'
 import { useAuth } from '../stores/auth'
 import { KEYS } from '../utils/storage'
 
-// D5 一级 tab（只记这五个；详情页/发布页不记，避免冷启动落到需要参数或不适合停留的页面）
+// 一级 tab（只记这五个；详情页/发布页不记，避免冷启动落到需要参数或不适合停留的页面）
 const TABS = ['/home', '/posts', '/albums', '/anniversaries', '/map']
 
 /** 落地页（'/' redirect 与登录成功后共用，2026-09-21：此前登录页硬编码 /home，与 AI 模式存储打架）：
-    AI 模式→对话页；传统模式→上次一级 tab（REQUIREMENTS:83），无记录则首页 */
+ AI 模式→对话页；传统模式→上次一级 tab，无记录则首页 */
 export function landingRoute(): string {
   // 直读 localStorage 而不经 Pinia：record redirect 在导航最早期执行，避免依赖 store 安装顺序
   if (localStorage.getItem(KEYS.MODE) === 'ai') return '/chat'
@@ -33,6 +33,7 @@ const router = createRouter({
         { path: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'map', component: () => import('../views/MapView.vue') },
         { path: 'anniversaries', component: () => import('../views/AnniversariesView.vue') },
+        { path: 'albums/month/:key', name: 'album-month', component: () => import('../views/AlbumDetailView.vue') },
         { path: 'albums/:id', component: () => import('../views/AlbumDetailView.vue') },
       ],
     },
@@ -50,7 +51,7 @@ router.beforeEach(async (to) => {
   return true
 })
 
-// D5：记住上次停留的一级 tab（只记 TABS，详情页等不覆盖）
+// 记住上次停留的一级 tab（只记 TABS，详情页等不覆盖）
 router.afterEach((to) => {
   if (TABS.includes(to.path)) localStorage.setItem(KEYS.LAST_ROUTE, to.path)
 })

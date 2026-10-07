@@ -16,11 +16,11 @@ export interface SpaceInfo {
   members: SpaceMember[]
   days_together: number | null
   next_anniversary: { name: string; date: string; days_until: number }
-  anniversary_count: number // S5：首页空态判定用（区分「没有纪念日」与「日期全部无效」）
+  anniversary_count: number // 首页空态判定用（区分「没有纪念日」与「日期全部无效」）
   album_count: number
 }
 
-// 共享空间信息 store（阶段5.2 B14：Home/Posts 等不再各自重复拉 /space，切页不重复请求）
+// 共享空间信息 store（Home/Posts 等不再各自重复拉 /space，切页不重复请求）
 export const useSpace = defineStore('space', () => {
   const space = ref<SpaceInfo | null>(null)
   const loading = ref(false)

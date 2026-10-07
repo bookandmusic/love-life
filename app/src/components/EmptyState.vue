@@ -34,7 +34,7 @@ defineEmits<{ (e: 'action'): void }>()
   justify-content: center;
   text-align: center;
   min-height: 52vh;
-  /* 横向不写 padding：外壳 --side-pad 已承担（DESIGN §15.0），叠加会在手机档挤窄 */
+ /* 横向不写 padding：外壳 --side-pad 已承担，叠加会在手机档挤窄 */
   padding: 48px 0;
   color: var(--muted-ink);
 }

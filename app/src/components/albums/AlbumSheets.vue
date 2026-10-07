@@ -61,9 +61,9 @@ const emit = defineEmits<{
     confirm-text="关闭"
     @update:show="emit('update:showPickAlbum', $event)"
   >
-    <div v-if="albums.filter((a) => !a.is_hidden).length" class="pk-list">
+    <div v-if="albums.length" class="pk-list">
       <button
-        v-for="a in albums.filter((x) => !x.is_hidden)"
+        v-for="a in albums"
         :key="a.id"
         class="pk-row"
         :disabled="addingAlbum"

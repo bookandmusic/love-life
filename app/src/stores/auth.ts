@@ -8,7 +8,6 @@ export interface UserInfo {
   role: string
   nickname: string
   ai_style?: string
-  chat_retention_days?: number
 }
 
 export const useAuth = defineStore('auth', () => {

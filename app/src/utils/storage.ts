@@ -1,4 +1,4 @@
-// 本地存储键集中管理（阶段5.4 B18：`love-life-*` 键散落 4 个文件，统一在此维护）
+// 本地存储键集中管理（`love-life-*` 键散落 4 个文件，统一在此维护）
 // 薄转发已删：调用处直用 localStorage，此处只留键常量
 export const KEYS = {
   BASE: 'love-life-base',
@@ -9,7 +9,7 @@ export const KEYS = {
   THEME: 'love-life-theme',
   ACCENT: 'love-life-accent',
   MODE: 'love-life-mode',
-  LAST_ROUTE: 'love-life-last-route', // D5：传统模式记住上次浏览的一级 tab
+  LAST_ROUTE: 'love-life-last-route', // 传统模式记住上次浏览的一级 tab
   WINDOW_STATE: 'love-life-window-state',
   // 长按手势的一次性提示（跨页面共享，本地记住后不再打扰）
   HINT_LONGPRESS: 'love-life-hint-longpress-del',

@@ -70,14 +70,14 @@ onUnmounted(() => {
   --muted-ink: #6c6c70; /* iOS secondaryLabel 等效：白底 5.23:1（AA），原 #8e8e93 仅 3.26:1 */
   --primary: #ff8fab;
   --primary-deep: #f06292;
-  /* 操作色（REQUIREMENTS:285/293）：文字/图标型可点控件的 tint（导航栏按钮、保存/发布、文字动作）。
+ /* 操作色：文字/图标型可点控件的 tint（导航栏按钮、保存/发布、文字动作）。
      与 --primary 分工——暖粉只管着色点/FAB/选中（填充型按钮），操作类用系统蓝保证白底对比度 4.0:1 */
   --tint: #007aff;
   --tint-wash: rgba(0, 122, 255, 0.1);
   --danger: #ff3b30;
   --rule: rgba(60, 60, 67, 0.18);
   --on-primary: #ffffff;
-  --ai-bg: #f2f2f7;
+  --ai-bg: #f0ede8; /* AI 模式专属暖灰（区别于全局冷灰 #f2f2f7，见 PRODUCT「AI 模式 — 界面结构」） */
   --app-veil: #f2f2f7;
   --glass-from: rgba(249, 249, 252, 0.94);
   --glass-to: rgba(246, 246, 250, 0.88);
@@ -134,7 +134,7 @@ onUnmounted(() => {
 :root[data-accent='gold'][data-theme='dark']   { --primary: #f2b441; --primary-deep: #ffd98b; }
 :root[data-accent='dousha'][data-theme='dark'] { --primary: #e0877f; --primary-deep: #f0b0a9; }
 
-/* 多设备响应式（REQUIREMENTS §6.7）：平板档 100% 全宽带内边距；桌面档切浮动面板。
+/* 多设备响应式：平板档 100% 全宽带内边距；桌面档切浮动面板。
    :root:root 提升优先级以压过 :root[data-theme] 主题块 */
 :root:root {
   --side-pad: 16px;

@@ -85,14 +85,14 @@ const solarRefDate = computed(() => {
   return `${fSolarY.value}-${mm}-${dd}`
 })
 
-// B9 删除确认 sheet
+// 删除确认 sheet
 const showDelete = ref(false)
 const deleting = ref<Anniv | null>(null)
 const toast = ref('')
 // 移入回收站：长按卡片触发（卡片上没有常驻删除图标）
 const { pressing, down: pressDown, move: pressMove, up: pressUp } = useLongPress()
 
-// D6 提醒设置 sheet（REQUIREMENTS:182：每条纪念日的提醒天数可单独修改）
+// 提醒设置 sheet（每条纪念日的提醒天数可单独修改）
 const showRemind = ref(false)
 const reminding = ref<Anniv | null>(null)
 const remindDays = ref(1)
@@ -269,28 +269,44 @@ const sortedItems = computed(() => [...items.value].sort((x, y) => unifiedNext(x
 function rowMeta(a: Anniv): AnnivRowMeta {
   const n = unifiedNext(a)
   const hot = n.days <= 30
-  const origin = a.date ? `原始日期 ${a.date}` : ''
-  // 日期不可解析（含空）时不再展示「每年 X 月 X 日 / 下次 YYYY-MM-DD」这类假信息
+  // 日期不可解析（含空）时不再展示「X 月 X 日 / 下个公历 YYYY-MM-DD」这类假信息
   const md = a.date ? ymdOf(a.date) : null
   const ok = !!md && Number.isFinite(md.m) && Number.isFinite(md.d)
+  // 原始年份：`年 · …` 里的「年」（PRODUCT「纪念日」：副行1 = 年 · 日期规则）
+  const year = a.date && a.date.length >= 4 ? a.date.slice(0, 4) : ''
+  const prefix = year ? `${year} 年 · ` : ''
   if ((a.type || 'solar') === 'lunar') {
     const isLeap = a.is_leap === true
-    const occ = ok ? nextLunarOccurrence(md!.m, md!.d, isLeap) : null
-    return { kind: 'lunar', hot, anniv: ok ? `每年${lunarDayText(md!.m, md!.d, isLeap)}` : '', next: `下次 ${occ || '—'}`, origin, days: n.days, invalid: n.invalid }
+    const occ = ok ? nextLunarOccurrence(md!.m, md!.d, isLeap) : ''
+    // 阳历/农历同构：副行1 = `年 · 农历X月X日`，副行2 = `下个公历 YYYY-MM-DD`
+    return {
+      kind: 'lunar',
+      hot,
+      anniv: ok ? `${prefix}${lunarDayText(md!.m, md!.d, isLeap)}` : '', // lunarDayText 自带「农历」前缀
+      next: `下个公历 ${occ || '—'}`,
+      days: n.days,
+      invalid: n.invalid,
+    }
   }
-  return { kind: 'solar', hot, anniv: ok ? `每年 ${md!.m} 月 ${md!.d} 日` : '', next: `下次 ${ok ? nextSolarDate(a.date) : '—'}`, origin, days: n.days, invalid: n.invalid }
+  return {
+    kind: 'solar',
+    hot,
+    anniv: ok ? `${prefix}${md!.m} 月 ${md!.d} 日` : '',
+    next: `下个公历 ${ok ? nextSolarDate(a.date) : '—'}`,
+    days: n.days,
+    invalid: n.invalid,
+  }
 }
 
 const rows = computed(() => sortedItems.value.map((a) => ({ ...a, meta: rowMeta(a) })))
 
 
-/** 行级展示元数据（iOS 风格，阳历/农历完全对称：副行1=每年重复规则，副行2=下次日期） */
+/** 行级展示元数据（iOS 风格，阳历/农历完全同构：副行1 = `年 · 日期规则`，副行2 = `下个公历 YYYY-MM-DD`） */
 interface AnnivRowMeta {
   kind: 'solar' | 'lunar'
   hot: boolean
-  anniv: string // 副1：每年规则（如「每年农历八月十五」/「每年 10 月 1 日」）
-  next: string // 副2：下次具体日期（如「下次 2026-09-25」）
-  origin: string // 副3：原始日期（不丢主体信息，仅作小字陪衬）
+  anniv: string // 副1：`年 · 日期规则`（如「1996 年 · 农历八月十五」/「1996 年 · 10 月 1 日」）
+  next: string // 副2：`下个公历 YYYY-MM-DD`（如「下个公历 2026-09-25」）
   days: number
   invalid: boolean // 日期无效（服务端 -1 / 无日期 / 不可解析）→ 右侧显示「日期无效」并置灰
 }
@@ -357,7 +373,7 @@ onActivated(async () => {
   <PageLayout v-else title="纪念日" actions>
         <SkeletonState v-if="loading" variant="list" :rows="3" />
         <ErrorState v-else-if="error" :error="error" :retry="load" />
-        <!-- 空态带引导 CTA（与全站空态口径一致，§6.4），与 FAB 同一个创建入口 -->
+ <!-- 空态带引导 CTA（与全站空态口径一致），与 FAB 同一个创建入口 -->
         <EmptyState v-else-if="items.length === 0" :icon="Cake" title="记下重要日子" sub="生日、初见、在一起的日子，都会准时提醒你们。" action="记下第一个纪念日" @action="router.push('/anniversaries?new=1')" />
 
         <div
@@ -395,7 +411,7 @@ onActivated(async () => {
           </div>
         </div>
 
-      <!-- D6 提醒设置 sheet -->
+      <!-- 提醒设置 sheet -->
       <Sheet
         v-if="reminding"
         v-model:show="showRemind"
@@ -410,7 +426,7 @@ onActivated(async () => {
         </select>
       </Sheet>
 
-      <!-- B9 删除确认 sheet -->
+      <!-- 删除确认 sheet -->
       <ConfirmSheet
         v-if="deleting"
         v-model:show="showDelete"
@@ -582,13 +598,7 @@ onActivated(async () => {
   font-size: 12px;
   opacity: 0.85;
 }
-.meta-line.origin {
-  font-size: 11px;
-  color: var(--muted-ink);
-  opacity: 0.65;
-  font-variant-numeric: tabular-nums;
-}
-/* D6 提醒入口：贴在「下次/每年」小字下方，点开改天数 */
+/* 提醒入口：贴在「下次/每年」小字下方，点开改天数 */
 .meta-line.remind {
   display: inline-flex;
   align-items: center;

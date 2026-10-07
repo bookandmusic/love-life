@@ -15,7 +15,7 @@ import ErrorState from '../components/ErrorState.vue'
 import TimelineGrid from '../components/albums/TimelineGrid.vue'
 import AlbumCollection from '../components/albums/AlbumCollection.vue'
 import AlbumSheets from '../components/albums/AlbumSheets.vue'
-import type { AlbumItem, TimelineItem } from '../types/albums'
+import type { AlbumItem, MonthRow, TimelineItem } from '../types/albums'
 
 defineOptions({ name: 'AlbumsView' })
 
@@ -31,6 +31,7 @@ function onViewerPost(postId: number) {
 }
 
 const albums = ref<AlbumItem[]>([])
+const months = ref<MonthRow[]>([])
 const timeline = ref<TimelineItem[]>([])
 const error = ref('')
 // C2 手动相册创建 sheet
@@ -109,14 +110,17 @@ function askDeleteAlbum(a: AlbumItem) {
   deletingAlbum.value = a
   showDeleteAlbum.value = true
 }
+function onMonthClick(m: MonthRow) {
+  router.push(`/albums/month/${m.month_key}`)
+}
 function onAlbumClick(a: AlbumItem, e: MouseEvent) {
   pressClick(e)
   if (e.defaultPrevented) return
   router.push(`/albums/${a.id}`)
 }
 function albumDeleteMsg(a: AlbumItem) {
-  // 空相册没有内容可看，删除后果只有相册本身
-  const extra = a.item_count > 0 ? '照片会保留，只是不再属于任何相册。' : ''
+  // 空相册没有内容可看，删除后果只有相册本身（有内容时的后果文案依客户端设计「删除交互统一规范」）
+  const extra = a.item_count > 0 ? '照片本身不受影响（回到未归属状态）。' : ''
   return recycleMsg(a.name, extra + peerNotice(auth.user?.id, a.created_by))
 }
 async function confirmDeleteAlbum() {
@@ -136,7 +140,7 @@ async function confirmDeleteAlbum() {
 // FAB「相册」带 ?new=1 时自动弹创建 sheet（onActivated 覆盖跨 tab 抵达；watch 覆盖同页重复触发）
 onActivated(() => {
   void loadAlbums()
-  // 时间轴：冷启动或停在第一页时刷新（新增即时可见）；已翻页则保留浏览位置
+  // 时间轴：冷启动或停在第一页时刷新（新增即时可）；已翻页则保留浏览位置
   if (timeline.value.length === 0 || tlPage.value === 1) void loadTimeline()
   // 以 query 为真源回写 sheet 开合（修复：经 TabBar 而非关闭离开时，回来不应停在 sheet 态）
   showCreate.value = route.query.new === '1'
@@ -184,13 +188,16 @@ async function loadAlbums() {
   try {
     const res = await api<{ items: AlbumItem[] }>('/api/v1/albums')
     albums.value = res.items
+    // 月度分组：查询即时聚合的展示形态（非实体，无删除/隐藏入口）
+    const m = await api<{ items: MonthRow[] }>('/api/v1/albums/months')
+    months.value = m.items
     error.value = ''
   } catch (e) {
     if (albums.value.length === 0) error.value = errText(e, '加载失败')
   }
 }
 
-// —— 时间轴分页加载（阶段5.5 B10：按 1.7⑥ 分页契约滚动加载）——
+// —— 时间轴分页加载（按 1.7⑥ 分页契约滚动加载）——
 const tlPage = ref(1)
 const tlTotal = ref(0)
 const tlHasMore = ref(false)
@@ -276,11 +283,13 @@ function onTimelineScroll(e: Event) {
       <AlbumCollection
         v-else
         :albums="albums"
+        :months="months"
         :pressing="pressing"
         @pointer-down="pressDown"
         @pointer-move="pressMove"
         @pointer-up="pressUp"
         @open="onAlbumClick"
+        @open-month="onMonthClick"
         @request-delete="askDeleteAlbum"
       />
     <!-- 全屏媒体查看器（iOS） -->

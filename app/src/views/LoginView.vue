@@ -11,7 +11,7 @@ import { probeAndSelect, type ProbeStatus } from '../utils/netProbe'
 const router = useRouter()
 const auth = useAuth()
 
-// 服务端地址（AP1 双通道，DESIGN §11.2）：内网（在家直连）/ 公网（在外 HTTPS），
+// 服务端地址（AP1 双通道）：内网（在家直连）/ 公网（在外 HTTPS），
 // 各自可空——只填一个时直接用该地址；双地址探测优选内网。
 // 主界面只留一行摘要，编辑收进 Sheet：每天动线是「进空间」，改地址是低频配置。
 type Schema = 'http' | 'https'
@@ -489,7 +489,7 @@ async function submit() {
   outline: 2px solid var(--ink);
   outline-offset: 2px;
 }
-/* 加载态：缓慢呼吸的光晕（REQUIREMENTS §6.5，非旋转菊花） */
+/* 加载态：缓慢呼吸的光晕（非旋转菊花） */
 .glow {
   position: absolute;
   inset: 0;

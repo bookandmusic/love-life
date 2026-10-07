@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { LogOut, ExternalLink } from 'lucide-vue-next'
 import { api, errText, getBase } from '../api/client'
@@ -19,23 +19,16 @@ const modeStore = useMode()
 const theme = ref<string>(localStorage.getItem(KEYS.THEME) || 'light')
 const accent = ref<string>(localStorage.getItem(KEYS.ACCENT) || 'rose')
 
-// AI 偏好（输出风格 + 对话保留时长）：读 auth.user，改后 PATCH /api/v1/me
+// AI 偏好（输出风格）：个人体验项，仅 AI 模式显示；读 auth.user，改后 PATCH /api/v1/me
 // 风格选项从 /api/v1/styles 拉取（内置 + 自定义）；拉取失败用种子清单兜底
 const aiStyle = ref('文艺')
-const retentionDays = ref(30)
 const aiPrefSaving = ref(false)
 const aiPrefToast = ref('')
 let aiPrefTimer: number | undefined // 「已保存」标签的自动隐藏计时（卸载时清理）
 const styleOpts = ref<string[]>(['文艺', '幽默', '简洁'])
-const RETENTION_OPTS = [
-  { v: 7, label: '7 天' },
-  { v: 30, label: '30 天' },
-  { v: 90, label: '90 天' },
-  { v: -1, label: '永久' },
-]
+const stylesLoaded = ref(false)
 function syncAIPref() {
   aiStyle.value = auth.user?.ai_style || defaultStyleName.value || '文艺'
-  retentionDays.value = auth.user?.chat_retention_days ?? 30
 }
 const defaultStyleName = ref('')
 async function loadStyles() {
@@ -45,6 +38,7 @@ async function loadStyles() {
       styleOpts.value = res.items.map((s) => s.name)
       defaultStyleName.value = res.items.find((s) => s.id === res.default_style_id)?.name ?? ''
     }
+    stylesLoaded.value = true
   } catch {
     /* 兜底清单已就位 */
   }
@@ -55,12 +49,9 @@ async function saveAIPref() {
   try {
     await api('/api/v1/me', {
       method: 'PATCH',
-      body: JSON.stringify({ ai_style: aiStyle.value, chat_retention_days: retentionDays.value }),
+      body: JSON.stringify({ ai_style: aiStyle.value }),
     })
-    if (auth.user) {
-      auth.user.ai_style = aiStyle.value
-      auth.user.chat_retention_days = retentionDays.value
-    }
+    if (auth.user) auth.user.ai_style = aiStyle.value
     aiPrefToast.value = '已保存'
   } catch (e) {
     aiPrefToast.value = errText(e, '保存失败')
@@ -75,7 +66,7 @@ onUnmounted(() => {
   if (aiPrefTimer) window.clearTimeout(aiPrefTimer)
 })
 
-// AI 可用性（阶段4.4 B6-②：后台未配置模型 Key 时 AI 模式置灰并提示原因）
+// AI 可用性（后台未配置模型 Key 时 AI 模式置灰并提示原因）
 const aiStatus = ref<AIStatus | null>(null)
 const aiStatusLoading = ref(false)
 
@@ -114,10 +105,15 @@ function logout() {
   router.replace('/login')
 }
 
+// 风格清单按需加载：切到 AI 模式且未加载过时补拉一次，避免空选项
+watch(() => modeStore.mode, (m) => {
+  if (m === 'ai' && !stylesLoaded.value) void loadStyles().then(syncAIPref)
+})
+
 onMounted(() => {
   applyTheme()
   void loadAIStatus()
-  void loadStyles().then(syncAIPref)
+  if (modeStore.mode === 'ai') void loadStyles().then(() => { stylesLoaded.value = true; syncAIPref() })
   syncAIPref()
 })
 </script>
@@ -125,42 +121,27 @@ onMounted(() => {
 <template>
   <PageLayout title="设置" back standalone @back="router.back()">
     <div class="content">
-      <!-- APP 模式（传统 / AI）：切换后立即生效；AI 未配置时置灰并提示原因 -->
+      <!-- 模式切换（通用项，两模式都显示）：切换后立即生效；AI 未配置时置灰并提示原因 -->
       <div class="group">
-        <div class="section-label">APP 模式</div>
+        <div class="section-label">模式</div>
         <div class="seg-wrap">
           <div class="seg">
             <button :class="{ on: modeStore.mode === 'traditional' }" @click="applyMode('traditional')">传统模式</button>
             <button :class="{ on: modeStore.mode === 'ai', off: aiDisabled }" :disabled="aiDisabled" @click="applyMode('ai')">AI 模式</button>
           </div>
           <p class="mode-hint">
-            {{ aiStatusLoading ? '正在看 AI 能不能用…' : aiStatus?.reason || '切换后立即生效' }}
+            {{
+              aiStatusLoading
+                ? '正在看 AI 能不能用…'
+                : modeStore.mode === 'traditional'
+                  ? (aiDisabled ? aiStatus?.reason : '切到 AI 模式可配置 AI 偏好')
+                  : (aiStatus?.reason || '切换后立即生效')
+            }}
           </p>
         </div>
       </div>
 
-      <!-- AI 偏好：输出风格 + 对话保留时长（个人体验项，PATCH /api/v1/me） -->
-      <div class="group">
-        <div class="section-label">AI 偏好</div>
-        <div class="seg-wrap">
-          <div class="seg">
-            <button v-for="s in styleOpts" :key="s" :class="{ on: aiStyle === s }" @click="aiStyle = s">{{ s }}</button>
-          </div>
-          <p class="mode-hint">AI 输出风格偏好</p>
-        </div>
-        <div class="seg-wrap">
-          <div class="seg">
-            <button v-for="r in RETENTION_OPTS" :key="r.v" :class="{ on: retentionDays === r.v }" @click="retentionDays = r.v">{{ r.label }}</button>
-          </div>
-          <p class="mode-hint">对话历史保留时长</p>
-        </div>
-        <div class="save-row">
-          <button class="save-btn" :disabled="aiPrefSaving" @click="saveAIPref">{{ aiPrefSaving ? '保存中…' : '保存' }}</button>
-          <span v-if="aiPrefToast" class="save-toast">{{ aiPrefToast }}</span>
-        </div>
-      </div>
-
-      <!-- 外观 -->
+      <!-- 外观（通用项） -->
       <div class="group">
         <div class="section-label">外观</div>
         <div class="seg-wrap">
@@ -200,12 +181,27 @@ onMounted(() => {
         </a>
       </div>
 
-      <!-- 退出登录 -->
+      <!-- 退出登录（通用项） -->
       <div class="group">
         <button class="row logout-row" @click="logout">
           <span class="label danger-text">退出登录</span>
           <LogOut :size="16" stroke-width="2" class="danger-text" />
         </button>
+      </div>
+
+      <!-- AI 偏好（仅 AI 模式显示的个人体验项；只列不藏——传统模式下由切换器提示去哪配） -->
+      <div v-if="modeStore.mode === 'ai'" class="group">
+        <div class="section-label">AI 偏好</div>
+        <div class="seg-wrap">
+          <div class="seg">
+            <button v-for="s in styleOpts" :key="s" :class="{ on: aiStyle === s }" @click="aiStyle = s">{{ s }}</button>
+          </div>
+          <p class="mode-hint">AI 输出风格偏好（仅对你发起的 AI 会话生效）</p>
+        </div>
+        <div class="save-row">
+          <button class="save-btn" :disabled="aiPrefSaving" @click="saveAIPref">{{ aiPrefSaving ? '保存中…' : '保存' }}</button>
+          <span v-if="aiPrefToast" class="save-toast">{{ aiPrefToast }}</span>
+        </div>
       </div>
     </div>
   </PageLayout>

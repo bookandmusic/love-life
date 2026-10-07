@@ -40,7 +40,6 @@ const eventIcon: Record<string, { icon: typeof Heart; color: string }> = {
   anniversary_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   map_point_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   anniversary_reminder: { icon: Cake, color: 'var(--sem-gold)' },
-  media_deleted: { icon: Trash2, color: 'var(--muted-ink)' },
   map_point_created: { icon: MapPin, color: 'var(--sem-green)' },
 }
 
@@ -55,9 +54,8 @@ const eventText: Record<string, (s: Record<string, unknown>) => string> = {
   post_commented: (s) => `${s.operator} 评论了你的动态：${s.content ?? ''}`,
   post_deleted: (s) => `${s.deleted_by} 删除了你发布的动态：${s.content ?? ''}`,
   comment_deleted: (s) => `${s.deleted_by} 删除了你的评论：${s.content ?? ''}`,
-  album_created: (s) => (s.monthly ? `月度相册「${s.name}」已生成` : `${s.operator} 创建了相册「${s.name}」`),
+  album_created: (s) => `${s.operator ?? ''} 创建了相册「${s.name}」`,
   anniversary_reminder: (s) => `纪念日「${s.name}」快到了`,
-  media_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了媒体`,
   album_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了你的相册「${s.name ?? ''}」`,
   anniversary_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了你的纪念日「${s.name ?? ''}」`,
   map_point_deleted: (s) => `${s.deleted_by ?? '对方'} 删除了你的足迹「${s.name ?? ''}」`,
@@ -101,7 +99,7 @@ async function readAll() {
 }
 
 function targetRoute(n: NotifItem): string | null {
-  // 内容删除通知无跳转：内容已不可见（REQUIREMENTS §4.8「内容删除通知无跳转」）
+ // 内容删除通知无跳转：内容已不可见（「内容删除通知无跳转」）
   if (n.event_type.endsWith('_deleted')) return null
   if (!n.target_type || !n.target_id) return null
   switch (n.target_type) {
@@ -112,7 +110,7 @@ function targetRoute(n: NotifItem): string | null {
     case 'anniversary':
       return '/anniversaries'
     case 'map_point':
-      return `/map?focus=${n.target_id}` // D3：定位到具体点位（列表页无锚点，只能到地图居中高亮）
+      return `/map?focus=${n.target_id}` // 定位到具体点位（列表页无锚点，只能到地图居中高亮）
     default:
       return null
   }
@@ -121,13 +119,13 @@ function targetRoute(n: NotifItem): string | null {
 async function open(n: NotifItem) {
   const to = targetRoute(n)
   const deleted = n.event_type.endsWith('_deleted')
-  // 删除类通知虽无跳转，仍要可点：消红点并提示「内容已删除」（DESIGN §12.3）
+ // 删除类通知虽无跳转，仍要可点：消红点并提示「内容已删除」
   if (!to && !deleted) return
   if (!n.is_read) {
     try {
       await api(`/api/v1/notifications/${n.id}/read`, { method: 'POST' })
       n.is_read = true
-      unreadStore.decrement() // D7：标记已读成功后红点同步减 1（失败静默则不减）
+      unreadStore.decrement() // 标记已读成功后红点同步减 1（失败静默则不减）
     } catch {
       /* 已读失败静默 */
     }
