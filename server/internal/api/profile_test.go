@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSpaceAndProfile(t *testing.T) {
@@ -133,5 +134,26 @@ func TestSpaceAndProfile(t *testing.T) {
 	res.Body.Close()
 	if res.StatusCode != http.StatusBadRequest {
 		t.Fatalf("invalid love date: %d", res.StatusCode)
+	}
+
+	// 未来日期拒绝：否则首页/统计卡会算出「1 天 / 0 天」这类无意义天数
+	// （PRODUCT 只定义「未设置」一态，未来日期属未定义的第三态，从写入侧消掉）
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("2006-01-02")
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/space", adminToken, map[string]string{"love_start_date": tomorrow})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("未来开始日应 400，实得 %d", res.StatusCode)
+	}
+	// 今天与过去都放行（边界：今天不算未来）
+	today := time.Now().Format("2006-01-02")
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/space", adminToken, map[string]string{"love_start_date": today})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("今天作为开始日应放行，实得 %d", res.StatusCode)
+	}
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/space", adminToken, map[string]string{"love_start_date": "2020-05-20"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("过去日期应放行，实得 %d", res.StatusCode)
 	}
 }

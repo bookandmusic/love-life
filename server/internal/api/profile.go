@@ -101,8 +101,16 @@ func (a *profileAPI) updateSpace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.LoveStartDate != "" {
-		if _, err := time.Parse("2006-01-02", req.LoveStartDate); err != nil {
+		start, err := time.ParseInLocation("2006-01-02", req.LoveStartDate, time.Local)
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "恋爱开始日期格式应为 YYYY-MM-DD")
+			return
+		}
+		// 开始日不能在未来：那会算出「1 天 / 0 天」这类无意义天数（未设开始日的处理见
+		// store.DaysTogether——未来日期属需求未定义的第三态，这里从写入侧消掉）。
+		today := time.Now().In(time.Local)
+		if start.After(time.Date(today.Year(), today.Month(), today.Day(), 0, 0, 0, 0, time.Local)) {
+			writeError(w, http.StatusBadRequest, "恋爱开始日期不能晚于今天")
 			return
 		}
 	}

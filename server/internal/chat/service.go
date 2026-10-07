@@ -117,6 +117,24 @@ func (s *Service) endTurn(userID int64, turnID string) {
 	s.activeTurns.Delete(turnKey(userID, turnID))
 }
 
+// beginResolve 登记「本提案正在裁决执行」——回执落库前，该会话与「流式进行中」一样不可删。
+// 与删会话同锁（turnMu）：否则删会话能插在「原子认领卡片」与「回执落库」之间，
+// 回执就落进已删会话（chat_messages.session_id 刻意无外键，只会留下永不清理的孤儿行）。
+// 必须在**认领之前**登记：认领后卡片已不是 pending，CountPendingProposals 便拦不住删除，
+// 只有这份进程内登记能拦住。合成 key 用 actionID（卡片单次有效，天然唯一）。
+func (s *Service) beginResolve(userID, sessionID, actionID int64) string {
+	key := "card:" + strconv.FormatInt(actionID, 10)
+	s.turnMu.Lock()
+	s.markTurnActive(userID, sessionID, key)
+	s.turnMu.Unlock()
+	return key
+}
+
+// endResolve 裁决执行结束（无论成功失败）后注销，恢复该会话的可删性。
+func (s *Service) endResolve(userID int64, key string) {
+	s.endTurn(userID, key)
+}
+
 // sessionTurnActive 该会话是否有未终结的轮次（流式中）；删会话路径须持 turnMu 调用。
 func (s *Service) sessionTurnActive(userID, sessionID int64) bool {
 	active := false
@@ -1279,6 +1297,11 @@ func (s *Service) ResolveProposal(w http.ResponseWriter, r *http.Request) {
 	if len(turnIDs) > 0 {
 		carrierTurn = turnIDs[0]
 	}
+
+	// 裁决执行期间该会话不可删（见 beginResolve）：覆盖取消与确认两条路径——
+	// 两条都会在卡片状态已变更后写回执，都在同一个窗口里。
+	resolveKey := s.beginResolve(claims.UserID, sessionID, id)
+	defer s.endResolve(claims.UserID, resolveKey)
 
 	if req.Decision == "cancel" {
 		if err := s.db.ResolveConfirmAction(r.Context(), id, "cancelled"); err != nil {

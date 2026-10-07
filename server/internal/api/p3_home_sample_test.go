@@ -58,24 +58,17 @@ func TestPostsSampleDrawsFromWholeHistory(t *testing.T) {
 		t.Fatalf("sample=1 连续多次返回了完全相同的集合 %v（未随机）", first)
 	}
 
-	// ② 抽样范围是**全量历史池**：一次取满 50 条（共 60 条）时，最旧那条落在
-	// 「最新 50 条」窗口之外——若仍在窗口内取，它必然缺席（确定性断言，不靠概率）。
-	got := fetch(50)
-	if len(got) != 50 {
-		t.Fatalf("应返回 50 条，实得 %d", len(got))
+	// ② 抽样范围是**全量历史池**，而非「最新一页」。
+	// 断言「抽到的 50 条里至少有 1 条落在『最新 50 条』窗口之外」：
+	// 若实现只在窗口内取，抽出的必然**恰好**是最新 50 条（1 种组合），
+	// 而全池 60 取 50 共 C(60,50) ≈ 7.5e10 种组合——误报概率约 1.3e-11，
+	// 远低于「断言某一条必被抽中」（那条只有 50/60，会 17% 概率随机红）。
+	latest := fetch(50) // 随机抽一批
+	if len(latest) != 50 {
+		t.Fatalf("应返回 50 条，实得 %d", len(latest))
 	}
-	oldestSeen := false
-	for _, id := range got {
-		if id == 1 {
-			oldestSeen = true
-		}
-	}
-	if !oldestSeen {
-		t.Fatal("最旧的第 1 条缺席——抽样仍被限制在最新 50 条窗口内")
-	}
-
-	// 不给 sample 时仍是最新优先（默认行为不被改坏）
-	res := doJSON(t, "GET", ts.URL+"/api/v1/posts?page=1&page_size=3", adminToken, nil)
+	// 默认（非抽样）列表就是「最新 50 条」窗口，用它作为对照集
+	res := doJSON(t, "GET", ts.URL+"/api/v1/posts?page=1&page_size=50", adminToken, nil)
 	var def struct {
 		Items []struct {
 			ID int64 `json:"id"`
@@ -83,6 +76,24 @@ func TestPostsSampleDrawsFromWholeHistory(t *testing.T) {
 	}
 	_ = json.NewDecoder(res.Body).Decode(&def)
 	res.Body.Close()
+	window := make(map[int64]bool, len(def.Items))
+	for _, it := range def.Items {
+		window[it.ID] = true
+	}
+	if len(window) != 50 {
+		t.Fatalf("对照窗口应 50 条，实得 %d", len(window))
+	}
+	outside := 0
+	for _, id := range latest {
+		if !window[id] {
+			outside++
+		}
+	}
+	if outside == 0 {
+		t.Fatal("抽到的全部落在「最新 50 条」窗口内——抽样被限制在最新一页")
+	}
+
+	// 不给 sample 时仍是最新优先（默认行为不被改坏）：上面那次非抽样请求即为对照
 	for i := 1; i < len(def.Items); i++ {
 		if def.Items[i].ID > def.Items[i-1].ID {
 			t.Fatalf("默认列表应按 id 倒序，实得 %+v", def.Items)
