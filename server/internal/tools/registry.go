@@ -330,11 +330,6 @@ func boolArg(args map[string]any, key string) bool {
 	return v
 }
 
-// intArg 宽容取整。
-func intArg(args map[string]any, key string) int64 {
-	return num(args, key)
-}
-
 // ValidateRequired 按工具 Params 里的 `required` 声明校验必填参数给到位。
 // 单一实现覆盖所有工具：`required` 本是给模型的契约，同一份契约再当一次服务端校验。
 func (t *Tool) ValidateRequired(args map[string]any) error {
@@ -1557,9 +1552,14 @@ func Registry() []*Tool {
 					recs := []UIRecord{}
 					if list := medias[id]; len(list) > 0 {
 						fmt.Fprintf(&mt, "（含 %d 条媒体", len(list))
-						// 详情清单截断：最多 50 条（口径与相册详情一致，AI模式设计「统计与计数口径」）
+						// 详情清单截断：最多 50 条（口径与相册详情一致，AI模式设计「统计与计数口径」）。
+						// 截断时按该文档要求注明「已列前 N 条」与完整清单的取法——动态没有 album_id 可传，
+						// 故提示按时间范围查（不能照抄相册那句 find_media(album_id=…)）。
 						const detailLimitMedia = 50
 						if len(list) > detailLimitMedia {
+							// 提示要照着**可用参数**写：find_media 缺省只看未归档（unfiled=true），
+							// 而本动态的媒体可能已归入相册，故必须显式带 unfiled=false，否则补查会漏。
+							fmt.Fprintf(&mt, "，已列前 %d 条，完整清单用 find_media(unfiled=false) 按时间范围查", detailLimitMedia)
 							list = list[:detailLimitMedia]
 						}
 						for _, m := range list {

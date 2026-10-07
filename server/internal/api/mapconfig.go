@@ -220,7 +220,7 @@ func (a *mapConfigAPI) verifyTileGrant(expStr, sig string) bool {
 }
 
 // config GET /api/v1/map/config 下发「使用中」的源与瓦片短时签名给 APP
-// （provider/tile_api/url_template? 契约不变，新增 exp/sig）。
+// （provider/tile_api 契约不变，新增 exp/sig）。
 func (a *mapConfigAPI) config(w http.ResponseWriter, r *http.Request) {
 	s, err := a.db.GetEnabledSource(r.Context())
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -237,9 +237,6 @@ func (a *mapConfigAPI) config(w http.ResponseWriter, r *http.Request) {
 	}
 	if s != nil {
 		resp["provider"] = s.Type
-		if s.Type == "public" && s.URLTemplate != "" {
-			resp["url_template"] = s.URLTemplate // 公开源可下发模板（无密钥）；APP 也可直连
-		}
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

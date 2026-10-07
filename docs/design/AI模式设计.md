@@ -96,7 +96,7 @@
 ### 2.4 提案契约
 
 - **预览即目标形态**：发动态的卡与发布前预览同形（正文 + 媒体网格 + 地点 + 心情），不是参数表；建相册的卡就是相册封面 + 成员缩略图网格
-- **由工具自构造**：Proposal 在工具执行内构造并落 `preview_json`，**不从 params 反推**；出卡即落库，刷新/跨设备回显直接读。`preview_json` 内部结构固定为 `{intent, summary, body | items, warnings, attachments}`（`body` 单条、`items` + `count` 批量，见「批量删除契约」）——`/chat/history` 的卡片快照（「会话与历史回显」）只从这里读出，不另存一列
+- **由工具自构造**：Proposal 在工具执行内构造并落 `preview_json`，**不从 params 反推**；出卡即落库，刷新/跨设备回显直接读。`preview_json` 内部结构固定为 `{intent, summary, preview: {kind, body}, warnings, attachments}`：外层 `intent` / `summary` / `warnings` / `attachments` 为跨类型共有字段，`preview.kind` 标明意图类型、`preview.body` 是该意图的目标形态数据（如发布动态的动态预览、删除的单条 `body` 或批量 `items` + `count`，见「批量删除契约」）——`/chat/history` 的卡片快照（「会话与历史回显」）只从这里读出，不另存一列
 - **校验前置**：参数不合格、目标不存在、超出勾选范围一律**不出卡**（不出注定失败的卡），错误直接回给模型同轮改口
 - **自包含**：`source` 句柄在出卡时就展开成具体 id 存进 `params_json`，不依赖结果集之后还在
 - **单次有效 + 超时**：确认/取消即失效；`expires_at` = 生成时间 + 卡片有效期（见 PRODUCT「卡片体系」），超时置 `expired`

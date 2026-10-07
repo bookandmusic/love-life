@@ -38,8 +38,9 @@ func (a *securityAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // put PUT /api/v1/admin/security —— 部分更新：只提交变更字段，服务端按字段合并，
-// 不得整体覆盖（ 记录该语义；契约对齐 mock routes.mjs /admin/security）。
-// 前端两个保存入口各自只发一个字段，故两字段均为可选。
+// 不得整体覆盖（契约对齐 mock routes.mjs /admin/security）。
+// 当前只有回收站保留期限一个字段，故它为可选（缺省即不改）。
+// 注：对话历史**不设保留期限**——没有 chat_retention_days，也没有按保留时长清理对话的任务。
 func (a *securityAPI) put(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		RecycleRetentionDays *int64 `json:"recycleRetentionDays"`

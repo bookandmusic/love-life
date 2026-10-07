@@ -246,6 +246,28 @@ func TestMapConfigAppAPI(t *testing.T) {
 	if got["tile_api"] != "/api/v1/map/tile" {
 		t.Errorf("tile_api = %v", got["tile_api"])
 	}
+
+	// public 源：只下发 provider/tile_api/exp/sig，**不含 URL 模板**
+	// （ARCHITECTURE「地图服务」配置管理：APP config 仅下发这三项与瓦片短时签名）
+	idPub, _ := db.CreateSource(ctx, &store.MapSource{Type: "public", URLTemplate: "https://tile.example/{z}/{x}/{y}.png"})
+	_ = db.EnableSource(ctx, idPub)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/map/config", nil)
+	w = httptest.NewRecorder()
+	api.config(w, req)
+	got = nil
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if got["provider"] != "public" {
+		t.Errorf("provider = %v, want public", got["provider"])
+	}
+	if _, has := got["url_template"]; has {
+		t.Errorf("APP 配置接口不得下发 url_template（APP 不消费，文档只允许 provider/tile_api/exp/sig）：%v", got)
+	}
+	if _, has := got["exp"]; !has {
+		t.Error("应下发瓦片签名 exp")
+	}
+	if _, has := got["sig"]; !has {
+		t.Error("应下发瓦片签名 sig")
+	}
 }
 
 // 测试瓦片代理：非法坐标拒绝

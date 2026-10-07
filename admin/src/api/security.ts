@@ -12,7 +12,7 @@ export function getSecuritySettings(): Promise<SecuritySettings> {
   return http<SecuritySettings>('/api/v1/admin/security')
 }
 
-/** 部分更新：两类保留策略各自独立保存，只提交变更字段 */
+/** 部分更新：只提交变更字段（当前仅回收站保留期限一项） */
 export function saveSecuritySettings(settings: Partial<SecuritySettings>): Promise<void> {
   return http<void>('/api/v1/admin/security', {
     method: 'PUT',

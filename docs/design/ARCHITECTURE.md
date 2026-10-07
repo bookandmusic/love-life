@@ -89,7 +89,7 @@ flowchart TB
 | 瓦片来源 | **服务端瓦片代理**：APP 统一请求 `GET /api/v1/map/tile?z=&x=&y=&exp=&sig=`，后端按配置转发；两类源——①公开 XYZ（URL 模板含 `{z}/{x}/{y}` 占位，admin 可配）；②天地图（admin 配 tk 密钥，加密存储，密钥永不下发 APP）。新增瓦片源 APP 零改动 |
 | 配置管理 | `map_sources` 多行表（type / url_template / tianditu_key 加密 / tianditu_layer / enabled，部分唯一索引保证至多一个使用中）；admin `GET/POST /api/v1/admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`（启用校验：public 需模板非空、tianditu 需已配密钥；使用中的源不可删除；不提供编辑）；APP `GET /api/v1/map/config` 仅下发使用中源的 provider、tile_api 与瓦片短时签名 exp/sig |
 | 城市判定 | **写时判定落库**：创建点位时以坐标做 point-in-polygon（`server/internal/geo` 内置地级市边界多边形，DataV.GeoAtlas 简化数据、射线法零外部依赖），未命中回退「名称·」前缀，再未命中留空（留空不进城市列表）；`GET /api/v1/map/points/cities` 按 city 分组计数，不做「城市点亮」视觉 UI |
-| 点位生成 | 双来源进同一点位池：动态携带地点时服务端自动创建/同名复用（判定键 = 地点名，坐标以先创建者为准；不做邻近合并）；手动创建（REST 与 AI 工具） |
+| 点位生成 | 三来源进同一点位池：动态携带地点时服务端自动创建/同名复用（判定键 = 地点名，坐标以先创建者为准；不做邻近合并）；手动创建（REST）；AI 工具建点（口语报点与 AI 代发带地点动态）。`source` 按发起通道取值 `post` / `manual` / `ai`，见「数据模型」MapPoint |
 | 地理编码 | `GET /api/v1/geocode?q=<地名>` 返回候选 `{name, city, lat, lng, display}`；包含匹配（`city` 仅服务端搜索匹配用，候选行不展示，用户可见口径见 PRODUCT「地图」）；无第三方 POI 依赖（mock 与真实后端同源内置同一离线表：`tools/mock/fixtures.mjs` GEOCODE_PLACES / `server/internal/geo/places.go`） |
 | 不使用 GPS | 不使用设备定位、不自动建点（选地点为手动地图点选） |
 | 转发请求头 | 两类源均设 `Accept: image/png,image/*;q=0.8,*/*;q=0.5`；public 源 UA=`love-life-server/0.1 (…; self-hosted)`（避免 OSM 按 Go 默认 UA 黑名单 403）；天地图源 UA=浏览器 UA（实测其 WAF 对非浏览器 UA 一律 418）。**Referer 统一透传入站页面真实值**：天地图浏览器端 tk 绑定域名白名单，不在白名单 418、完全无 Referer 403；缺时回退 public→项目仓库页、天地图→`https://map.tianditu.gov.cn/`（实现 `api/mapconfig.go applyUpstreamHeaders`） |
@@ -332,7 +332,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | Favorite | (post_id, user_id), created_at | 同上；首版收藏对象仅动态 |
 | Album | id, name, description?, cover_media_id?, created_by?, created_at, deleted_at, deleted_by, deleted_by_type | 需求口径见 PRODUCT「相册（独立底部 tab）」。**只有手动相册是实体**：用户建册后从时间轴选入。**月度相册不是实体、不占行**：集合视图里的按月分组由查询即时聚合（该月未归属媒体的按月计数），故本表无 `monthly` 类型、无 `month_key`、无 `is_hidden` |
 | AlbumItem | (album_id, media_id), added_by, added_at + **UNIQUE(media_id)** | 相册是媒体池之上的组织视图；UNIQUE(media_id) 承载「一文件一相册」全相册唯一约束 |
-| MapPoint | id, name, lat, lng, city?, visit_date?, description?, source(post/manual), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `city` 写时判定落库（见「地图服务」）；同名地点复用同一点位，坐标以先创建者为准；无合并链、无可见性开关 |
+| MapPoint | id, name, lat, lng, city?, visit_date?, description?, source(post/manual/ai), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `city` 写时判定落库（见「地图服务」）；同名地点复用同一点位，坐标以先创建者为准；无合并链、无可见性开关。`source` 三值的判据是**发起通道**：REST 发布动态时随地点自动建点为 `post`，REST 手动建点为 `manual`，AI 通道建点（含动态带地点与口语报点）为 `ai` |
 | MapSource | id, type(public/tianditu), url_template, tianditu_key?, tianditu_layer?, enabled, created_at | 瓦片源配置（admin 域，无用户归属）：部分唯一索引保证**至多一个使用中**；`tianditu_key` 加密存储、永不下发 APP；机制见「地图服务」 |
 | Anniversary | id, name, date, type(solar/lunar), is_leap?, remind_days_before(默认 1), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `date` 一律 `YYYY-MM-DD`，`type` 决定语义——solar=公历；lunar=农历日期（如 `1996-05-15` = 农历 1996 年五月十五）。**不存 lunar_month/lunar_day 冗余**，闰月语义由 `is_leap` 承载；倒计时/排序/下一次公历由服务端即时推算（`internal/lunar`，mock 与后端同一离线算法）；农历换算为 1900–2100 社区表驱动，不引入外部天文数据做「权威校准」，改以不变量测试与 Go/TS 双表逐项一致性护栏防漂移 |
 

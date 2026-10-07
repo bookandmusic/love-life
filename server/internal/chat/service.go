@@ -44,8 +44,6 @@ const (
 	// 附件在「确认执行」前不离开设备，服务端只收到元数据——这里防的是「一次带上几十个大文件」
 	// 这种明显不合理的批量（PRODUCT「发布动态」的整批把关在确认阶段还有一道真实校验）。
 	MaxChatMediaBytes = 8 << 20
-	// resolvedReplayCap 已裁决提案进模型上下文的上限（超出降为一行摘要，AI模式设计「上下文组装」）。
-	resolvedReplayCap = 20
 	// proposalTTL 提案有效期（秒）：单次有效 + 15 分钟过期。
 	proposalTTLSeconds = 900
 )
@@ -666,7 +664,20 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 	msgs = append(msgs, ctxMsgs...)
 	modelContent := req.Content
 	if len(req.Media) > 0 {
-		modelContent += fmt.Sprintf(" [本条消息附带 %d 个媒体附件]", len(req.Media))
+		// 只给文件名与数量（不存文件、不存 base64）：模型据此知道「这条消息发过哪些文件」，
+		// 刷新后回显也仍是同一行元信息（AI模式设计「图片处理与存储」）。
+		// 名字可能缺省（客户端未上报）——空名不拼进列表，全空时只留数量，避免出现「附件：」残句。
+		names := make([]string, 0, len(req.Media))
+		for _, m := range req.Media {
+			if n := strings.TrimSpace(m.Name); n != "" {
+				names = append(names, n)
+			}
+		}
+		suffix := ""
+		if len(names) > 0 {
+			suffix = "：" + strings.Join(names, "、")
+		}
+		modelContent += fmt.Sprintf(" [本条消息附带 %d 个媒体附件%s]", len(req.Media), suffix)
 	}
 	if quotedContext != "" {
 		modelContent += "\n" + quotedContext
@@ -1110,23 +1121,6 @@ func (s *Service) progressLabel(toolName string) string {
 	return "处理中"
 }
 
-// toolRowMedia 读工具回显行载荷（role=tool 行的 media 列）：
-// {tool, text, ui}——text 供状态条、ui 供结果卡片渲染（含 result_id，刷新后可继续勾选引用）。
-func toolRowMedia(toolName string, out *tools.ToolResult) string {
-	payload := map[string]any{"tool": toolName}
-	if out.UserText != "" {
-		payload["text"] = out.UserText
-	}
-	if out.UI != nil {
-		payload["ui"] = out.UI
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return ""
-	}
-	return string(b)
-}
-
 // invokeTool 执行一次模型工具调用。
 //   - 读工具：立即执行（ModeExecute），返回 ModelText/UserText/UI；
 //   - 提案工具：ModePropose（校验 + 自构造 Preview + 展开 source），返回 Proposal；
@@ -1390,8 +1384,6 @@ func (s *Service) recordDecision(ctx context.Context, userID int64, action *stor
 			slog.Warn("tool_result 落库失败", "action_id", action.ID, "status", status, "err", err)
 		}
 		// 模型上下文：已裁决提案往返（proposal 档，pinned——永不淘汰）。
-		// tool 结果文本 = cardOutcome 归一口径（confirmed→结果 / failed→「执行失败：原因」 /
-		// cancelled→「用户取消了…」/ expired→「确认卡片已过期…」），与模型自述一致。
 		// status 口径（executed/cancelled/failed/expired）→ 归一结果文本：
 		// executed=执行结果原文；failed=「执行失败：原因」；cancelled/expired=固定文案。
 		outcome := text
@@ -1796,32 +1788,6 @@ func (s *Service) buildModelHistory(ctx context.Context, userID, sessionID int64
 		resolvedSummary = fmt.Sprintf("更早查询过 %d 次，结果已省略", trimmedRead)
 	}
 	return msgs, resolvedSummary
-}
-
-// cardOutcome 卡片裁决状态 → 回放给模型的工具结果文案；pending（未过期）返回 ok=false。
-func cardOutcome(ca *store.ConfirmAction, result string) (string, bool) {
-	switch ca.Status {
-	case "confirmed":
-		if result != "" {
-			return result, true
-		}
-		return "操作已执行", true
-	case "failed":
-		if result != "" {
-			return "执行失败：" + result, true
-		}
-		return "执行失败", true
-	case "cancelled":
-		return "用户取消了该操作，未执行", true
-	case "expired":
-		return "确认卡片已过期，未执行", true
-	case "pending":
-		if !time.Now().Before(ca.ExpiresAt) {
-			return "确认卡片已过期，未执行", true
-		}
-		return "", false
-	}
-	return "", false
 }
 
 // validateQuoted 引用归属校验并转结构化上下文文本（自然语言 + 句柄，不给原始 id 数组）。

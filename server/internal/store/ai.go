@@ -590,12 +590,6 @@ func (d *DB) ListContext(ctx context.Context, sessionID int64) ([]ContextRow, er
 	return list, rows.Err()
 }
 
-// DeleteContextFrom 删除 seq >= from 的行（停止生成整轮回滚用）。
-func (d *DB) DeleteContextFrom(ctx context.Context, sessionID int64, fromSeq int64) error {
-	_, err := d.ExecContext(ctx, `DELETE FROM chat_context WHERE session_id = ? AND seq >= ?`, sessionID, fromSeq)
-	return err
-}
-
 // ApproxTokens token 估算：中文 ≈ 1 rune/token 量级偏保守（×1.1），英文按 4 字符/token。
 // 不追求精确——预算裁剪只需数量级正确。
 func ApproxTokens(s string) int {

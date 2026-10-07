@@ -1061,12 +1061,11 @@ const TILE_GRANT_TTL_SEC = 1800
 const TILE_SIG_SECRET = 'mock-tile-secret'
 const tileSig = (exp) => createHmac('sha256', TILE_SIG_SECRET).update(`map:tile:${exp}`).digest('hex')
 
-// APP 配置：下发「使用中」的源与瓦片短时签名（provider/tile_api/url_template? 不变，新增 exp/sig，无密钥）
+// APP 配置：下发「使用中」的源与瓦片短时签名（provider/tile_api + exp/sig，无密钥、不含 URL 模板）
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/map\/config$/, handler: () => {
   const s = mapSources.find((x) => x.enabled)
   const exp = Math.floor(Date.now() / 1000) + TILE_GRANT_TTL_SEC
   const out = { provider: s?.type ?? '', tile_api: '/api/v1/map/tile', exp, sig: tileSig(exp) }
-  if (s?.type === 'public' && s.url_template) out.url_template = s.url_template
   return ok(out)
 } })
 

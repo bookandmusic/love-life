@@ -12,8 +12,8 @@ import (
 
 // ---- 数据安全设置----
 //
-// 两项保留设置各自独立保存，PUT 为部分更新：请求体可只含本次变更字段，
-// 服务端按字段合并，不得整体覆盖（ 已记录该语义）。
+// 保留设置 PUT 为部分更新：请求体可只含本次变更字段，服务端按字段合并，不得整体覆盖。
+// 当前仅回收站保留期限一项；对话历史不设保留期限（无 chat_retention_days）。
 
 const (
 	settingRecycleRetentionDays = "recycle_retention_days"
@@ -28,7 +28,7 @@ type SecuritySettings struct {
 	RecycleRetentionDays int64
 }
 
-// GetSecuritySettings 读保留策略；未设置时回退默认值（回收站 30 天 / 对话 30）。
+// GetSecuritySettings 读保留策略；未设置时回退默认值（回收站 30 天）。
 func (d *DB) GetSecuritySettings(ctx context.Context) (*SecuritySettings, error) {
 	s := &SecuritySettings{RecycleRetentionDays: 30}
 
@@ -83,7 +83,8 @@ type recycleSource struct {
 	kind string
 }
 
-// 摘要口径对齐 mock fixtures：动态/评论取正文，照片取文件名，相册/纪念日/点位取名称。
+// 摘要口径对齐 mock fixtures：动态/评论取正文，相册/纪念日/点位取名称。
+// 照片（listed=false）不对外列出，其摘要表达式仅为 recycleSources 的完整性保留。
 var recycleSources = []recycleSource{
 	{"动态", "posts", "p", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true, "post"},
 	{"评论", "comments", "c", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true, "comment"},
@@ -149,14 +150,6 @@ type RestoreLogEntry struct {
 	Summary  string
 }
 
-// baseName 取路径末段（照片摘要按文件名展示，对齐 mock fixtures）。
-func baseName(p string) string {
-	if i := strings.LastIndexAny(p, `/\`); i >= 0 && i+1 < len(p) {
-		return p[i+1:]
-	}
-	return p
-}
-
 // ListRecycle 聚合五类已删除内容（照片不单列），按删除时间倒序。
 func (d *DB) ListRecycle(ctx context.Context) ([]*RecycleItem, error) {
 	parts := make([]string, 0, len(recycleSources))
@@ -189,9 +182,6 @@ func (d *DB) ListRecycle(ctx context.Context) ([]*RecycleItem, error) {
 		var it RecycleItem
 		if err := rows.Scan(&it.ID, &it.Type, &it.Summary, &it.DeletedAt, &it.DeletedBy); err != nil {
 			return nil, err
-		}
-		if it.Type == "照片" {
-			it.Summary = baseName(it.Summary)
 		}
 		out = append(out, &it)
 	}
@@ -254,9 +244,6 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 			if err := sumRows.Scan(&id, &sum); err != nil {
 				sumRows.Close()
 				return nil, err
-			}
-			if s.label == "照片" {
-				sum = baseName(sum)
 			}
 			summaries = append(summaries, sum)
 			restoredIDs = append(restoredIDs, id)

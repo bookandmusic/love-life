@@ -230,7 +230,7 @@ func TestModelContextFailedCardReplay(t *testing.T) {
 	if len(trips) != 1 {
 		t.Fatalf("want 1 trip: %+v", trips)
 	}
-	// 回执文本 = 真实执行错误（cardOutcome 对 failed：result 非空 → 「执行失败：<原因>」，
+	// 回执文本 = 真实执行错误（failed 且带原因 → 「执行失败：<原因>」，
 	// 裁决回执 text 即执行器错误原文），二者必含「失败」语义
 	if !strings.Contains(trips[0]["result"], "失败") {
 		t.Fatalf("failed outcome wrong: %+v", trips)
