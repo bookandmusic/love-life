@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 )
 
 type Space struct {
@@ -24,6 +25,23 @@ func (d *DB) GetSpace(ctx context.Context) (*Space, error) {
 		return nil, err
 	}
 	return &s, nil
+}
+
+// DaysTogether 在一起天数（首日算第 1 天）；未设开始日或格式非法返回 ok=false
+// （调用方留空或省略该项，不得编造「0 天」）。纯函数：开始日由调用方从**同一次**空间读取给出，
+// 避免同一次响应里「开始日」与「天数」来自两次读。口径单一来源——AI 提示词事实、欢迎语、
+// 统计概览卡、空间信息接口共用。
+// 注：开始日在未来属文档未定义的第三态（PRODUCT 只写「未设置时不显示天数」），
+// 当前不特殊处置，待需求侧定夺（拒绝写入 / 或明确写成不给数字）。
+func DaysTogether(loveStartDate string, now time.Time) (int, bool) {
+	if loveStartDate == "" {
+		return 0, false
+	}
+	start, err := time.ParseInLocation("2006-01-02", loveStartDate, time.Local)
+	if err != nil {
+		return 0, false
+	}
+	return int(now.Sub(start).Hours()/24) + 1, true
 }
 
 // UpdateSpace 情侣空间信息属配置信息，双方均可改。

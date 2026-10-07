@@ -77,6 +77,24 @@ func (d *DB) ListAnniversaries(ctx context.Context) ([]*Anniversary, error) {
 	return list, rows.Err()
 }
 
+// PickNextAnniversary 下一次纪念日（含今天），从已取出的列表里挑：无法换算日期（如农历超表尾）
+// 的条目不参与；全部无效或列表为空返回 ok=false（调用方省略该项，不得编造）。
+// 纯函数，供所有调用方复用同一套挑选口径（列表由调用方按需从 ListAnniversaries 取）。
+func PickNextAnniversary(list []*Anniversary, now time.Time) (*Anniversary, bool) {
+	var best *Anniversary
+	bestDays := 0
+	for _, a := range list {
+		d := a.DaysUntil(now) // 逐条算一次（lunar 换算有成本，不要对同一项重复算）
+		if d < 0 {
+			continue
+		}
+		if best == nil || d < bestDays {
+			best, bestDays = a, d
+		}
+	}
+	return best, best != nil
+}
+
 func (d *DB) UpdateAnniversaryReminder(ctx context.Context, id int64, daysBefore int) error {
 	res, err := d.ExecContext(ctx,
 		`UPDATE anniversaries SET remind_days_before = ? WHERE id = ? AND deleted_at IS NULL`, daysBefore, id)

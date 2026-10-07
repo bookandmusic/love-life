@@ -2312,16 +2312,25 @@ func proposePlaceTool() *Tool {
 
 // recentMonthCounts 近 12 个月动态分布（只进 ModelText，不上概览卡）。
 // 返回形如「2026-09 3 条、2026-08 5 条」；无数据返回空串。
+// 窗口跨年，故按涉及的年份各查一次：TimelinePostCounts 按「年份相等」过滤，
+// 只查当年时去年那几个月的行不会被查出来（行本身在库里，是查询把它们挡在外面）。
 func recentMonthCounts(ctx context.Context, d *Deps, now time.Time) string {
-	byMonth, err := d.DB.TimelinePostCounts(ctx, now.Format("2006"), "")
-	if err != nil {
-		return ""
+	// 起点落在本月 1 号再回退 11 个月：直接从 29~31 号回退会被 AddDate 归一化成下个月（窗口少一个月）
+	cutoff := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location()).AddDate(0, -11, 0).Format("2006-01")
+	years := []string{now.Format("2006")}
+	if prev := cutoff[:4]; prev != years[0] {
+		years = []string{prev, years[0]}
 	}
-	cutoff := now.AddDate(0, -11, 0).Format("2006-01")
 	var segs []string
-	for _, pc := range byMonth {
-		if pc.Period >= cutoff && pc.Period <= now.Format("2006-01") && pc.Count > 0 {
-			segs = append(segs, fmt.Sprintf("%s %d 条", pc.Period, pc.Count))
+	for _, y := range years {
+		byMonth, err := d.DB.TimelinePostCounts(ctx, y, "")
+		if err != nil {
+			return ""
+		}
+		for _, pc := range byMonth {
+			if pc.Period >= cutoff && pc.Period <= now.Format("2006-01") && pc.Count > 0 {
+				segs = append(segs, fmt.Sprintf("%s %d 条", pc.Period, pc.Count))
+			}
 		}
 	}
 	return strings.Join(segs, "、")
@@ -2354,9 +2363,13 @@ func getSpaceStatsTool() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			var mediaTotal, unfiled int64
-			if err := d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.post_id
-				 WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`).Scan(&mediaTotal); err != nil {
+			var mediaTotal, photoN, videoN, audioN, unfiled int64
+			if err := d.DB.QueryRowContext(ctx, `SELECT COUNT(*),
+					COUNT(CASE WHEN m.kind = 'photo' THEN 1 END),
+					COUNT(CASE WHEN m.kind = 'video' THEN 1 END),
+					COUNT(CASE WHEN m.kind = 'audio' THEN 1 END)
+				 FROM media m JOIN posts p ON p.id = m.post_id
+				 WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`).Scan(&mediaTotal, &photoN, &videoN, &audioN); err != nil {
 				return nil, err
 			}
 			if err := d.DB.QueryRowContext(ctx,
@@ -2383,8 +2396,9 @@ func getSpaceStatsTool() *Tool {
 			if err != nil {
 				return nil, err
 			}
-			var annivTotal int64
-			if err := d.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM anniversaries WHERE deleted_at IS NULL`).Scan(&annivTotal); err != nil {
+			// 纪念日：总数与「下一个」共用一次列表读取，避免同卡两次读同一张表
+			annivList, err := d.DB.ListAnniversaries(ctx)
+			if err != nil {
 				return nil, err
 			}
 			// 互动三计数只算「所属动态未软删」的行：likes/favorites 自身无 deleted_at，
@@ -2406,14 +2420,27 @@ func getSpaceStatsTool() *Tool {
 				return nil, err
 			}
 
-			stats := []UIStat{
-				{Label: "动态", Value: fmt.Sprintf("%d 条", postTotal), Hint: fmt.Sprintf("今年 %d · 本月 %d", thisYear, thisMonth)},
-				{Label: "媒体", Value: fmt.Sprintf("%d 个", mediaTotal), Hint: fmt.Sprintf("未归档 %d", unfiled)},
-				{Label: "相册", Value: fmt.Sprintf("%d 册", albumCount), Hint: fmt.Sprintf("已归档 %d 张", archived)},
-				{Label: "足迹", Value: fmt.Sprintf("%d 点", pointTotal), Hint: fmt.Sprintf("%d 城", len(cities))},
-				{Label: "纪念日", Value: fmt.Sprintf("%d 个", annivTotal)},
-				{Label: "互动", Value: fmt.Sprintf("%d 次", likeN+favN+cmtN), Hint: fmt.Sprintf("赞 %d · 藏 %d · 评 %d", likeN, favN, cmtN)},
+			// 概览卡维度：在一起天数（PRODUCT「卡片体系」数字网格首项；未设恋爱开始日则整项省略，
+			// 不给「0 天」）、媒体分类计数、纪念日「下一个」（AI模式设计「统计与计数口径」维度行）。
+			var stats []UIStat
+			if sp, err := d.DB.GetSpace(ctx); err == nil {
+				if days, ok := store.DaysTogether(sp.LoveStartDate.String, now); ok {
+					stats = append(stats, UIStat{Label: "在一起", Value: fmt.Sprintf("%d 天", days), Hint: "自 " + sp.LoveStartDate.String})
+				}
 			}
+			annivHint := ""
+			if a, ok := store.PickNextAnniversary(annivList, now); ok {
+				annivHint = fmt.Sprintf("%s · 还有 %d 天", a.Name, a.DaysUntil(now))
+			}
+			stats = append(stats,
+				UIStat{Label: "动态", Value: fmt.Sprintf("%d 条", postTotal), Hint: fmt.Sprintf("今年 %d · 本月 %d", thisYear, thisMonth)},
+				UIStat{Label: "媒体", Value: fmt.Sprintf("%d 个", mediaTotal),
+					Hint: fmt.Sprintf("照片 %d · 视频 %d · 录音 %d · 未归档 %d", photoN, videoN, audioN, unfiled)},
+				UIStat{Label: "相册", Value: fmt.Sprintf("%d 册", albumCount), Hint: fmt.Sprintf("已归档 %d 张", archived)},
+				UIStat{Label: "足迹", Value: fmt.Sprintf("%d 点", pointTotal), Hint: fmt.Sprintf("%d 城", len(cities))},
+				UIStat{Label: "纪念日", Value: fmt.Sprintf("%d 个", len(annivList)), Hint: annivHint},
+				UIStat{Label: "互动", Value: fmt.Sprintf("%d 次", likeN+favN+cmtN), Hint: fmt.Sprintf("赞 %d · 藏 %d · 评 %d", likeN, favN, cmtN)},
+			)
 
 			var series []UISeries
 			yearPoints := make([]UISeriesPoint, 0, len(byYear))
@@ -2438,10 +2465,10 @@ func getSpaceStatsTool() *Tool {
 			ui := &UIBlock{Kind: "stats", Title: "我们的空间", Stats: stats, Series: series}
 			// ModelText 只给增量数字（常驻事实四项不重复）；近 12 个月分布只进这里
 			// （卡上 series 只放按年 + 城市 Top 10，三组列表全上卡会顶满对话流）。
-			mt := fmt.Sprintf("空间概览：动态 %d 条（今年 %d，本月 %d）；媒体 %d 个（未归档 %d）；手动相册 %d 册（已归档 %d 张）；"+
+			mt := fmt.Sprintf("空间概览：动态 %d 条（今年 %d，本月 %d）；媒体 %d 个（照片 %d / 视频 %d / 录音 %d，未归档 %d）；手动相册 %d 册（已归档 %d 张）；"+
 				"足迹 %d 点、%d 城；纪念日 %d 个；互动 %d 次（赞 %d / 藏 %d / 评 %d）。",
-				postTotal, thisYear, thisMonth, mediaTotal, unfiled, albumCount, archived,
-				pointTotal, len(cities), annivTotal, likeN+favN+cmtN, likeN, favN, cmtN)
+				postTotal, thisYear, thisMonth, mediaTotal, photoN, videoN, audioN, unfiled, albumCount, archived,
+				pointTotal, len(cities), len(annivList), likeN+favN+cmtN, likeN, favN, cmtN)
 			if recent := recentMonthCounts(ctx, d, now); recent != "" {
 				mt += "近 12 个月动态分布：" + recent + "。"
 			}

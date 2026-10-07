@@ -67,22 +67,12 @@ func (a *dashboardAPI) stats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 下一个纪念日：复用 store 的 DaysUntil（已处理 lunar 换算），取最近的有效项
+	// 下一个纪念日：复用 store 的挑选口径（含 lunar 换算与「无法换算的条目不参与」）
 	nextText := "暂无"
 	if list, err := a.db.ListAnniversaries(ctx); err == nil {
 		now := time.Now()
-		best := -1
-		for i, ann := range list {
-			d := ann.DaysUntil(now)
-			if d < 0 { // 无法换算（如 lunar 超表尾）的条目不参与，与 profile 口径一致
-				continue
-			}
-			if best == -1 || d < list[best].DaysUntil(now) {
-				best = i
-			}
-		}
-		if best >= 0 {
-			nextText = "下一个: " + decStrInt(list[best].DaysUntil(now)) + "天后"
+		if ann, ok := store.PickNextAnniversary(list, now); ok {
+			nextText = "下一个: " + decStrInt(ann.DaysUntil(now)) + "天后"
 		}
 	}
 

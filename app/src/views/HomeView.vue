@@ -156,7 +156,9 @@ onActivated(() => {
             </div>
             <div class="hero-names">{{ coupleNames }}</div>
           </div>
-          <template v-if="space?.love_start_date">
+          <!-- 天数为 null（未设开始日 / 日期不可解析 / 开始日在未来）时走下面的未设定文案，
+               不渲染「null 天」——服务端给不出有意义的天数就不给数字 -->
+          <template v-if="space?.love_start_date && space?.days_together != null">
             <div class="hero-days">
               <span class="num">{{ space.days_together }}</span>
               <span class="unit">天</span>

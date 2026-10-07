@@ -249,14 +249,14 @@ func (s *Service) factCouples(ctx context.Context, userID int64) string {
 // factTogether 在一起天数；未设恋爱开始日时不给数字（与首页同口径：不编造）。
 func (s *Service) factTogether(ctx context.Context) string {
 	sp, err := s.db.GetSpace(ctx)
-	if err != nil || !sp.LoveStartDate.Valid {
+	if err != nil {
 		return ""
 	}
-	start, perr := time.ParseInLocation("2006-01-02", sp.LoveStartDate.String, time.Local)
-	if perr != nil {
+	days, ok := store.DaysTogether(sp.LoveStartDate.String, time.Now())
+	if !ok {
 		return ""
 	}
-	return fmt.Sprintf("在一起 %d 天（自 %s）", int(time.Since(start).Hours()/24)+1, sp.LoveStartDate.String)
+	return fmt.Sprintf("在一起 %d 天（自 %s）", days, sp.LoveStartDate.String)
 }
 
 // countRecentPosts 近 7 天动态数（只给计数，不列内容）。
@@ -270,19 +270,13 @@ func (s *Service) countRecentPosts(ctx context.Context) (int, error) {
 // factNextAnniversary 最近一个纪念日（含农历换算后的下次公历日）。
 func (s *Service) factNextAnniversary(ctx context.Context, now time.Time) string {
 	list, err := s.db.ListAnniversaries(ctx)
-	if err != nil || len(list) == 0 {
+	if err != nil {
 		return ""
 	}
-	best := -1
-	for i, a := range list {
-		if d := a.DaysUntil(now); d >= 0 && (best < 0 || d < list[best].DaysUntil(now)) {
-			best = i
-		}
-	}
-	if best < 0 {
+	a, ok := store.PickNextAnniversary(list, now)
+	if !ok {
 		return ""
 	}
-	a := list[best]
 	return fmt.Sprintf("下一个纪念日：%s（下次公历 %s，还有 %d 天）", a.Name, a.NextSolarDate(now), a.DaysUntil(now))
 }
 
@@ -528,9 +522,9 @@ func (s *Service) Bootstrap(w http.ResponseWriter, r *http.Request) {
 // welcomeText 空会话欢迎语：服务端模板拼装空间事实，不调模型、不落库、不占会话。
 func (s *Service) welcomeText(ctx context.Context) string {
 	days := 0
-	if sp, err := s.db.GetSpace(ctx); err == nil && sp.LoveStartDate.Valid {
-		if start, perr := time.ParseInLocation("2006-01-02", sp.LoveStartDate.String, time.Local); perr == nil {
-			days = int(time.Since(start).Hours()/24) + 1
+	if sp, err := s.db.GetSpace(ctx); err == nil {
+		if n, ok := store.DaysTogether(sp.LoveStartDate.String, time.Now()); ok {
+			days = n
 		}
 	}
 	var recent int

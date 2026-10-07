@@ -51,13 +51,11 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var daysTogether *int
-	var loveStart string
-	if space.LoveStartDate.Valid {
-		loveStart = space.LoveStartDate.String
-		if start, err := time.ParseInLocation("2006-01-02", loveStart, time.Local); err == nil {
-			d := int(time.Since(start).Hours()/24) + 1
-			daysTogether = &d
-		}
+	loveStart := space.LoveStartDate.String // 未设时为 ""（如实回显库里的值）
+	// 天数口径与 AI 提示词事实、统计卡同源；未设 / 不可解析 / 开始日在未来时不给数字，不编造 0 天
+	now := time.Now()
+	if days, ok := store.DaysTogether(loveStart, now); ok {
+		daysTogether = &days
 	}
 
 	var nextAnniversary struct {
@@ -74,22 +72,13 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 	}
 	if list, err := a.db.ListAnniversaries(r.Context()); err == nil {
 		anniversaryCount = len(list)
-		now := time.Now()
-		best := -1
-		for i, ann := range list {
-			d := ann.DaysUntil(now)
-			if d < 0 { // 无法换算（如 lunar 超表尾）的条目不参与选择，对齐 mock annivDaysUntil 的 days>=0 过滤
-				continue
-			}
-			if best == -1 || d < list[best].DaysUntil(now) {
-				best = i
-			}
-		}
-		if best >= 0 {
-			nextAnniversary.Name = list[best].Name
+		// 挑选口径与 AI 提示词事实、统计卡同源（含「无法换算的条目不参与」）；
+		// 同一 now：date 与 days_until 必须来自同一时点，否则跨零点会给出不自洽的一对
+		if ann, ok := store.PickNextAnniversary(list, now); ok {
+			nextAnniversary.Name = ann.Name
 			// lunar 回显换算后的下一次公历（mock annivNextDate 契约），solar 原样
-			nextAnniversary.Date = list[best].NextSolarDate(now)
-			nextAnniversary.DaysUntil = list[best].DaysUntil(now)
+			nextAnniversary.Date = ann.NextSolarDate(now)
+			nextAnniversary.DaysUntil = ann.DaysUntil(now)
 		}
 	}
 
