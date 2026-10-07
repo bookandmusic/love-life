@@ -849,6 +849,22 @@ func hitIDs(hits []PostHit) []int64 {
 	return ids
 }
 
+// recordIDs 取当前页展示条目的 id，用于落结果集句柄——句柄代表「这一卡上看到的这些」，
+// 与 find_posts 同口径（翻页照常落新句柄）。
+//
+// 过滤 ID == 0：离线地名候选是「建议你去建这个点」而非已存在的记录（find_places 里
+// 以 ID: 0 表示），把它放进句柄会让展开/批量删除带出一个不存在的 id：
+// 批量删除会在第 0 条上就失败（整批事务化后更会让整批回滚）。
+func recordIDs(recs []UIRecord) []int64 {
+	ids := make([]int64, 0, len(recs))
+	for _, r := range recs {
+		if r.ID > 0 {
+			ids = append(ids, r.ID)
+		}
+	}
+	return ids
+}
+
 // attachmentsFromRefs 卡阶段引用元数据 → 提案附件清单。
 func attachmentsFromRefs(args map[string]any) []AttachmentRef {
 	refs, ok := args["media_refs"].([]any)
@@ -1144,7 +1160,9 @@ func Registry() []*Tool {
 					recs = append(recs, r)
 				}
 				header := "按条件" + postsEchoKV(args)
-				ui := &UIBlock{Kind: "record_list", Title: "相册", Records: recs, Total: total, More: maxInt(0, total-len(recs))}
+				resultID := saveResultSet(ctx, "album", recordIDs(recs), nil)
+				ui := &UIBlock{Kind: "record_list", Title: "相册", Records: recs, ResultID: resultID, Selectable: true,
+					Total: total, More: maxInt(0, total-len(recs))}
 				return &ToolResult{ModelText: modelTextForPage(header, total, recs, "", off),
 					UserText: userTextFor(total, "个相册"), UI: ui}, nil
 			},
@@ -1320,7 +1338,9 @@ func Registry() []*Tool {
 					recs = append(recs, UIRecord{ID: a.ID, Kind: "anniversary", Text: text,
 						Date: a.NextSolarDate(now), Badge: fmt.Sprintf("还有 %d 天", days)})
 				}
-				ui := &UIBlock{Kind: "record_list", Title: "纪念日", Records: recs, Total: total, More: maxInt(0, total-len(recs))}
+				resultID := saveResultSet(ctx, "anniversary", recordIDs(recs), nil)
+				ui := &UIBlock{Kind: "record_list", Title: "纪念日", Records: recs, ResultID: resultID, Selectable: true,
+					Total: total, More: maxInt(0, total-len(recs))}
 				return &ToolResult{ModelText: modelTextForPage("纪念日列表，", total, recs, "", offset),
 					UserText: userTextFor(total, "个纪念日"), UI: ui}, nil
 			},
@@ -1404,8 +1424,9 @@ func Registry() []*Tool {
 						}
 					}
 				}
-				ui := &UIBlock{Kind: "place_candidates", Title: "地点", Records: recs, More: more, SinglePick: true,
-					Total: maxInt(visitedTotal, len(recs))}
+				resultID := saveResultSet(ctx, "place", recordIDs(recs), nil)
+				ui := &UIBlock{Kind: "place_candidates", Title: "地点", Records: recs, ResultID: resultID, Selectable: true,
+					More: more, SinglePick: true, Total: maxInt(visitedTotal, len(recs))}
 				mt := modelTextForList(postsEchoKV(args), visited+maxInt(0, len(recs)-visited), recs, "")
 				return &ToolResult{ModelText: mt, UserText: userTextFor(visited, "个足迹"), UI: ui}, nil
 			},
