@@ -295,8 +295,14 @@
 }
 
 /* ============ 表格 ============ */
+/* 表格包装层是**该类卡片唯一的滚动口**（两个轴同一个容器）：
+   只写 overflow-x 时，竖直方向按规范会被计算成 auto，本层即成为新的滚动参照——
+   表头 sticky 以它为准、而它自身可滚高度为 0，表头随即被裁掉。故竖直滚动由本层承担，
+   相应地 `.card-fill .card-body` 对这类卡片不再纵滚（见下方 :has 规则）。 */
 .table-wrapper {
-  overflow-x: auto;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 table {
@@ -329,7 +335,8 @@ tbody tr:hover td {
   background: var(--color-sidebar);
 }
 
-/* 表格位于滚动容器（.card-fill/.card-fixed 的 card-body）内时表头固定 */
+/* 表头在包装层的滚动口内吸顶：`.table-wrapper` 自带 overflow，
+   故参照系就是它自己（card-body 纵滚已由上面的 :has 规则让出）。 */
 .table-wrapper thead th {
   position: sticky;
   top: 0;
@@ -606,6 +613,21 @@ tbody tr:hover td {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+/* 内含表格的 card-fill：滚动口交给 `.table-wrapper`（见该规则处的说明），
+   card-body 不再纵滚——否则表头以包装层为参照、被自己的盒子裁掉。
+   限定条件有三重，**不全局改**：
+   ① 只认 `card-fill` / `card-fixed`（同页其它卡片形态不变）；
+   ② 卡里确实有表格，且表格是 card-body 的**唯一**内容（`:only-child`）——表格旁边还有
+      别的东西（如告警条、表单提示）时，把纵滚收走会把表格挤成 0 高度、内容再也够不着；
+      这类卡继续由 card-body 滚动（表格照旧不吸顶，但内容可读，优先保证可用）。
+   ③ 与 `.card-fixed .card-body` 同款声明并列，两者都是「卡内唯一滚动口」的同一个口径。 */
+.card-fill:has(> .card-body > .table-wrapper:only-child) .card-body,
+.card-fixed:has(> .card-body > .table-wrapper:only-child) .card-body {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 数据卡片：限高内部滚动（次要列表） */

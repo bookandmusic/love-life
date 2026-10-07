@@ -171,18 +171,21 @@ async function runRestore(target: RestoreTarget) {
         <AppIcon name="file-text" :size="40" />
         <div class="empty-state-title">暂无操作记录</div>
       </div>
-      <table v-else class="table-wrapper">
-        <thead>
-          <tr><th>时间</th><th>操作人</th><th>内容摘要</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="(l, i) in restoreLog" :key="i">
-            <td class="text-secondary">{{ l.time }}</td>
-            <td>{{ l.operator }}</td>
-            <td class="text-secondary">{{ l.summary }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <!-- 包装层必须是 <table> 外的一层：<table> 自身不能作滚动容器（表头 sticky 无从参照） -->
+      <div v-else class="table-wrapper">
+        <table>
+          <thead>
+            <tr><th>时间</th><th>操作人</th><th>内容摘要</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="(l, i) in restoreLog" :key="i">
+              <td class="text-secondary">{{ l.time }}</td>
+              <td>{{ l.operator }}</td>
+              <td class="text-secondary">{{ l.summary }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
     </AppCard>
 
     <ConfirmDialog

@@ -93,13 +93,19 @@ func (a *dashboardAPI) stats(w http.ResponseWriter, r *http.Request) {
 }
 
 // activity GET /api/v1/admin/dashboard/activity
-// 契约：[{icon, text, time}]，由近期事件聚合（动态/照片/评论/点赞）。
+// 契约：[{icon, text, time}]，由近期事件聚合（后台流水 / 动态/照片/评论/点赞）。
+// 「后台流水」取自 restore_logs：回收站操作日志（admin 恢复，以及清理任务写的系统永久删除），
+// 是唯一带操作者与摘要的运维流水。audit_logs 只记 ai / pat 的工具调用，属「审计日志」页的内容，
+// 不在这张卡里重复。
 // 注意 likes 无 id 列（复合主键 post_id+user_id），需用 post_id 充当排序/去重的标识位，
-// 否则整条 UNION 会因「no such column: id」失败。
+// 否则整条 UNION 会因「no such column: id」失败。另：**首支决定外层列名**（SQLite 取第一个
+// SELECT 的列名），故后台流水放在第一个分支，且各分支列顺序保持一致。
 func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 	rows, err := a.db.QueryContext(r.Context(), `
 		SELECT icon, text, time FROM (
-			SELECT 'message-square' AS icon, '发布了一条新动态' AS text, created_at AS time, id AS rid FROM posts WHERE deleted_at IS NULL
+			SELECT 'refresh-cw' AS icon, operator || ' ' || summary AS text, created_at AS time, id AS rid FROM restore_logs
+			UNION ALL
+			SELECT 'message-square', '发布了一条新动态', created_at, id FROM posts WHERE deleted_at IS NULL
 			UNION ALL
 			SELECT 'image', '上传了照片', created_at, id FROM media WHERE kind = 'photo' AND deleted_at IS NULL
 			UNION ALL

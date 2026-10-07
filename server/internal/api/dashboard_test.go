@@ -177,6 +177,11 @@ func TestDashboardActivityAllBranches(t *testing.T) {
 	if _, err := ts.db.Exec(`INSERT INTO likes (post_id, user_id) VALUES (1,1)`); err != nil {
 		t.Fatal(err)
 	}
+	// 后台操作流水：仪表盘「最近活动」要显示 admin 自己干过的事（唯一来源是回收站操作日志；
+	// audit_logs 只记 ai/pat 调用，那是「审计日志」页的内容）
+	if _, err := ts.db.Exec(`INSERT INTO restore_logs (operator, summary) VALUES ('admin','恢复了动态「x」')`); err != nil {
+		t.Fatal(err)
+	}
 
 	res := doJSON(t, "GET", ts.URL+"/api/v1/admin/dashboard/activity", adminToken, nil)
 	var acts []map[string]any
@@ -186,8 +191,8 @@ func TestDashboardActivityAllBranches(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("activity must be 200 when all event kinds exist, got %d", res.StatusCode)
 	}
-	if len(acts) != 4 {
-		t.Fatalf("expected 4 activity entries, got %d: %+v", len(acts), acts)
+	if len(acts) != 5 {
+		t.Fatalf("expected 5 activity entries, got %d: %+v", len(acts), acts)
 	}
 	icons := map[string]bool{}
 	for _, a := range acts {
@@ -196,7 +201,17 @@ func TestDashboardActivityAllBranches(t *testing.T) {
 			t.Fatalf("activity entry incomplete: %+v", a)
 		}
 	}
-	for _, want := range []string{"message-square", "image", "message-circle", "heart"} {
+	// 后台流水那条：文案是「操作者 + 空格 + 摘要」——逐字比对，顺序与分隔符错了也算失败
+	var adminOp string
+	for _, a := range acts {
+		if a["icon"] == "refresh-cw" {
+			adminOp, _ = a["text"].(string)
+		}
+	}
+	if want := "admin 恢复了动态「x」"; adminOp != want {
+		t.Fatalf("后台流水条目文案 = %q，want %q（全部：%+v）", adminOp, want, acts)
+	}
+	for _, want := range []string{"message-square", "image", "message-circle", "heart", "refresh-cw"} {
 		if !icons[want] {
 			t.Fatalf("missing activity branch %s: %+v", want, acts)
 		}
