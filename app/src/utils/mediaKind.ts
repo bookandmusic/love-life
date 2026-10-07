@@ -21,3 +21,13 @@ export function mediaExtFromUrl(url: string): string | undefined {
   const m = /[?&]ext=([A-Za-z0-9]+)/.exec(url)
   return m ? m[1].toLowerCase() : undefined
 }
+
+// 时长文本 m:ss（查看器与视频角标共用同一口径）；无有效时长返回空串（不显示角标）。
+// 先取总秒数再拆分：直接 round(秒%60) 会把 59.6 秒显示成「0:60」。
+export function mediaDurationText(d?: number): string {
+  if (!d || !isFinite(d) || d <= 0) return ''
+  const total = Math.round(d)
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return m + ':' + String(s).padStart(2, '0')
+}

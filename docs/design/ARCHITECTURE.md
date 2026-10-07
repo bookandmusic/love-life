@@ -108,6 +108,7 @@ flowchart TB
 | 缩略图 | 上传时同步生成：图片等比缩放（最长边 1080px）；视频不抽帧，使用统一播放占位图 + 时长角标——零外部依赖，保持单二进制自包含（不引入 ffmpeg） |
 | EXIF | 读取拍摄时间作为 taken_at（缺失回退上传时间），供时间轴与那年今日排序；GPS 坐标忽略；EXIF 原样保留（自部署无外泄面，签名 URL 仅短时有效） |
 | 音频时长 | 上传时解析容器头取 duration（mp3/m4a/wav 自实现，不引入 ffmpeg）；解析失败不阻塞上传、duration 留空 |
+| 视频时长 | 上传时解析容器头取 duration（mp4/mov 读 `moov/mvhd`，与 m4a 同一个 box；webm 读 `Segment/Info` 的 `Duration` × `TimecodeScale`）；**同样零 ffmpeg**，解析失败不阻塞上传、duration 留空，缩略图上的时长角标随之不显示。解析按容器的声明长度逐 box / 逐元素步进，不全文搜特征字节——媒体数据区里出现同名四字节会把随机数据读成时长 |
 | 格式与大小 | 照片 jpg/png/webp；视频 mp4/mov/webm；音频 mp3/m4a/wav；HEIC 首版不支持（上传时明确拒绝并提示）；单文件默认软限 500MB（`MEDIA_MAX_MB` 可配） |
 | 存储布局 | 数据目录内 `media/{yyyy}/{mm}/{uuid}.{ext}` 主文件 + `thumbs/` 平行缩略图 + `avatars/` 头像（见「部署形态与产物」）。**文件本体在文件系统，数据库只存相对路径** |
 | 无主文件通道 | 头像走独立通道（`SaveAvatar` 直接写 `avatars/{yyyy}/{mm}/`，路径存 `users.avatar_path`），**不进媒体表**——头像无缩略图变体、无相册归属，且是「单用户覆盖」语义，与媒体的追加式记录不同；签名命名空间与媒体隔离（`avatar:<userID>` vs `media:<id>:<variant>`）。后台维护入口见「后台管理页面实现」空间管理 |

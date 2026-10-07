@@ -129,8 +129,8 @@ function mediaOut(m) {
     url: m.url || `/api/v1/media/file/${m.id}?v=raw`,
     thumb_url: m.thumb_url || `/api/v1/media/file/${m.id}?v=thumb`,
   }
-  // 音频时长（秒）；照片/视频不带 duration 字段
-  if (m.kind === 'audio' && typeof m.duration === 'number') out.duration = m.duration
+  // 时长（秒）：音频与视频都带（视频角标用），照片不带
+  if ((m.kind === 'audio' || m.kind === 'video') && typeof m.duration === 'number') out.duration = m.duration
   return out
 }
 

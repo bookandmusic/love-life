@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { Check, Images, Music, Play } from 'lucide-vue-next'
 import { fullUrl } from '../../api/client'
 import { mediaUrl } from '../../utils/mediaUrls'
+import { mediaDurationText } from '../../utils/mediaKind'
 import { groupByMonth } from '../../utils/dates'
 import SkeletonState from '../SkeletonState.vue'
 import EmptyState from '../EmptyState.vue'
@@ -79,6 +80,8 @@ function isSelected(id: number) {
             </span>
             <span v-if="m.kind === 'video'" class="video-mark">
               <Play :size="9" fill="currentColor" />
+              <!-- 时长角标：解析不出时长时只留播放图标（ARCHITECTURE「媒体上传管线」缩略图行） -->
+              <template v-if="mediaDurationText(m.duration)">{{ mediaDurationText(m.duration) }}</template>
             </span>
             <span v-if="m.kind === 'audio'" class="audio-mark">
               <Music :size="9" stroke-width="2.5" />
@@ -127,7 +130,6 @@ function isSelected(id: number) {
   background: var(--surface);
 }
 
-.video-mark,
 .audio-mark {
   position: absolute;
   right: 5px;
@@ -140,6 +142,27 @@ function isSelected(id: number) {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 视频角标：播放图标 + 时长（无时长时只剩图标，故用 min-width 撑住圆点） */
+.video-mark {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 
 .audio-mark {

@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { AlertTriangle, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Music, Pause, Play, Trash2, Video, X } from 'lucide-vue-next'
 import { fullUrl } from '../api/client'
 import { mediaUrl, refreshMediaUrl } from '../utils/mediaUrls'
-import { mediaKindLabel } from '../utils/mediaKind'
+import { mediaDurationText, mediaKindLabel } from '../utils/mediaKind'
 import { saveMedia } from '../utils/saveMedia'
 
 export interface ViewerItem {
@@ -94,13 +94,8 @@ const hintText = computed(() => {
   if (failed.value) return '无法播放，可先「保存」到本机'
   return cur.value?.kind === 'photo' ? '单击媒体可放大 / 左右滑动切换' : '点击播放 / 左右滑动切换'
 })
-const durationText = computed(() => {
-  const d = mediaDuration.value || cur.value?.duration || 0
-  if (!d || !isFinite(d)) return ''
-  const m = Math.floor(d / 60)
-  const s = Math.round(d % 60)
-  return m + ':' + String(s).padStart(2, '0')
-})
+// 时长文本与视频角标同一口径（utils/mediaKind），不在此重复一份格式化
+const durationText = computed(() => mediaDurationText(mediaDuration.value || cur.value?.duration))
 
 // 点了才播：浏览器会拦掉带声音的自动播放，点击是用户手势，可以直接出声
 function toggleMedia() {

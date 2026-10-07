@@ -44,17 +44,31 @@ func TestWAVDuration(t *testing.T) {
 // buildM4A 构造最小 m4a（ftyp + moov/mvhd，v0）。
 func buildM4A(t *testing.T, timescale, duration uint32) []byte {
 	t.Helper()
+	return buildISOBMFF(t, "M4A ", timescale, duration)
+}
+
+// buildISOBMFF 构造最小 ISO BMFF 容器（ftyp + moov{mvhd}，v0），品牌可换（m4a / mp4 / mov）。
+// 每个 box 都带 4 字节长度头——真实容器即如此，解析按长度步进（不再全文件搜四字节）。
+func buildISOBMFF(t *testing.T, brand string, timescale, duration uint32) []byte {
+	t.Helper()
 	mvhdPayload := []byte{0}                   // version 0
 	mvhdPayload = append(mvhdPayload, 0, 0, 0) // flags
 	mvhdPayload = binary.BigEndian.AppendUint32(mvhdPayload, 0)
 	mvhdPayload = binary.BigEndian.AppendUint32(mvhdPayload, 0)
 	mvhdPayload = binary.BigEndian.AppendUint32(mvhdPayload, timescale)
 	mvhdPayload = binary.BigEndian.AppendUint32(mvhdPayload, duration)
-	mvhd := append([]byte("mvhd"), mvhdPayload...)
-	moovBody := append([]byte("moov"), mvhd...)
-	moov := append([]byte{0, 0, 0, byte(len(mvhd) + 8)}, moovBody...)
-	ftyp := append([]byte{0, 0, 0, 20}, []byte("ftypM4A isom")...)
+	mvhd := box("mvhd", mvhdPayload)
+	moov := box("moov", mvhd)
+	ftyp := box("ftyp", []byte(brand))
 	return append(ftyp, moov...)
+}
+
+// box 拼一个 ISO BMFF box：4 字节长度 + 4 字节类型 + 负载。
+func box(typ string, payload []byte) []byte {
+	out := make([]byte, 0, 8+len(payload))
+	out = binary.BigEndian.AppendUint32(out, uint32(8+len(payload)))
+	out = append(out, []byte(typ)...)
+	return append(out, payload...)
 }
 
 func TestM4ADuration(t *testing.T) {

@@ -47,28 +47,10 @@ func wavDuration(bs []byte) (float64, error) {
 	return 0, errors.New("wav 缺 fmt/data chunk")
 }
 
+// m4aDuration m4a 时长：与视频同一个 mvhd box，共用按 box 步进的解析
+// （不再全文件搜 "mvhd"——mdat 里的数据可能恰好含该四字节，会算出错误时长）。
 func m4aDuration(bs []byte) (float64, error) {
-	idx := indexOf(bs, []byte("mvhd"))
-	if idx < 0 || idx+24 > len(bs) {
-		return 0, errors.New("mvhd not found")
-	}
-	p := idx + 4
-	version := bs[p]
-	if version == 1 && idx+32 > len(bs) {
-		return 0, errors.New("mvhd truncated")
-	}
-	var timescale, duration uint64
-	if version == 1 {
-		timescale = uint64(binary.BigEndian.Uint32(bs[p+20 : p+24]))
-		duration = binary.BigEndian.Uint64(bs[p+24 : p+32])
-	} else {
-		timescale = uint64(binary.BigEndian.Uint32(bs[p+12 : p+16]))
-		duration = uint64(binary.BigEndian.Uint32(bs[p+16 : p+20]))
-	}
-	if timescale == 0 {
-		return 0, errors.New("bad timescale")
-	}
-	return float64(duration) / float64(timescale), nil
+	return mvhdDuration(bs)
 }
 
 // mp3Duration 首帧码率估算：跳过 ID3v2，找帧同步字 0xFFE。

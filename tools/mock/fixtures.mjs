@@ -93,8 +93,10 @@ function mediaRow(id, { post_id = null, kind = 'photo', taken_at, author_id = 2,
     thumb_url: `/api/v1/media/file/${id}?v=thumb`,
     url: `/api/v1/media/file/${id}?v=raw&kind=${kind}&ext=${ext}`,
   }
-  // 音频必带时长（秒）；默认给样例值，可显式覆盖
+  // 音频带时长（秒）；视频/照片只在显式给了 duration 时才带
+  // （fixtures 的视频样本是真实 webm 字节、不含 Duration 元素，编一个默认值等于给前端假数据）
   if (kind === 'audio') row.duration = duration ?? 42.5
+  if (kind === 'video' && typeof duration === 'number') row.duration = duration
   return row
 }
 export const timelineMedia = [

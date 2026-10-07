@@ -165,7 +165,7 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 // mediaItem mock timelineItemOut 契约：mediaOut + post_id/taken_at/author_id/album_id/album_name；
-// 归属字段供 APP 选图器区分「已在本相册/已归属他相册」；duration 仅音频。
+// 归属字段供 APP 选图器区分「已在本相册/已归属他相册」；duration 为音视频时长（秒），解析不出则不下发。
 type mediaItem struct {
 	ID        int64    `json:"id"`
 	Kind      string   `json:"kind"`

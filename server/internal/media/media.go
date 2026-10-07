@@ -147,6 +147,13 @@ func (p *Pipeline) SaveTemp(r io.Reader, filename string, ownerID int64) (*Uploa
 			up.Duration = d
 		}
 	}
+	if kind == "video" {
+		// 视频时长（秒）：容器头自解析（mp4/mov 的 mvhd、webm 的 Info.Duration）；
+		// 失败同样不阻塞上传（前端时长角标留空，播放占位图照常）
+		if d, err := videoDuration(rawPath, ext); err == nil && d > 0 {
+			up.Duration = d
+		}
+	}
 
 	metaBytes, _ := json.Marshal(tempMeta{Kind: kind, Width: up.Width, Height: up.Height, Size: size, Duration: up.Duration, TakenAt: up.TakenAt, OwnerID: ownerID})
 	if err := os.WriteFile(filepath.Join(tmpDir, token+".json"), metaBytes, 0o600); err != nil {

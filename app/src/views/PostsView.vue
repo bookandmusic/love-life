@@ -7,6 +7,7 @@ import AppToast from '../components/AppToast.vue'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import MediaViewer from '../components/MediaViewer.vue'
 import { mediaSrc, type Post } from '../types'
+import { mediaDurationText } from '../utils/mediaKind'
 import PageLayout from '../components/PageLayout.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import EmptyState from '../components/EmptyState.vue'
@@ -327,7 +328,10 @@ watch(() => route.query.focus, () => {
                  卡片内不再内嵌 <video>（内嵌会把点击吞掉，进不了查看器也就没有「保存」入口） -->
             <div v-if="m.kind === 'video'" class="ph video-ph" @pointerdown.stop @click="openViewer(p, mi)">
               <img :src="mediaSrc(m, 'thumb')" loading="lazy" alt="" />
-              <span class="video-mark"><Play :size="9" fill="currentColor" /></span>
+              <span class="video-mark">
+                <Play :size="9" fill="currentColor" />
+                <template v-if="mediaDurationText(m.duration)">{{ mediaDurationText(m.duration) }}</template>
+              </span>
             </div>
             <div v-else-if="m.kind === 'audio'" class="ph audio-ph" @click="openViewer(p, mi)">
               <Music :size="22" stroke-width="1.6" />
@@ -454,18 +458,25 @@ watch(() => route.query.focus, () => {
   position: relative;
   cursor: pointer;
 }
+/* 视频角标：播放图标 + 时长（与时间轴同一套视觉语言；无时长时只剩图标） */
 .video-mark {
   position: absolute;
   right: 5px;
   bottom: 5px;
-  width: 18px;
+  min-width: 18px;
   height: 18px;
-  border-radius: 50%;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 9px;
   background: rgba(0, 0, 0, 0.55);
   color: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 3px;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 /* 音频媒体格（原详情页能力，列表页补齐） */
 .audio-ph {

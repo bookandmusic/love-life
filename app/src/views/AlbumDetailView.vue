@@ -5,6 +5,7 @@ import { Images, Music, Play, Plus } from 'lucide-vue-next'
 import { api, errText, fullUrl } from '../api/client'
 import AppToast from '../components/AppToast.vue'
 import { mediaUrl } from '../utils/mediaUrls'
+import { mediaDurationText } from '../utils/mediaKind'
 import { useViewer } from '../composables/useViewer'
 import { groupByMonth } from '../utils/dates'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
@@ -35,6 +36,8 @@ interface MediaItem {
   thumb_url: string
   /** 所属动态 id（服务端随相册媒体一并下发）：用于「查看所属动态」跳转定位 */
   post_id?: number | null
+  /** 时长（秒）：视频角标用；解析不出时服务端不下发 */
+  duration?: number
 }
 
 interface TimelineItem {
@@ -42,6 +45,7 @@ interface TimelineItem {
   kind: string
   thumb_url: string
   taken_at?: string
+  duration?: number
   album_id: number | null
   album_name?: string
 }
@@ -211,6 +215,11 @@ onMounted(load)
             <video v-if="m.kind === 'video'" class="thumb" controls playsinline :poster="fullUrl(mediaUrl(m).thumb)" preload="none" @pointerdown.stop>
               <source :src="fullUrl(mediaUrl(m).raw)" />
             </video>
+            <!-- 未点播时原生控件不显示时长（preload=none 拿不到元数据），故占位图上给时长角标 -->
+            <span v-if="m.kind === 'video' && mediaDurationText(m.duration)" class="video-mark">
+              <Play :size="9" fill="currentColor" />
+              {{ mediaDurationText(m.duration) }}
+            </span>
             <div v-else-if="m.kind === 'audio'" class="thumb audio-thumb">
               <Music :size="28" stroke-width="1.6" />
               <audio controls preload="none" :src="fullUrl(mediaUrl(m).raw)" @pointerdown.stop />
@@ -275,7 +284,10 @@ onMounted(load)
                   alt=""
                   @click="isLocked(m) ? undefined : togglePick(m.id)"
                 />
-                <span v-if="m.kind === 'video'" class="video-mark"><Play :size="9" fill="currentColor" /></span>
+                <span v-if="m.kind === 'video'" class="video-mark">
+                  <Play :size="9" fill="currentColor" />
+                  <template v-if="mediaDurationText(m.duration)">{{ mediaDurationText(m.duration) }}</template>
+                </span>
                 <span v-else-if="m.kind === 'audio'" class="audio-mark"><Music :size="9" stroke-width="2.5" /></span>
                 <span v-if="isLocked(m)" class="owned-tag pick-tag">
                   {{ m.album_id === albumIdNum ? '已在本相册' : (m.album_name || '已在别的相册') }}
@@ -376,7 +388,6 @@ onMounted(load)
 .add-cell:active {
   opacity: .8;
 }
-.video-mark,
 .audio-mark {
   position: absolute;
   right: 5px;
@@ -389,6 +400,27 @@ onMounted(load)
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 视频角标：播放图标 + 时长（与时间轴同一套视觉语言） */
+.video-mark {
+  position: absolute;
+  right: 5px;
+  bottom: 5px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  box-sizing: border-box;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  font-size: 10px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
 }
 .audio-mark {
   background: rgba(90, 167, 212, 0.75);

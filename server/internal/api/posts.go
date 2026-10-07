@@ -85,6 +85,8 @@ type mediaResponse struct {
 	Height   int    `json:"height"`
 	URL      string `json:"url"`
 	ThumbURL string `json:"thumb_url"`
+	// Duration 秒（视频时长角标与音频查看器共用；解析不出则为空，客户端不显示角标）
+	Duration *float64 `json:"duration,omitempty"`
 }
 
 type postResponse struct {
@@ -116,11 +118,16 @@ func (a *postsAPI) buildPostResponse(p *store.Post, medias []*store.MediaRow, in
 		CommentCount: inter.CommentCount,
 	}
 	for _, m := range medias {
-		resp.Media = append(resp.Media, mediaResponse{
+		item := mediaResponse{
 			ID: m.ID, Kind: m.Kind, Width: m.Width, Height: m.Height,
 			URL:      a.mp.SignedURL(m.ID, "raw"),
 			ThumbURL: a.mp.SignedURL(m.ID, "thumb"),
-		})
+		}
+		if m.Duration.Valid {
+			d := m.Duration.Float64
+			item.Duration = &d
+		}
+		resp.Media = append(resp.Media, item)
 	}
 	return resp
 }

@@ -23,6 +23,8 @@ export interface TimelineItem {
   thumb_url: string
   url?: string
   taken_at: string
+  /** 时长（秒）：视频角标与音频查看器用；解析不出时服务端不下发 */
+  duration?: number
 }
 
 export interface MonthGroup {
