@@ -36,7 +36,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux := http.NewServeMux()
 	adminMux.HandleFunc("GET /api/v1/admin/users", adminAPI.listUsers)
 	adminMux.HandleFunc("POST /api/v1/admin/users/couple", adminAPI.createCouple)
-	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}", adminAPI.updateNickname)
+	adminMux.HandleFunc("PUT /api/v1/admin/users/{id}", adminAPI.updateUser)
 	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/reset-password", adminAPI.resetPassword)
 	// 头像/生日（独立通道）：admin 上传头像、设置生日
 	adminMux.HandleFunc("POST /api/v1/admin/users/{id}/avatar", adminAPI.uploadAvatar)

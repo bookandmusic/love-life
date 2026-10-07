@@ -4,7 +4,6 @@ import { auditApi } from '../api'
 import type { AuditEntry, AuditActorType } from '../api/audit'
 import AppCard from '../components/AppCard.vue'
 import AppBadge from '../components/AppBadge.vue'
-import AppIcon from '../components/AppIcon.vue'
 import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
 
@@ -34,6 +33,22 @@ const filtered = computed(() =>
 function latency(e: AuditEntry): string {
   if (e.latencyMs === null) return '—'
   return e.latencyMs >= 1000 ? (e.latencyMs / 1000).toFixed(1) + 's' : e.latencyMs + 'ms'
+}
+
+// result 是四态而非布尔：出卡待确认与用户主动取消都不是失败，报成「失败」是误报。
+// 失败值可带原因（存成 `failed: 原因`），用 title 展示。
+const RESULT_META: Record<string, { label: string; variant: 'success' | 'error' | 'warning' | 'neutral'; icon: string }> = {
+  success: { label: '成功', variant: 'success', icon: 'check-circle' },
+  failed: { label: '失败', variant: 'error', icon: 'alert-circle' },
+  pending: { label: '待确认', variant: 'warning', icon: 'alert-triangle' },
+  cancelled: { label: '已取消', variant: 'neutral', icon: 'x' },
+}
+
+const resultMeta = (raw: string) => {
+  const key = raw.split(':')[0]!.trim()
+  const meta = RESULT_META[key] ?? { label: raw || '—', variant: 'neutral' as const, icon: 'info' }
+  const reason = key === 'failed' && raw.includes(':') ? raw.slice(raw.indexOf(':') + 1).trim() : ''
+  return { ...meta, title: reason }
 }
 </script>
 
@@ -68,9 +83,9 @@ function latency(e: AuditEntry): string {
               <td class="text-secondary">{{ e.params }}</td>
               <td class="text-secondary">{{ latency(e) }}</td>
               <td>
-                <AppBadge :variant="e.result === 'success' ? 'success' : 'error'">
-                  <AppIcon :name="e.result === 'success' ? 'check-circle' : 'alert-circle'" :size="12" />
-                  {{ e.result === 'success' ? '成功' : '失败' }}
+                <!-- 失败原因（`failed: 原因`）经 attrs 透传到 badge 根节点作 title；icon 走组件自带属性 -->
+                <AppBadge :variant="resultMeta(e.result).variant" :icon="resultMeta(e.result).icon" :title="resultMeta(e.result).title">
+                  {{ resultMeta(e.result).label }}
                 </AppBadge>
               </td>
             </tr>

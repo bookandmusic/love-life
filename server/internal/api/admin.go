@@ -132,22 +132,18 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateNickname 仅允许更新昵称（用户名/角色为登录身份与数据归属，不可修改）。
-func (a *adminAPI) updateNickname(w http.ResponseWriter, r *http.Request) {
+// updateUser PUT /api/v1/admin/users/{id}：更新昵称与生日（用户名/角色为登录身份与数据归属，不可修改）。
+// 仅情侣角色可改——admin 账号只读展示、由部署环境管理（「后台管理页面实现」空间管理）。
+// birthday 省略（nil）= 不改；给空串 = 清除。
+func (a *adminAPI) updateUser(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效的用户 ID")
 		return
 	}
-	var req struct {
-		Nickname string `json:"nickname"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Nickname) == "" {
-		writeError(w, http.StatusBadRequest, "nickname 必填")
-		return
-	}
-	nickname := strings.TrimSpace(req.Nickname)
-	if err := a.db.UpdateUserNickname(r.Context(), id, nickname); err != nil {
+	// 先取用户：既做存在性判断，也把「admin 不可改」在 handler 层挡住（store 层 SQL 另有同款条件）
+	u, err := a.db.GetUserByID(r.Context(), id)
+	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
@@ -155,18 +151,85 @@ func (a *adminAPI) updateNickname(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	u, err := a.db.GetUserByID(r.Context(), id)
+	if u.Role == "admin" {
+		writeError(w, http.StatusForbidden, "管理员账号只读，由部署环境管理")
+		return
+	}
+	var req struct {
+		Nickname string  `json:"nickname"`
+		Birthday *string `json:"birthday"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadRequest)
+		return
+	}
+	if strings.TrimSpace(req.Nickname) == "" {
+		writeError(w, http.StatusBadRequest, "nickname 必填")
+		return
+	}
+	// 全校验通过后才落库：若先写昵称再验生日，「生日格式错」返回 400 时昵称已被改掉
+	bd, hasBD := "", false
+	if req.Birthday != nil {
+		bd, hasBD = strings.TrimSpace(*req.Birthday), true
+		if bd != "" {
+			if _, err := time.Parse("2006-01-02", bd); err != nil {
+				writeError(w, http.StatusBadRequest, "生日格式应为 YYYY-MM-DD")
+				return
+			}
+		}
+	}
+	if err := a.db.UpdateUserNickname(r.Context(), id, strings.TrimSpace(req.Nickname)); err != nil {
+		a.writeUserUpdateErr(w, err)
+		return
+	}
+	if hasBD {
+		if err := a.db.UpdateUserBirthday(r.Context(), id, bd); err != nil {
+			a.writeUserUpdateErr(w, err)
+			return
+		}
+	}
+	got, err := a.db.GetUserByID(r.Context(), id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"id": u.ID, "username": u.Username, "role": u.Role, "nickname": u.Nickname})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id": got.ID, "username": got.Username, "role": got.Role,
+		"nickname": got.Nickname, "birthday": got.Birthday.String,
+	})
+}
+
+// writeUserUpdateErr 用户更新写库失败的统一回写。
+// 走到 ErrNotFound 只有两种可能：目标行在本次请求期间被删（并发），或 store 的 role 条件
+// 拦下了 admin 行（正常情况下 handler 已先返回 403，这里是纵深防御）。
+// 两种都用同一条「只读 / 不可改」文案：对本接口的可达路径而言，提示「不存在」会把
+// 管理员只读误导成数据缺失；真正的并发删除在自部署单空间场景下几乎不可能出现。
+func (a *adminAPI) writeUserUpdateErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusForbidden, "管理员账号只读，由部署环境管理")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, errInternal)
 }
 
 func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "无效的用户 ID")
+		return
+	}
+	// admin 账号只读：先挡角色，再校验与写库（store 层 SQL 另有同款条件）
+	target, err := a.db.GetUserByID(r.Context(), id)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			writeError(w, http.StatusNotFound, "用户不存在")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	if target.Role == "admin" {
+		writeError(w, http.StatusForbidden, "管理员账号只读，由部署环境管理")
 		return
 	}
 	var req struct {
@@ -186,11 +249,7 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.UpdateUserPassword(r.Context(), id, hash); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "用户不存在")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		a.writeUserUpdateErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -223,6 +282,10 @@ func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusInternalServerError, errInternal)
+		return
+	}
+	if u.Role == "admin" {
+		writeError(w, http.StatusForbidden, "管理员账号只读，由部署环境管理")
 		return
 	}
 	rel, err := a.mp.SaveAvatar(file, header.Filename)
@@ -272,12 +335,9 @@ func (a *adminAPI) updateBirthday(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// 与主端点同口径：admin 行匹配不到时给「只读」而非「不存在」
 	if err := a.db.UpdateUserBirthday(r.Context(), id, req.Birthday); err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			writeError(w, http.StatusNotFound, "用户不存在")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		a.writeUserUpdateErr(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

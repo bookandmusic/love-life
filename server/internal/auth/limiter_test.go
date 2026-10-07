@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -91,5 +92,50 @@ func TestLoginLimiterUnlocksAfterWindow(t *testing.T) {
 	l.Fail(key)
 	if !l.Allowed(key) {
 		t.Fatal("解锁后计数应已清零，单次失败不应重新锁定")
+	}
+}
+
+// P2-20：令牌签发的限速 key 与登录是各自独立的命名空间。
+// 不变量：refreshLimitKey 的产物**永不等于**任何 loginLimitKey 的产物——
+// 共用命名空间会让「设备休眠后正常刷新失败累计」把该用户的密码登录一并锁死（可用性故障）。
+// 这条不变量由 key 构造保证，故直接断言构造结果（而不是重跑一遍锁逻辑）。
+func TestRefreshLimitKeyIsSeparateNamespace(t *testing.T) {
+	// 取值用例：两侧 key 在现实取值下不得相等。
+	// 注意「任意输入下都不同」并不成立（用户名与 IP 都可能含 "|"），此处只锁现实取值；
+	// 若将来放宽 username / 地址的格式校验，需重新评估（见 service.go 中 refreshLimitKey 注释）。
+	ips := []string{"10.0.0.1", "127.0.0.1", "192.168.1.23", ""}
+	users := []string{"girl", "boy", "admin", ""}
+	for _, ip := range ips {
+		rk := refreshLimitKey(ip)
+		for _, user := range users {
+			lk := loginLimitKey(user, ip)
+			if rk == lk {
+				t.Fatalf("令牌签发 key %q 与登录 key %q 相撞（两把锁会互相污染）", rk, lk)
+			}
+			// 登录 key 恒含分隔符（用户名 + IP 两段）
+			if !strings.Contains(lk, "|") {
+				t.Fatalf("登录 key %q 形态异常：应含分隔符", lk)
+			}
+		}
+	}
+	// 计划明确要求「令牌签发侧加独立前缀」作为防污染措施（两把锁各自命名空间）：
+	// 直接钉住这条契约——去掉前缀即失败。它同时是未来的护栏：若有人把用户名拼进
+	// 刷新 key（回到「用户名 + IP」形态），前缀能保证仍不与登录 key 相等。
+	if rk := refreshLimitKey("10.0.0.1"); !strings.HasPrefix(rk, "refresh:") {
+		t.Fatalf("令牌签发 key %q 应带独立前缀 refresh:（两把锁不得共用命名空间）", rk)
+	}
+
+	// 同一 IP 的刷新计数与登录计数确实互不影响
+	l := NewLoginLimiter()
+	const ip = "10.0.0.1"
+	rk, lk := refreshLimitKey(ip), loginLimitKey("girl", ip)
+	for i := 0; i < loginMaxFails; i++ {
+		l.Fail(rk)
+	}
+	if l.Allowed(rk) {
+		t.Fatal("令牌签发侧应已锁定")
+	}
+	if !l.Allowed(lk) {
+		t.Fatal("令牌签发被锁不得连带锁定密码登录")
 	}
 }

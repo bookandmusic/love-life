@@ -86,8 +86,9 @@ func (d *DB) ListUsers(ctx context.Context) ([]*User, error) {
 	return users, rows.Err()
 }
 
+// UpdateUserPassword 重置密码；仅情侣角色（admin 账号只读展示，由部署环境管理）。
 func (d *DB) UpdateUserPassword(ctx context.Context, id int64, passwordHash string) error {
-	res, err := d.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, id)
+	res, err := d.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ? AND role != 'admin'`, passwordHash, id)
 	if err != nil {
 		return err
 	}
@@ -172,9 +173,10 @@ func isUniqueConstraint(err error) bool {
 	return errors.As(err, &se) && se.Code() == sqliteUniqueConstraint
 }
 
-// UpdateUserNickname 仅昵称更新（用户名/角色为登录身份与数据归属，不可修改）。
+// UpdateUserNickname 改昵称（用户名/角色为登录身份与数据归属，不可修改）；仅情侣角色（admin 账号只读展示，由部署环境管理——
+// 「后台管理页面实现」空间管理）。SQL 里就带 role 条件，不只靠调用方把关。
 func (d *DB) UpdateUserNickname(ctx context.Context, id int64, nickname string) error {
-	res, err := d.ExecContext(ctx, `UPDATE users SET nickname = ? WHERE id = ?`, nickname, id)
+	res, err := d.ExecContext(ctx, `UPDATE users SET nickname = ? WHERE id = ? AND role != 'admin'`, nickname, id)
 	if err != nil {
 		return err
 	}
@@ -185,9 +187,9 @@ func (d *DB) UpdateUserNickname(ctx context.Context, id int64, nickname string) 
 	return nil
 }
 
-// UpdateUserAvatar 设置用户头像路径（独立通道；空串 = 清除头像）。
+// UpdateUserAvatar 设置用户头像路径（独立通道；空串 = 清除头像）；仅情侣角色（admin 只读）。
 func (d *DB) UpdateUserAvatar(ctx context.Context, id int64, avatarPath string) error {
-	res, err := d.ExecContext(ctx, `UPDATE users SET avatar_path = NULLIF(?, '') WHERE id = ?`, avatarPath, id)
+	res, err := d.ExecContext(ctx, `UPDATE users SET avatar_path = NULLIF(?, '') WHERE id = ? AND role != 'admin'`, avatarPath, id)
 	if err != nil {
 		return err
 	}
@@ -198,9 +200,9 @@ func (d *DB) UpdateUserAvatar(ctx context.Context, id int64, avatarPath string) 
 	return nil
 }
 
-// UpdateUserBirthday 设置用户生日（空串 = 清除生日）。仅后台维护，不下发 APP。
+// UpdateUserBirthday 改生日（空串 = 清除）；仅后台维护、不下发 APP，与昵称同属可编辑的情侣资料。
 func (d *DB) UpdateUserBirthday(ctx context.Context, id int64, birthday string) error {
-	res, err := d.ExecContext(ctx, `UPDATE users SET birthday = NULLIF(?, '') WHERE id = ?`, birthday, id)
+	res, err := d.ExecContext(ctx, `UPDATE users SET birthday = NULLIF(?, '') WHERE id = ? AND role != 'admin'`, birthday, id)
 	if err != nil {
 		return err
 	}

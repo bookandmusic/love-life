@@ -151,7 +151,8 @@ async function submitBirthday() {
     }
   }
   try {
-    await usersApi.updateBirthday(birthdayTarget.value.id, birthdayValue.value)
+    // 同端点提交（昵称一并带上，服务端要求 nickname 必填）
+    await usersApi.updateBirthday(birthdayTarget.value.id, birthdayTarget.value.nickname, birthdayValue.value)
     toast.success('生日已更新')
     birthdayTarget.value = null
     await loadAll()

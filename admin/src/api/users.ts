@@ -38,11 +38,14 @@ export function createCouple(payload: { girl: CoupleSidePayload; boy: CoupleSide
   })
 }
 
-// 仅允许更新昵称；用户名/角色不可修改
-export function updateUser(id: number, nickname: string): Promise<UserItem> {
+// 更新昵称与生日（同端点；用户名/角色不可修改，admin 账号服务端拒绝）。
+// birthday 省略 = 不改，空串 = 清除。
+export function updateUser(id: number, nickname: string, birthday?: string): Promise<UserItem> {
+  const body: { nickname: string; birthday?: string } = { nickname }
+  if (birthday !== undefined) body.birthday = birthday
   return http<UserItem>(`/api/v1/admin/users/${id}`, {
     method: 'PUT',
-    body: JSON.stringify({ nickname }),
+    body: JSON.stringify(body),
   })
 }
 
@@ -56,10 +59,8 @@ export function uploadAvatar(id: number, file: File): Promise<{ status: string; 
   })
 }
 
-// 生日：仅后台维护，空串清除；格式 YYYY-MM-DD
-export function updateBirthday(id: number, birthday: string): Promise<{ status: string }> {
-  return http<{ status: string }>(`/api/v1/admin/users/${id}/birthday`, {
-    method: 'PUT',
-    body: JSON.stringify({ birthday }),
-  })
+// 生日：仅后台维护，空串清除；格式 YYYY-MM-DD。
+// 走 updateUser 的同端点（服务端另有该独立端点，保留兼容，新代码不再调）。
+export function updateBirthday(id: number, nickname: string, birthday: string): Promise<UserItem> {
+  return updateUser(id, nickname, birthday)
 }
