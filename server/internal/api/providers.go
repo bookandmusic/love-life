@@ -27,6 +27,8 @@ type modelOut struct {
 	Kind        string   `json:"kind"`
 	Temperature *float64 `json:"temperature"`
 	MaxTokens   *int64   `json:"max_tokens"`
+	// Thinking 思考档位（off/low/medium/high）；off = 不注入任何思考参数。
+	Thinking string `json:"thinking"`
 }
 
 type providerOut struct {
@@ -49,7 +51,7 @@ func toModelOut(m store.ProviderModel) modelOut {
 		mt := m.MaxTokens.Int64
 		maxTok = &mt
 	}
-	return modelOut{ID: m.ModelID, Kind: m.Kind, Temperature: temp, MaxTokens: maxTok}
+	return modelOut{ID: m.ModelID, Kind: m.Kind, Temperature: temp, MaxTokens: maxTok, Thinking: m.Thinking}
 }
 
 func toProviderOut(p *store.ModelProvider) providerOut {
@@ -73,6 +75,7 @@ type modelRowOut struct {
 	ModelID     string   `json:"model_id"`
 	Temperature *float64 `json:"temperature"`
 	MaxTokens   *int64   `json:"max_tokens"`
+	Thinking    string   `json:"thinking"`
 }
 
 func toModelRowOut(e store.ChainEntry) modelRowOut {
@@ -82,6 +85,7 @@ func toModelRowOut(e store.ChainEntry) modelRowOut {
 	}
 	o.Temperature = toModelOut(e.Model).Temperature
 	o.MaxTokens = toModelOut(e.Model).MaxTokens
+	o.Thinking = e.Model.Thinking
 	return o
 }
 
@@ -122,6 +126,9 @@ type modelIn struct {
 	Kind        string `json:"kind"`
 	Temperature any    `json:"temperature"`
 	MaxTokens   any    `json:"max_tokens"`
+	// Thinking 思考档位；缺省（空串/缺失）= off。未知取值在校验处拒绝而非静默归 off，
+	// 以便配置界面写错时立刻可见。
+	Thinking string `json:"thinking"`
 }
 
 // numOrNull 归一：null/”/缺失 → ok=false（存 NULL）；数字或数字字符串 → 值。
@@ -146,6 +153,21 @@ func numOrNull(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// checkThinkingAllowed 思考档位与协议的一致性（admin 下拉的同口径服务端校验）。
+// OpenAI Chat 协议没有统一的思考参数（是否回思考由供应商自定），故该协议下不允许配置档位：
+// 只做在下拉上不够——接口可被直接调用，写进去的值最终会被 adapter 忽略，形成「配了不生效」的静默错觉。
+func checkThinkingAllowed(apiType string, models []store.ProviderModel) string {
+	if apiType != llm.APITypeOpenAIChat {
+		return ""
+	}
+	for _, m := range models {
+		if m.Thinking != store.ThinkingOff {
+			return "OpenAI Chat 协议没有统一的思考参数，思考档位只能为关"
+		}
+	}
+	return ""
 }
 
 // normalizeModels 模型条目归一与校验（文案逐字对齐 mock）。
@@ -174,6 +196,11 @@ func normalizeModels(raw []modelIn) ([]store.ProviderModel, string) {
 			}
 			entry.MaxTokens = sqlNullInt(mti)
 		}
+		thinking, ok := store.NormalizeThinking(strings.TrimSpace(m.Thinking))
+		if !ok {
+			return nil, "模型 " + id + " 的 thinking 需为 off / low / medium / high"
+		}
+		entry.Thinking = thinking
 		out = append(out, entry)
 	}
 	return out, ""
@@ -206,6 +233,10 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 	models, merr := normalizeModels(req.Models)
 	if merr != "" {
 		writeError(w, http.StatusBadRequest, merr)
+		return
+	}
+	if terr := checkThinkingAllowed(req.APIType, models); terr != "" {
+		writeError(w, http.StatusBadRequest, terr)
 		return
 	}
 	for _, m := range models {
@@ -300,6 +331,10 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, merr)
 			return
 		}
+		if terr := checkThinkingAllowed(p.APIType, norm); terr != "" {
+			writeError(w, http.StatusBadRequest, terr)
+			return
+		}
 		for _, m := range norm {
 			if m.Kind == "embedding" && p.APIType != llm.APITypeOpenAIChat {
 				writeError(w, http.StatusBadRequest, "嵌入模型只能挂 openai-chat 供应商")
@@ -372,6 +407,7 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 		ModelID     string `json:"model_id"`
 		Temperature any    `json:"temperature"`
 		MaxTokens   any    `json:"max_tokens"`
+		Thinking    string `json:"thinking"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
@@ -398,9 +434,13 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "嵌入模型只能挂 openai-chat 供应商")
 		return
 	}
-	m, merr := normalizeOne(req.Kind, strings.TrimSpace(req.ModelID), req.Temperature, req.MaxTokens)
+	m, merr := normalizeOne(req.Kind, strings.TrimSpace(req.ModelID), req.Temperature, req.MaxTokens, req.Thinking)
 	if merr != "" {
 		writeError(w, http.StatusBadRequest, merr)
+		return
+	}
+	if terr := checkThinkingAllowed(p.APIType, []store.ProviderModel{m}); terr != "" {
+		writeError(w, http.StatusBadRequest, terr)
 		return
 	}
 	m.ProviderID = p.ID
@@ -417,8 +457,8 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // normalizeOne 单条模型条目归一与校验（与 normalizeModels 同参数口径）。
-func normalizeOne(kind, id string, temp, maxTok any) (store.ProviderModel, string) {
-	m, err := normalizeModels([]modelIn{{ID: id, Kind: kind, Temperature: temp, MaxTokens: maxTok}})
+func normalizeOne(kind, id string, temp, maxTok any, thinking string) (store.ProviderModel, string) {
+	m, err := normalizeModels([]modelIn{{ID: id, Kind: kind, Temperature: temp, MaxTokens: maxTok, Thinking: thinking}})
 	if err != "" {
 		return store.ProviderModel{}, err
 	}
@@ -435,6 +475,8 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 		ModelID     *string `json:"model_id"`
 		Temperature any     `json:"temperature"`
 		MaxTokens   any     `json:"max_tokens"`
+		// Thinking 指针：nil = 未传（保留原值），空串 = 显式置 off
+		Thinking *string `json:"thinking"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
@@ -471,12 +513,28 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 			modelID = trimmed
 		}
 	}
-	m, merr := normalizeOne(cur.Kind, modelID, req.Temperature, req.MaxTokens)
+	thinking := cur.Thinking
+	if req.Thinking != nil {
+		thinking = *req.Thinking
+	}
+	m, merr := normalizeOne(cur.Kind, modelID, req.Temperature, req.MaxTokens, thinking)
 	if merr != "" {
 		writeError(w, http.StatusBadRequest, merr)
 		return
 	}
-	if err := a.db.UpdateModel(r.Context(), id, m.ModelID, m.Temperature, m.MaxTokens); err != nil {
+	// 本条目的供应商协议（链里已经带着，不用再查一次库）
+	curAPIType := ""
+	for _, e := range chain {
+		if e.Model.ID == id {
+			curAPIType = e.Provider.APIType
+			break
+		}
+	}
+	if terr := checkThinkingAllowed(curAPIType, []store.ProviderModel{m}); terr != "" {
+		writeError(w, http.StatusBadRequest, terr)
+		return
+	}
+	if err := a.db.UpdateModel(r.Context(), id, m.ModelID, m.Temperature, m.MaxTokens, m.Thinking); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "模型条目不存在")
 			return

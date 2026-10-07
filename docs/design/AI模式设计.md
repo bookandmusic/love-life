@@ -36,7 +36,7 @@
 
 | 层 | 内容 |
 |:---|:---|
-| 全局（admin） | 供应商（协议 / 地址 / Key）、**模型条目与两条链的顺序**（条目挂类型 `chat` / `embedding`，链序即重试顺序）、模型级参数（temperature / max_tokens，可空 = 调用不传，用供应商默认；Anthropic / OpenAI-Responses 的 `max_tokens` 为必填字段，未设时用协议默认 4096 / 16384）、全局 System Prompt 主干、输出风格库、工具启停。**没有「空间级」独立层**：单空间部署下空间即全局，入口与存储都只有这一份（PRODUCT「后台管理页面功能范围（admin）」） |
+| 全局（admin） | 供应商（协议 / 地址 / Key）、**模型条目与两条链的顺序**（条目挂类型 `chat` / `embedding`，链序即重试顺序）、模型级参数（temperature / max_tokens 可空 = 调用不传，用供应商默认；Anthropic / OpenAI-Responses 的 `max_tokens` 为必填字段，未设时用协议默认 4096 / 16384。另有**思考档位** `thinking` = off/low/medium/high，**默认 off = 不注入任何思考参数**（开启会产生思考 token 计费，PRODUCT「后台管理页面功能范围（admin）」）；由 adapter 按协议**与模型代际**映射到原生参数，见「模型网关」）、全局 System Prompt 主干、输出风格库、工具启停。**没有「空间级」独立层**：单空间部署下空间即全局，入口与存储都只有这一份（PRODUCT「后台管理页面功能范围（admin）」） |
 | 用户级 | 输出风格偏好（在 APP 设置页配置，仅对该用户发起的会话生效）。**无对话保留时长**：历史不自动过期 |
 
 **最终 System Prompt = 全局模板主干 + 当前生效风格提示词片段 + 工具使用约定**

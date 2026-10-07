@@ -7,7 +7,8 @@
 --   chat_sessions 表 + chat_messages.session_id 多会话归属、role 收窄 user|assistant、
 --   chat_messages.turn_id 按轮回滚（2026-09-22）；
 --   confirm_actions.preview_json 提案自构造预览落库、chat_result_sets 结果集句柄（2026-09-23）；
---   provider_models.kind + chain_order 模型按类型分链、chat_context 上下文事实源（2026-09-26）。
+--   provider_models.kind + chain_order 模型按类型分链、chat_context 上下文事实源（2026-09-26）；
+--   provider_models.thinking 按模型的思考档位（off/low/medium/high，默认 off）（2026-10-08）。
 -- 本文件一次性建出最新库：新部署空库直接应用，无历史升级路径。
 
 -- ============ 账号与配置（ARCHITECTURE「数据模型」） ============
@@ -359,6 +360,11 @@ CREATE TABLE provider_models (
     model_id    TEXT    NOT NULL,
     temperature REAL,
     max_tokens  INTEGER,
+    -- 思考档位：off（缺省，服务端不注入任何思考参数）/ low / medium / high。
+    -- 存在理由：三协议默认都不开思考（anthropic 需 thinking、gemini 需 thinkingConfig、
+    -- openai-responses 需 reasoning），开启会产生思考 token 计费，故由用户按模型决定。
+    -- 用 NOT NULL DEFAULT 'off' 而非可空：off 与「未设置」同义，避免一个语义两种表示。
+    thinking    TEXT    NOT NULL DEFAULT 'off',
     chain_order INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     UNIQUE (provider_id, kind, model_id)

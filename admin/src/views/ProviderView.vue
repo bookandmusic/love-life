@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { providersApi } from '../api'
-import type { AiProvider, ApiProtocol, ModelKind, ModelRow } from '../api/providers'
+import { THINKING_OPTIONS, type AiProvider, type ApiProtocol, type ModelKind, type ModelRow, type ThinkingLevel } from '../api/providers'
 import { API_PROTOCOLS, protocolLabel } from '../api/providers'
 import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
@@ -118,6 +118,7 @@ const mProviderId = ref<number | null>(null)
 const mModelId = ref('')
 const mTemperature = ref<number | null>(null)
 const mMaxTokens = ref<number | null>(null)
+const mThinking = ref<ThinkingLevel>('off')
 const mSaving = ref(false)
 
 const kindLabel: Record<ModelKind, string> = { chat: '对话模型链', embedding: '嵌入模型链' }
@@ -127,6 +128,12 @@ const providerOptions = computed(() =>
   providers.value
     .filter((p) => (mKind.value === 'embedding' ? p.api_type === 'openai-chat' : true))
     .filter((p) => p.has_key || editingModelId.value !== null),
+)
+
+// 所选供应商的协议：openai-chat 没有统一的思考参数（是否回思考由供应商自定），故该项置灰。
+// 服务端有同口径校验（checkThinkingAllowed）——服务端才是权威，这里只是别让人白填一遍。
+const thinkingDisabled = computed(
+  () => providers.value.find((x) => x.id === mProviderId.value)?.api_type === 'openai-chat',
 )
 
 // 获取模型列表：以所选供应商的地址与已存秘钥为准
@@ -156,6 +163,7 @@ function openModelCreate(kind: ModelKind) {
   mModelId.value = ''
   mTemperature.value = null
   mMaxTokens.value = null
+  mThinking.value = 'off'
   showModelForm.value = true
 }
 
@@ -166,6 +174,7 @@ function openModelEdit(row: ModelRow) {
   mModelId.value = row.model_id
   mTemperature.value = row.temperature
   mMaxTokens.value = row.max_tokens
+  mThinking.value = row.thinking
   showModelForm.value = true
 }
 
@@ -193,12 +202,14 @@ async function submitModelForm() {
         model_id: mModelId.value.trim(),
         temperature: temp,
         max_tokens: maxTok,
+        thinking: mThinking.value,
       })
     } else {
       chains.value = await providersApi.updateModel(editingModelId.value, {
         model_id: mModelId.value.trim(),
         temperature: temp,
         max_tokens: maxTok,
+        thinking: mThinking.value,
       })
     }
     showModelForm.value = false
@@ -411,6 +422,16 @@ async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
             <label class="form-label">Max Tokens（可选）</label>
             <input v-model.number="mMaxTokens" class="form-input" type="number" min="256" max="32768" step="256" placeholder="不传" />
           </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">思考</label>
+          <select v-model="mThinking" class="form-select" :disabled="thinkingDisabled">
+            <option v-for="o in THINKING_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+          </select>
+          <p class="form-hint">
+            <template v-if="thinkingDisabled">OpenAI Chat 协议没有统一的思考参数，是否回思考由供应商自定，故不可配置。</template>
+            <template v-else>开启后模型会先思考再作答，思考同样消耗 token（按模型计费）；关闭则由服务端不传任何思考参数。</template>
+          </p>
         </div>
         <div class="flex gap-2" style="justify-content: flex-end">
           <AppButton variant="secondary" icon="x" type="button" @click="showModelForm = false">取消</AppButton>

@@ -18,7 +18,10 @@ type ProviderModel struct {
 	ModelID     string
 	Temperature sql.NullFloat64
 	MaxTokens   sql.NullInt64
-	ChainOrder  int // 同类型内的全局链序（跨供应商，重试即按它依次走）
+	// Thinking 思考档位：off（缺省）/ low / medium / high。off 即服务端不注入任何思考参数。
+	// 存在的理由：三协议默认都不开思考，开启会产生思考 token 计费，故由用户按模型决定。
+	Thinking   string
+	ChainOrder int // 同类型内的全局链序（跨供应商，重试即按它依次走）
 }
 
 type ModelProvider struct {
@@ -58,7 +61,7 @@ func (d *DB) attachModels(ctx context.Context, providers []*ModelProvider) error
 		args[i] = p.ID
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, provider_id, kind, model_id, temperature, max_tokens, chain_order
+		`SELECT id, provider_id, kind, model_id, temperature, max_tokens, thinking, chain_order
 			FROM provider_models WHERE provider_id IN (`+strings.Join(marks, ",")+`) ORDER BY provider_id, kind, chain_order, id`,
 		args...)
 	if err != nil {
@@ -68,7 +71,7 @@ func (d *DB) attachModels(ctx context.Context, providers []*ModelProvider) error
 	byProvider := map[int64][]ProviderModel{}
 	for rows.Next() {
 		var m ProviderModel
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.Temperature, &m.MaxTokens, &m.ChainOrder); err != nil {
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.Temperature, &m.MaxTokens, &m.Thinking, &m.ChainOrder); err != nil {
 			return err
 		}
 		byProvider[m.ProviderID] = append(byProvider[m.ProviderID], m)
@@ -122,7 +125,7 @@ func (d *DB) ListModels(ctx context.Context, kind string) ([]ChainEntry, error) 
 		where += ` AND p.api_type = 'openai-chat' AND p.api_key_enc != ''`
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT pm.id, pm.provider_id, pm.kind, pm.model_id, pm.temperature, pm.max_tokens, pm.chain_order,
+		`SELECT pm.id, pm.provider_id, pm.kind, pm.model_id, pm.temperature, pm.max_tokens, pm.thinking, pm.chain_order,
 			p.id, p.api_type, p.name, p.base_url, p.api_key_enc
 		 FROM provider_models pm JOIN model_providers p ON p.id = pm.provider_id`+where+`
 		 ORDER BY pm.chain_order, pm.id`, kind)
@@ -134,7 +137,7 @@ func (d *DB) ListModels(ctx context.Context, kind string) ([]ChainEntry, error) 
 	for rows.Next() {
 		var m ProviderModel
 		p := &ModelProvider{}
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.Temperature, &m.MaxTokens, &m.ChainOrder,
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.Temperature, &m.MaxTokens, &m.Thinking, &m.ChainOrder,
 			&p.ID, &p.APIType, &p.Name, &p.BaseURL, &p.APIKeyEnc); err != nil {
 			return nil, err
 		}
@@ -191,8 +194,8 @@ func insertProviderModels(tx *sql.Tx, providerID int64, models []ProviderModel) 
 			order = 0
 		}
 		nextOrder[m.Kind] = order + 1
-		if _, err := tx.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, chain_order) VALUES (?, ?, ?, ?, ?, ?)`,
-			providerID, m.Kind, m.ModelID, temp, maxTok, order); err != nil {
+		if _, err := tx.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, thinking, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			providerID, m.Kind, m.ModelID, temp, maxTok, normalizeThinking(m.Thinking), order); err != nil {
 			return err
 		}
 	}
@@ -309,8 +312,8 @@ func (d *DB) CreateModel(ctx context.Context, m *ProviderModel) (int64, error) {
 		maxTok = m.MaxTokens.Int64
 	}
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, chain_order) VALUES (?, ?, ?, ?, ?, ?)`,
-		m.ProviderID, m.Kind, m.ModelID, temp, maxTok, order)
+		`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, thinking, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		m.ProviderID, m.Kind, m.ModelID, temp, maxTok, normalizeThinking(m.Thinking), order)
 	if err != nil {
 		return 0, err
 	}
@@ -318,10 +321,10 @@ func (d *DB) CreateModel(ctx context.Context, m *ProviderModel) (int64, error) {
 }
 
 // UpdateModel 更新模型条目（模型名与参数；kind 不可改——换链删了重加）。
-func (d *DB) UpdateModel(ctx context.Context, id int64, modelID string, temperature sql.NullFloat64, maxTokens sql.NullInt64) error {
+func (d *DB) UpdateModel(ctx context.Context, id int64, modelID string, temperature sql.NullFloat64, maxTokens sql.NullInt64, thinking string) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE provider_models SET model_id = ?, temperature = ?, max_tokens = ? WHERE id = ?`,
-		modelID, temperature, maxTokens, id)
+		`UPDATE provider_models SET model_id = ?, temperature = ?, max_tokens = ?, thinking = ? WHERE id = ?`,
+		modelID, temperature, maxTokens, normalizeThinking(thinking), id)
 	if err != nil {
 		return err
 	}
@@ -353,4 +356,35 @@ func (d *DB) DeleteProvider(ctx context.Context, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// 思考档位取值（与 provider_models.thinking 的注释、admin 下拉一致）。
+const (
+	ThinkingOff    = "off"
+	ThinkingLow    = "low"
+	ThinkingMedium = "medium"
+	ThinkingHigh   = "high"
+)
+
+// NormalizeThinking 归一思考档位：空串（客户端未传）→ off 且合法；已知档位 → 原值且合法；
+// 其它取值 → off 且 ok=false（调用方据此拒绝，而不是把错值静默改成 off）。
+//
+// 空串必须落 off：update 路径的部分更新会传空串进来，若不归一，库里就出现空串这第三种表示，
+// 与「off 是 off 的唯一表示」自相矛盾（列上还有 DEFAULT 'off'）。
+// 取值面只在**这里**列一遍，API 侧调本函数而不是自己再 switch 一次。
+func NormalizeThinking(v string) (string, bool) {
+	switch v {
+	case "", ThinkingOff:
+		return ThinkingOff, true
+	case ThinkingLow, ThinkingMedium, ThinkingHigh:
+		return v, true
+	default:
+		return ThinkingOff, false
+	}
+}
+
+// normalizeThinking 写入侧兜底：未知取值一律落 off（调用方已负责拒绝非法值，此处只防脏值入库）。
+func normalizeThinking(v string) string {
+	n, _ := NormalizeThinking(v)
+	return n
 }

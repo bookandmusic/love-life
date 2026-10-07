@@ -25,12 +25,28 @@ export function protocolLabel(type: ApiProtocol): string {
 
 export type ModelKind = 'chat' | 'embedding'
 
+/**
+ * 思考档位（按模型，缺省 off）。
+ * off = 服务端不注入任何思考参数；开启会产生**思考 token 计费**，故由使用者按模型决定。
+ * 各协议映射到原生参数（anthropic thinking / gemini thinkingConfig / responses reasoning）。
+ */
+export const THINKING_OPTIONS = [
+  { value: 'off', label: '关' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+] as const
+
+/** 取值即 THINKING_OPTIONS 的 value，避免档位在两个地方各写一遍（加档只改上面那一处）。 */
+export type ThinkingLevel = (typeof THINKING_OPTIONS)[number]['value']
+
 export interface ModelEntry {
   id: string
   kind: ModelKind
   /** null = 未设置，调用该模型时不传此参数（用供应商默认值） */
   temperature: number | null
   max_tokens: number | null
+  thinking: ThinkingLevel
 }
 
 export interface AiProvider {
@@ -59,6 +75,7 @@ export interface ModelRow {
   model_id: string
   temperature: number | null
   max_tokens: number | null
+  thinking: ThinkingLevel
 }
 
 export type ModelChains = { chat: ModelRow[]; embedding: ModelRow[] }
@@ -73,13 +90,19 @@ export function createModel(payload: {
   model_id: string
   temperature?: number | null
   max_tokens?: number | null
+  thinking?: ThinkingLevel
 }): Promise<ModelChains> {
   return http<ModelChains>('/api/v1/admin/models', { method: 'POST', body: JSON.stringify(payload) })
 }
 
 export function updateModel(
   id: number,
-  payload: { model_id?: string; temperature?: number | null; max_tokens?: number | null },
+  payload: {
+    model_id?: string
+    temperature?: number | null
+    max_tokens?: number | null
+    thinking?: ThinkingLevel
+  },
 ): Promise<ModelChains> {
   return http<ModelChains>(`/api/v1/admin/models/${id}`, { method: 'PUT', body: JSON.stringify(payload) })
 }

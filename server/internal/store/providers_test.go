@@ -157,3 +157,23 @@ func TestReorderModels(t *testing.T) {
 		}
 	}
 }
+
+// 思考档位的写入侧归一：update 路径传空串（客户端「未传」的落值）必须落成 off，
+// 不允许库里出现 ” 这第三种表示（列默认值是 'off'，两者必须一致）。
+func TestNormalizeThinkingFallsBackToOff(t *testing.T) {
+	cases := map[string]string{
+		"":         ThinkingOff, // 未传 / 空串
+		"off":      ThinkingOff,
+		"low":      ThinkingLow,
+		"medium":   ThinkingMedium,
+		"high":     ThinkingHigh,
+		"HIGH":     ThinkingOff, // 大小写不宽容：取值面收敛，避免同一档两种写法
+		"ultra":    ThinkingOff, // 非法值在 API 层已拒；到此处一律兜 off，绝不写脏值
+		" minimal": ThinkingOff,
+	}
+	for in, want := range cases {
+		if got := normalizeThinking(in); got != want {
+			t.Errorf("normalizeThinking(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
