@@ -153,6 +153,29 @@ func TestInteractionsAndNotifications(t *testing.T) {
 	if detail.CommentCount != 0 {
 		t.Fatalf("comment_count after delete: %d", detail.CommentCount)
 	}
+
+	// 列表必须带 author_id：APP 据此判断「是否对方发布」，删对方评论才补「对方会收到通知。」
+	// （缺该字段时 c.author_id 恒为 undefined，提示永不出现——客户端设计「删除交互统一规范」）
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]string{"content": "带 author_id 的评论"})
+	res.Body.Close()
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/posts/1/comments", adminToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&listed)
+	res.Body.Close()
+	if len(listed.Items) != 1 {
+		t.Fatalf("评论列表应 1 条，实得 %d", len(listed.Items))
+	}
+	var girlID int64
+	_ = ts.db.QueryRow(`SELECT id FROM users WHERE username = 'girl'`).Scan(&girlID)
+	gotAuthor, ok := listed.Items[0]["author_id"]
+	if !ok {
+		t.Fatalf("评论列表缺 author_id：%+v", listed.Items[0])
+	}
+	if int64(gotAuthor.(float64)) != girlID {
+		t.Fatalf("author_id = %v，want %d", gotAuthor, girlID)
+	}
 }
 
 // TestInteractionNotifyD6 口径：任何一方动作（含自操作）都通知另一方；

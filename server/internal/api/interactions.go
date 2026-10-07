@@ -150,14 +150,20 @@ func (a *interactionsAPI) listComments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type item struct {
-		ID        int64  `json:"id"`
-		Author    string `json:"author"`
+		ID     int64  `json:"id"`
+		Author string `json:"author"`
+		// AuthorID 供 APP 判断「是否对方发布」：删对方评论时补「对方会收到一条通知。」
+		// （客户端设计「删除交互统一规范」：删对方内容才提示，自删静默）
+		AuthorID  int64  `json:"author_id"`
 		Content   string `json:"content"`
 		CreatedAt string `json:"created_at"`
 	}
 	items := make([]item, 0, len(comments))
 	for _, c := range comments {
-		items = append(items, item{ID: c.ID, Author: c.AuthorNickname.String, Content: c.Content, CreatedAt: c.CreatedAt})
+		items = append(items, item{
+			ID: c.ID, Author: c.AuthorNickname.String, AuthorID: c.AuthorID,
+			Content: c.Content, CreatedAt: c.CreatedAt,
+		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }

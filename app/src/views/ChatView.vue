@@ -690,6 +690,12 @@ async function send(text?: string) {
           const cardBubble = pushBubble({ role: 'assistant', content: '', localMedia: sentFiles.length ? sentFiles : undefined })
           cardBubble.cardID = id
           thinking.value = false
+        } else if (ev === 'answer.end') {
+          // 「回答结束」与「整轮结束」是两个语义：预算收尾时 answer.end 先于 turn.end 到达，
+          // 之后不再有正文增量。此处只收掉本段回答的进行态（思考指示 + 思考区折叠），
+          // **不**结束整轮、不置 streamEnded——连接仍开着，后续事件（如 turn.end）照常处理。
+          thinking.value = false
+          collapseThink()
         } else if (ev === 'turn.end') {
           streamEnded = true
         } else if (ev === 'error') {

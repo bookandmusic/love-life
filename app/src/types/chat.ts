@@ -60,8 +60,6 @@ export interface UIBlock {
   result_id?: string
   selectable?: boolean
   single_pick?: boolean
-  query?: string // 本卡的查询条件（「再看几条」按同条件推进偏移量）
-  offset?: number // 本卡已展示到的偏移量（服务端回显）
   stats?: UIStat[] // 统计概览卡：数字网格
   series?: UISeries[] // 统计概览卡：分布列表（按年 + 城市 Top 10）
 }

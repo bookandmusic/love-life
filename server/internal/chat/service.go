@@ -728,8 +728,12 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 	toolCallsUsed := 0
 	budgetHit := false
 	for round := 0; round < maxToolRounds; round++ {
+		// 预算三维任一触顶即**跳出主循环**，直接进收尾（AI模式设计「预算与并行」预算三维 +
+		// 「收尾义务」）：此处 break 掉的是本轮**带工具**的 chatCallStream，不再多花一次调用；
+		// 跳出后循环末尾的不带工具收尾调用照常发（那是文档要求的「必须再补一次」）。
 		if time.Now().After(deadline) || toolCallsUsed >= maxToolCalls {
 			budgetHit = true
+			break
 		}
 		// 真流式：思考链与正文逐字下发（AI模式设计「时序与事件」）；回答一开始即折叠的
 		// 语义由客户端处理，服务端只保证 delta 真增量。
@@ -1305,6 +1309,16 @@ func (s *Service) ResolveProposal(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"未知工具"}`, http.StatusInternalServerError)
 		return
 	}
+	// 入参把关**必须在原子认领之前**：认领是消耗性的（pending→confirmed 单次有效），
+	// 若先认领再发现入参不合法，卡片就被吃掉却从未执行——历史回显按 confirmed→executed
+	// 归一，会显示成「已执行」，属 AI模式设计「提案契约」明确排除的形态
+	// （原子认领 → 事务执行 → 回写结果；失败置 failed 并记原因）。
+	if len(req.MediaTokens) > MaxChatMedia {
+		// 单条动态媒体数上限与发布页同口径（PRODUCT「发布动态」：媒体单条最多 9 个）。
+		// 正常链路受 MaxChatMedia 间接约束（发消息时校验元数据数量），但本接口可被直接调用。
+		http.Error(w, fmt.Sprintf(`{"error":"单条动态最多 %d 个媒体文件"}`, MaxChatMedia), http.StatusBadRequest)
+		return
+	}
 	// 原子认领：单次有效 + 未过期（并发双确认只有一个能赢）
 	if err := s.db.ResolveConfirmAction(r.Context(), id, "confirmed"); err != nil {
 		if errors.Is(err, store.ErrConfirmExpired) {
@@ -1660,7 +1674,7 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 					status = "expired" // 过期前置裁决：回显即只读「已过期」
 				}
 				card = &proposalSnapshot{
-					ActionID: ca.ID, Intent: ca.ToolName, Summary: p.Summary, Preview: p.Preview,
+					ActionID: ca.ID, Intent: p.Intent, Summary: p.Summary, Preview: p.Preview,
 					Warnings: p.Warnings, Attachments: p.Attachments,
 					Status: status, ExpiresIn: expiresIn, Result: results[cardID],
 				}
