@@ -25,7 +25,9 @@ type DeletedNotice struct {
 	EventType   string // post_deleted / comment_deleted / album_deleted / anniversary_deleted / map_point_deleted
 	TargetType  string // post / comment / album / anniversary / map_point
 	TargetID    int64
-	Extra       map[string]any // 快照附加字段（title / content / name…）；deleted_by 由本方法写入
+	// ViaAI AI 代操作：快照写 via:"ai"（接收端据此判别来源，ARCHITECTURE「通知分发器」快照字段读法）
+	ViaAI bool
+	Extra map[string]any // 快照附加字段（title / content / name…）；deleted_by / via 由本方法写入
 }
 
 // NotifyContentDeleted 删除对方内容时发站内通知；自删静默。
@@ -34,11 +36,14 @@ func (d *DB) NotifyContentDeleted(ctx context.Context, n DeletedNotice) error {
 	if n.CreatorID == 0 || n.CreatorID == n.DeleterID {
 		return nil
 	}
-	snap := make(map[string]any, len(n.Extra)+1)
+	snap := make(map[string]any, len(n.Extra)+2)
 	for k, v := range n.Extra {
 		snap[k] = v
 	}
 	snap["deleted_by"] = n.DeleterName
+	if n.ViaAI {
+		snap["via"] = "ai"
+	}
 	b, err := json.Marshal(snap)
 	if err != nil {
 		return err

@@ -21,6 +21,7 @@ type webhookReceiver struct {
 	body   string
 	query  string
 	hits   int
+	bodies []string // 全部请求体，便于断言「不该推的没推」
 }
 
 func newWebhookReceiver(t *testing.T) *webhookReceiver {
@@ -32,6 +33,7 @@ func newWebhookReceiver(t *testing.T) *webhookReceiver {
 		rc.query = r.URL.RawQuery
 		b, _ := io.ReadAll(r.Body)
 		rc.body = string(b)
+		rc.bodies = append(rc.bodies, rc.body)
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(rc.server.Close)
@@ -243,11 +245,13 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	if rc.hits != 2 || !strings.Contains(rc.body, "在一起纪念日") {
 		t.Fatalf("anniversary push: hits=%d body=%s", rc.hits, rc.body)
 	}
-	// 双方各收到 1 条站内提醒
-	var count int
+	// 站内提醒只发非 admin 用户：admin 不在情侣里、且不走 APP（投给它永远无人读）
+	var count, adminCount int
 	_ = ts.db.QueryRow(`SELECT COUNT(*) FROM notifications WHERE event_type='anniversary_reminder'`).Scan(&count)
-	if count != 2 {
-		t.Fatalf("anniversary in-app notifications: %d", count)
+	_ = ts.db.QueryRow(`SELECT COUNT(*) FROM notifications n JOIN users u ON u.id = n.recipient_id
+		WHERE n.event_type='anniversary_reminder' AND u.role='admin'`).Scan(&adminCount)
+	if count != 1 || adminCount != 0 {
+		t.Fatalf("anniversary in-app notifications: 共 %d 条、其中 admin %d 条（want 1/0）", count, adminCount)
 	}
 
 	// 列表带倒计时；调整提醒天数；软删除

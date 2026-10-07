@@ -73,11 +73,11 @@ flowchart TB
 | 决策项 | 方案 |
 |:---|:---|
 | 事件源 | 业务写入瞬间（动态/评论/点赞/收藏/足迹/相册）+ 删除对方发布内容时（仅站内）+ 纪念日提醒检查（每小时，按「当日已发」幂等，故不会重复）。触发口径同 PRODUCT「通知中心」：足迹仅**手动建点 / AI 口语报点**产生（动态带地点自动生成的点位不另发，该次发布已有 `post_created`）；相册由用户**手动建册**产生（AI 代建同；月度分组不产生事件），只通知对方（自建静默）。**按月分组不是事件源**：它是查询视图，不生成、不通知 |
-| 事件类型 | 站内 **12** 类：`post_created` / `post_liked` / `post_commented` / `post_favorited` / `map_point_created` / `anniversary_reminder` / `album_created` / `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`。**无 `media_deleted`**：媒体不独立删除（删动态即删其媒体），删除语义由 `post_deleted` 表达（PRODUCT「相册（独立底部 tab）」）。产品侧触发口径见 PRODUCT「通知中心」 |
+| 事件类型 | 站内 **12** 类：`post_created` / `post_liked` / `post_commented` / `post_favorited` / `map_point_created` / `anniversary_reminder` / `album_created` / `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`。**无 `media_deleted`**：媒体不独立删除（删动态即删其媒体），删除语义由 `post_deleted` 表达（PRODUCT「相册（独立底部 tab）」）。产品侧触发口径见 PRODUCT「通知中心」。**动态带地点自动生成的点位不发 `map_point_created`**：那一点位是发布动作的副产品，该次发布已有 `post_created` |
 | 站内通知 | 写入通知表，APP 打开时同步显示红点；通知中心列表始终全量收录，不设站内通知开关 |
 | 外部渠道 | 空间级（admin 配置）的**通用 API Webhook**：请求方式 / 服务地址 / 请求头 / 请求体模板（`{{title}}`、`{{content}}`、`{{time}}`、`{{type}}` 占位符）；每渠道按事件订阅过滤（**7 类**：纪念日/新动态/评论/点赞/收藏/足迹/相册上新——相册均指**用户手动建册**，月度分组不产生事件）；内容删除 5 类**仅站内不进外部推送**；Bark / Server酱 / Qmsg / 企业微信为预设模板 |
 | 快照字段读法 | `operator` 恒为真实发起人用户名；`via:"ai"` **仅在 AI 代操作时出现**，缺省即发起人本人操作（REST 直连与站内自操作均不带）——接收端据此判别来源；推送正文以「（AI）」后缀区分 |
-| 操作者口径 | 外部推送与站内**同一触发条件**：站内通知的收件人恒为对方（操作者本人不收，即「自建静默」自动成立），外部推送随之在同样条件下触发；渠道为空间级，推送内容带操作者用户名，「是不是自己的动作」由接收端过滤 |
+| 操作者口径 | 外部推送与站内**同一触发条件**：站内通知的收件人恒为对方（操作者本人不收，即「自建静默」自动成立），外部推送随之在同样条件下触发；渠道为空间级，推送内容带操作者用户名，「是不是自己的动作」由接收端过滤。**无操作者的事件**（定时任务发的纪念日提醒）不适用「本人不收」，收件人为**情侣双方**（全部非 admin 用户）——admin 不在情侣里、且登录 APP 即 403（「统一登录与认证」），投给它永远无人读 |
 | 设计动机 | 规避 Android 后台存活限制（国产 ROM 杀后台）；服务端常驻进程无此问题，实时性优于一切端上方案 |
 | 边界 | 通知通道仅两条：站内红点 + 外部 Webhook。不做 APP 本地定时通知（需精确闹钟权限、杀进程后不可靠） |
 | 出站依赖 | 出站第三方依赖仅限三类：模型 API、通知 Webhook、**地图瓦片**（服务端代理转发至公开 XYZ / 天地图上游，地址可配，见「地图服务」）；逆地理用本地离线数据；核心数据全部留在自部署服务器 |

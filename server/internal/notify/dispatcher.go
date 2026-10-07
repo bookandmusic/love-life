@@ -143,13 +143,12 @@ func (d *Dispatcher) CheckAnniversaries(ctx context.Context, now time.Time) {
 		slog.Warn("list anniversaries failed", "err", err)
 		return
 	}
-	users, err := d.db.ListUsers(ctx)
+	// 收件人 = 情侣双方（全部非 admin 用户）：纪念日提醒由定时任务产生、没有操作者，
+	// 不适用「操作者本人不收」，双方都要收；admin 不在情侣里且不走 APP（投给它永远无人读）。
+	recipients, err := d.db.ListCoupleIDs(ctx)
 	if err != nil {
+		slog.Warn("list couple ids failed", "err", err)
 		return
-	}
-	var recipients []int64
-	for _, u := range users {
-		recipients = append(recipients, u.ID)
 	}
 	for _, a := range list {
 		days := a.DaysUntil(now)

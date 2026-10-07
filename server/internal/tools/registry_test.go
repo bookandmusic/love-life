@@ -508,12 +508,58 @@ func TestProposeDelete(t *testing.T) {
 	if n != 3 {
 		t.Fatalf("批量删除通知累计 = %d, want 3", n)
 	}
+	// 删除类通知由 AI 代操作产生 → 快照须带 via:"ai"（接收端据此判别来源）
+	var delSnap string
+	_ = db.QueryRow(`SELECT snapshot_json FROM notifications WHERE event_type='post_deleted' ORDER BY id DESC LIMIT 1`).Scan(&delSnap)
+	if !strings.Contains(delSnap, `"via":"ai"`) {
+		t.Fatalf("删除快照应带 via=ai：%s", delSnap)
+	}
 	// 不存在 → 前置报错（不出注定失败的卡）
 	if _, err := findTool(t, "propose_delete").Invoke(ctx, d, 1, map[string]any{"kind": "post", "id": float64(999999)}, ModePropose); err == nil {
 		t.Fatal("不存在的动态应报错")
 	}
 	if _, err := findTool(t, "propose_delete").Invoke(ctx, d, 1, map[string]any{"kind": "bogus", "id": float64(1)}, ModePropose); err == nil {
 		t.Fatal("非法 kind 应报错")
+	}
+}
+
+// P2-11：五类软删通知的快照都要带 via:"ai"（AI 代删），不只动态那一类。
+func TestDeleteNoticesAllCarryAIMark(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: notify.New(db)}
+	ctx := t.Context()
+	hash, _ := auth.HashPassword("pw")
+	if _, err := db.CreateUser(ctx, &store.User{Username: "boy", PasswordHash: hash, Role: "boy"}); err != nil {
+		t.Fatal(err)
+	}
+	// 内容都由用户 1 创建，由 AI（发起人 user 2）删除 → 通知回创建者
+	postID := seedPostAt(t, db, "要被 AI 删的动态", "2026-08-10 10:00:00")
+	cmtID := seedRow(t, db, `INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '一条评论')`, postID)
+	albumID := seedRow(t, db, `INSERT INTO albums (name, created_by) VALUES ('旅行', 1)`)
+	annivID := seedRow(t, db, `INSERT INTO anniversaries (name, date, type, is_leap, remind_days_before, created_by)
+		VALUES ('她的生日', '1996-05-15', 'solar', 0, 3, 1)`)
+	pointID := seedRow(t, db, `INSERT INTO map_points (name, lat, lng, city, source, created_by)
+		VALUES ('西湖', 30.2467, 120.4599, '杭州', 'manual', 1)`)
+
+	for _, tc := range []struct {
+		kind  string
+		id    int64
+		event string
+	}{
+		{"post", postID, "post_deleted"},
+		{"comment", cmtID, "comment_deleted"},
+		{"album", albumID, "album_deleted"},
+		{"anniversary", annivID, "anniversary_deleted"},
+		{"place", pointID, "map_point_deleted"},
+	} {
+		exec(t, "propose_delete", d, 2, map[string]any{"kind": tc.kind, "id": float64(tc.id)})
+		var snap string
+		if err := db.QueryRow(`SELECT snapshot_json FROM notifications WHERE event_type = ? ORDER BY id DESC LIMIT 1`, tc.event).Scan(&snap); err != nil {
+			t.Fatalf("%s：未取到通知：%v", tc.kind, err)
+		}
+		if !strings.Contains(snap, `"via":"ai"`) {
+			t.Fatalf("%s 删除快照应带 via=ai：%s", tc.kind, snap)
+		}
 	}
 }
 
@@ -660,3 +706,17 @@ func newTestPipeline(t *testing.T) *media.Pipeline {
 }
 
 var _ = time.Now
+
+// seedRow 插一行并返回自增 id（测试造数据用）。
+func seedRow(t *testing.T, db *store.DB, query string, args ...any) int64 {
+	t.Helper()
+	res, err := db.Exec(query, args...)
+	if err != nil {
+		t.Fatalf("seed %q: %v", query, err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("last insert id: %v", err)
+	}
+	return id
+}

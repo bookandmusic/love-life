@@ -1833,17 +1833,13 @@ func proposePostTool() *Tool {
 				if place != "" {
 					post.LocationName = store.NullStr(place)
 					if p, ok := resolvePlace(place); ok {
-						pt, created, perr := d.DB.FindOrCreatePoint(ctx, store.PointInput{
+						// 动态带地点自动生成的点位不另发通知：该次发布已有 post_created
+						// （ARCHITECTURE「通知分发器」事件源：足迹事件仅手动建点 / AI 口语报点产生）
+						pt, _, perr := d.DB.FindOrCreatePoint(ctx, store.PointInput{
 							Name: p.Display, Lat: p.Lat, Lng: p.Lng, Source: "ai", UserID: userID,
 						})
 						if perr == nil && pt != nil {
 							post.PointID = sql.NullInt64{Int64: pt.ID, Valid: true}
-							if created {
-								op := d.aiOperatorName(ctx, userID)
-								snapshot, _ := json.Marshal(map[string]any{"name": pt.Name, "latitude": pt.Lat, "longitude": pt.Lng, "operator": op, "via": "ai"})
-								d.notifyPartners(ctx, userID, "map_point_created", "map_point", pt.ID, string(snapshot),
-									"足迹更新", op+"（AI）把「"+pt.Name+"」记到了地图上")
-							}
 						}
 					}
 				}
@@ -1854,8 +1850,14 @@ func proposePostTool() *Tool {
 					}
 					return nil, err
 				}
-				snapshot, _ := json.Marshal(map[string]any{"content": content, "operator": d.aiOperatorName(ctx, userID), "via": "ai"})
-				d.notifyPartners(ctx, userID, "post_created", "post", postID, string(snapshot), "新动态", content)
+				op := d.aiOperatorName(ctx, userID)
+				snapshot, _ := json.Marshal(map[string]any{"content": content, "operator": op, "via": "ai"})
+				// 推送正文带操作者与「（AI）」标记，接收端据此判别来源
+				body := op + "（AI）发布了新动态"
+				if t := textutil.TruncMark(content, 100); t != "" {
+					body += "：" + t
+				}
+				d.notifyPartners(ctx, userID, "post_created", "post", postID, string(snapshot), "新动态", body)
 				return &ToolResult{
 					ModelText: fmt.Sprintf("动态 #%d 已发布。", postID),
 					UserText:  fmt.Sprintf("动态 #%d 已发布", postID),
@@ -1937,9 +1939,9 @@ func proposeCommentTool() *Tool {
 				if err != nil {
 					return nil, err
 				}
-				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username})
+				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username, "via": "ai"})
 				d.notifyPartners(ctx, userID, "post_commented", "post", postID, string(snapshot),
-					"收到评论", operator.Username+"："+textutil.Trunc(content, 50))
+					"收到评论", operator.Username+"（AI）："+textutil.Trunc(content, 50))
 				return &ToolResult{ModelText: fmt.Sprintf("评论 #%d 已发表。", commentID),
 					UserText: "评论已发表", Record: &RecordRef{Kind: "comment", ID: commentID}}, nil
 			}
@@ -2726,6 +2728,9 @@ func proposeDeleteTool() *Tool {
 					return nil, fmt.Errorf("删除%s失败：%w", deleteKindLabel(kind), err)
 				}
 				for _, n := range notices {
+					// 这里的删除全部是 AI 代操作（REST 删除走各 api 自己的 store 调用，不经本函数），
+					// 故快照统一带 via:"ai"——接收端据此判别来源（ARCHITECTURE「通知分发器」快照字段读法）
+					n.ViaAI = true
 					_ = d.DB.NotifyContentDeleted(ctx, n)
 				}
 				return &ToolResult{ModelText: fmt.Sprintf("%d 条%s已删除（进回收站）。", len(ids), deleteKindLabel(kind)),

@@ -101,7 +101,18 @@ func (d *DB) UpdateUserPassword(ctx context.Context, id int64, passwordHash stri
 // ListPartnerIDs 情侣「另一方」收件人：非 admin 且非操作者（对齐 mock partnerIds，
 // F7——任何一方动作都通知另一方，admin 不在情侣里）。
 func (d *DB) ListPartnerIDs(ctx context.Context, excludeUserID int64) ([]int64, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id FROM users WHERE role != 'admin' AND id != ? ORDER BY id`, excludeUserID)
+	return d.listIDs(ctx, `SELECT id FROM users WHERE role != 'admin' AND id != ? ORDER BY id`, excludeUserID)
+}
+
+// ListCoupleIDs 情侣双方（全部非 admin 用户）：用于**没有操作者**的事件（定时任务发的纪念日提醒），
+// 那类事件不适用「操作者本人不收」，双方都该收到；admin 不在情侣里且不走 APP。
+func (d *DB) ListCoupleIDs(ctx context.Context) ([]int64, error) {
+	return d.listIDs(ctx, `SELECT id FROM users WHERE role != 'admin' ORDER BY id`)
+}
+
+// listIDs 收件人 id 读取的单一点（上面两个查询只差 WHERE 与参数）。
+func (d *DB) listIDs(ctx context.Context, query string, args ...any) ([]int64, error) {
+	rows, err := d.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
