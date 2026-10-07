@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
@@ -54,38 +55,105 @@ type Service struct {
 	key  []byte // API Key 加密密钥（派生自数据目录密钥）
 	deps *tools.Deps
 	reg  map[string]*tools.Tool
-	// abortedTurns 进程内「用户已显式中止」登记（key = userID|turnID）。
-	// 用户点「停止」时客户端先 abort 请求（服务端 r.Context() 随之取消），在服务端与
-	// 「意外断连」表现同一现象，但语义相反：停止 = 整轮回滚（AbortTurn 按 turn_id 删除全轮行），
-	// 断连 = 保留已产生内容并标中断。故用本表把「用户主动停止」显式标出，
-	// 否则断连分支会与 AbortTurn 的 DELETE 并发，给用户明确要求回滚的那轮留下孤儿 assistant 行。
-	// 进程内即可：断连与停止本就发生在同一进程；重启丢失不影响正确性（届时本轮请求已结束）。
-	abortedTurns sync.Map
+	// activeTurns 进程内「本轮 turn 的状态」登记（key = userID|turnID）——一份表两种读法：
+	// ① 记录存在 = 本轮尚未终结（流式进行中），DELETE 会话据此拒绝（AI模式设计「会话与历史回显」）；
+	// ② aborted = 用户已显式中止本轮。用户点「停止」时客户端先 abort 请求（服务端 r.Context()
+	//    随之取消），在服务端与「意外断连」表现同一现象，但语义相反：停止 = 整轮回滚
+	//    （AbortTurn 按 turn_id 删除全轮行），断连 = 保留已产生内容并标中断。故用同一张表把
+	//    「用户主动停止」显式标出，否则断连分支会与 AbortTurn 的 DELETE 并发，给用户明确要求
+	//    回滚的那轮留下孤儿 assistant 行。
+	// 进程内登记，重启即失效：重启后本轮已无处理 goroutine，不会再往该会话写内容，
+	// 故丢登记只是不再拦删（安全侧失败），不需要持久化。
+	activeTurns sync.Map
+	// turnMu 串行化「已有会话的登记」与「删除会话」：两者若各查各的，登记刚好落在
+	// 「查活跃轮 → 删会话」之间，本轮的消息就会写进已删会话（chat_messages.session_id
+	// 刻意无外键，落库不会报错，只会留下永不清理的孤儿行）。
+	// ponytail: 一把全局锁（单进程自用规模足够）；并发量上来再按会话分锁。
+	turnMu sync.Mutex
 }
 
-// abortKey 中止登记的 key（userID 与 turnID 的组合，turnID 单轮唯一）。
-func abortKey(userID int64, turnID string) string {
+// turnState 单轮 turn 的进程内状态；由登记表按 userID|turnID 持有。
+type turnState struct {
+	userID    int64
+	sessionID int64
+	aborted   atomic.Bool // 用户是否已显式中止本轮
+}
+
+// turnKey 轮次登记的 key（userID 与 turnID 的组合，turnID 单轮唯一）。
+func turnKey(userID int64, turnID string) string {
 	return strconv.FormatInt(userID, 10) + "|" + turnID
 }
 
-// MarkAbortIntent 登记「用户已显式中止本轮」，供 Abort handler 在整轮回滚前调用。
-func (s *Service) MarkAbortIntent(userID int64, turnID string) {
-	if turnID == "" {
-		return
+// loadTurn 取本轮登记（写入口只有本文件，故断言安全）。
+func (s *Service) loadTurn(userID int64, turnID string) (*turnState, bool) {
+	v, ok := s.activeTurns.Load(turnKey(userID, turnID))
+	if !ok {
+		return nil, false
 	}
-	s.abortedTurns.Store(abortKey(userID, turnID), struct{}{})
+	st, ok := v.(*turnState)
+	return st, ok
+}
+
+// markTurnActive 登记本轮开始（记录存在即「未终结」，直到 endTurn）。
+// 自身不加锁：已有会话须由持 turnMu 的 beginTurn 调用（登记与「确认会话仍在」要一气呵成）；
+// 懒创建的新会话 id 尚未离开本请求，直接调用即可。
+func (s *Service) markTurnActive(userID, sessionID int64, turnID string) {
+	s.activeTurns.Store(turnKey(userID, turnID), &turnState{userID: userID, sessionID: sessionID})
+}
+
+// beginTurn 已有会话的登记：会话存在性确认与本轮登记在同一把锁内完成，
+// 使「删会话」无法插在两者之间（见 turnMu）。会话不存在返回 false，调用方回 404。
+func (s *Service) beginTurn(ctx context.Context, userID, sessionID int64, turnID string) (*store.ChatSession, bool) {
+	s.turnMu.Lock()
+	defer s.turnMu.Unlock()
+	sess, err := s.db.GetChatSession(ctx, sessionID)
+	if err != nil || sess.UserID != userID {
+		return nil, false
+	}
+	s.markTurnActive(userID, sessionID, turnID)
+	return sess, true
+}
+
+// endTurn 登记本轮终结（正常收尾 / 断连落库 / 用户停止回滚都走同一出口）。
+func (s *Service) endTurn(userID int64, turnID string) {
+	s.activeTurns.Delete(turnKey(userID, turnID))
+}
+
+// sessionTurnActive 该会话是否有未终结的轮次（流式中）；删会话路径须持 turnMu 调用。
+func (s *Service) sessionTurnActive(userID, sessionID int64) bool {
+	active := false
+	s.activeTurns.Range(func(_, v any) bool {
+		if st, ok := v.(*turnState); ok && st.userID == userID && st.sessionID == sessionID {
+			active = true
+			return false
+		}
+		return true
+	})
+	return active
+}
+
+// markAbortIntent 登记「用户已显式中止本轮」，供 Abort handler 在整轮回滚前调用。
+// 只对本轮尚在登记中（处理中）时生效：读它的只有同一轮的处理 goroutine（persistDisconnectedTurn），
+// 轮次终结后登记已删，无人再读。
+func (s *Service) markAbortIntent(userID int64, turnID string) {
+	if st, ok := s.loadTurn(userID, turnID); ok {
+		st.aborted.Store(true)
+	}
 }
 
 // abortRequested 本轮是否已被用户显式中止。
 func (s *Service) abortRequested(userID int64, turnID string) bool {
-	_, ok := s.abortedTurns.Load(abortKey(userID, turnID))
-	return ok
+	st, ok := s.loadTurn(userID, turnID)
+	return ok && st.aborted.Load()
 }
 
 // clearAbortIntent 撤销中止登记（AbortTurn 自身失败时，整轮并未回滚，
-// 保留登记会让后续真实断连不敢落库）。
+// 保留登记会让后续真实断连不敢落库）。清位而非删记录：登记本身代表「本轮未终结」，
+// 由 endTurn 负责删（本轮若已终结，登记已不在，这里自然是空操作）。
 func (s *Service) clearAbortIntent(userID int64, turnID string) {
-	s.abortedTurns.Delete(abortKey(userID, turnID))
+	if st, ok := s.loadTurn(userID, turnID); ok {
+		st.aborted.Store(false)
+	}
 }
 
 func NewService(db *store.DB, seed []byte, deps *tools.Deps) *Service {
@@ -547,12 +615,16 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 会话归属：>0 必须是本人会话；否则懒创建（标题=首条消息摘要，无 AI 调用）
+	turnID := newTurnID()
+	// 本轮登记的解除：defer 兜住全部出口——正常收尾、断连落库、用户停止回滚、中间的错误返回。
+	// 未登记时 endTurn 是空操作，故可先挂 defer 再登记。
+	defer s.endTurn(claims.UserID, turnID)
 	sessionID := req.SessionID
 	sessionTitle := ""
 	createdSession := false
 	if sessionID > 0 {
-		sess, err := s.db.GetChatSession(r.Context(), sessionID)
-		if err != nil || sess.UserID != claims.UserID {
+		sess, ok := s.beginTurn(r.Context(), claims.UserID, sessionID, turnID)
+		if !ok {
 			http.Error(w, `{"error":"会话不存在"}`, http.StatusNotFound)
 			return
 		}
@@ -567,6 +639,8 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		sessionID = id
 		// 仅懒创建时下发：已有会话的 id 客户端自己带的，不重复发
 		createdSession = true
+		// 新会话 id 尚未离开本请求（只有本函数知道），不存在与删会话的竞态
+		s.markTurnActive(claims.UserID, sessionID, turnID)
 	}
 
 	// 引用归属校验：句柄必须属于本会话、单条 id 必须在本会话结果集里出现过。
@@ -576,7 +650,6 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	turnID := newTurnID()
 	// 轮级聚合缓存：思考文本 / 工具步骤（parts 契约：一轮助手消息只有一行）。
 	// turnParts 按发生顺序累积各轮内容，落库时一次写出（thinking → tool* → text/card）。
 	var roundReasoning string
@@ -1436,7 +1509,7 @@ func (s *Service) Abort(w http.ResponseWriter, r *http.Request) {
 	}
 	// 先登记「用户主动停止」，再执行整轮回滚：服务端断连分支据此区分
 	// 「停止」与「意外断连」，不会在回滚之后又把内容写回来（见 persistDisconnectedTurn）。
-	s.MarkAbortIntent(claims.UserID, turnID)
+	s.markAbortIntent(claims.UserID, turnID)
 	ok, err := s.db.AbortTurn(r.Context(), claims.UserID, turnID)
 	if err != nil {
 		s.clearAbortIntent(claims.UserID, turnID)
@@ -1492,7 +1565,19 @@ func (s *Service) DeleteSession(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"会话有待确认的操作卡片，请先处理后再删除"}`))
 		return
 	}
+	// 流式进行中拒绝删除：本轮 turn 尚未终结，会话行会在本轮落库前被删掉
+	// （AI模式设计「会话与历史回显」：turn_id 未终结一律拒绝）。
+	// 「查活跃轮」与「删会话」同锁：否则本轮登记能插在两者之间，本轮的消息会写进已删会话。
+	s.turnMu.Lock()
+	if s.sessionTurnActive(claims.UserID, id) {
+		s.turnMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"error":"会话正在生成回复，请先停止后再删除"}`))
+		return
+	}
 	deleted, err := s.db.DeleteChatSession(r.Context(), claims.UserID, id)
+	s.turnMu.Unlock()
 	if err != nil {
 		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
 		return
