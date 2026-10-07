@@ -198,8 +198,20 @@ func TestTierRuleMatchesRegistryForPAT(t *testing.T) {
 // 三分类正确派生，且 openWorldHint 全为 false（本服务全部操作本地封闭数据集）。
 // 此测试钉死派生规则，防止注册表演进时注解口径漂移。
 func TestToolAnnotations(t *testing.T) {
+	// 只发三列：这正是对外集成「工具注解」表定义的全部列。
+	// 回归的缺陷：曾额外下发恒为 true 的 idempotentHint，而 propose_post（重复调用重复建动态）
+	// 并不幂等——对全部工具恒 true 既是失实声明、也没有区分度。
+	allowed := map[string]bool{"readOnlyHint": true, "destructiveHint": true, "openWorldHint": true}
 	for _, tl := range tools.Registry() {
 		a := toolAnnotations(tl)
+		if len(a) != len(allowed) {
+			t.Errorf("工具 %s: 注解列数 = %d，want %d（只发 %v）", tl.Name, len(a), len(allowed), allowed)
+		}
+		for k := range a {
+			if !allowed[k] {
+				t.Errorf("工具 %s: 多出未定义的注解列 %q", tl.Name, k)
+			}
+		}
 		// openWorldHint 对所有工具固定 false
 		if got, _ := a["openWorldHint"].(bool); got {
 			t.Errorf("工具 %s: openWorldHint 必须为 false", tl.Name)

@@ -144,15 +144,15 @@ func (s *Service) toolList(ctx context.Context, pat *store.PersonalAccessToken) 
 	return out
 }
 
-// toolAnnotations 派生 MCP 工具注解（2025-06-18 规范）。
-// 规范默认值：readOnlyHint=false、destructiveHint=true、idempotentHint=false、openWorldHint=true。
-// 本服务工具全部操作本地封闭数据集，openWorldHint 固定 false（覆盖默认）。
-// 提案类工具已改幂等「设为」语义（propose_reaction），读工具天然幂等 → 发 idempotentHint=true。
+// toolAnnotations 派生 MCP 工具注解。
+// 只发三列（readOnlyHint / destructiveHint / openWorldHint）：这正是对外集成
+// 「工具注解」表要求的全部列。**不发 idempotentHint**——它对所有工具恒为 true，
+// 而 propose_post 这类「新建」并不幂等，写死 true 是失实声明；留给客户端按规范默认处理。
+// 本服务工具全部操作本地封闭数据集，openWorldHint 固定 false（覆盖规范默认 true）。
 func toolAnnotations(t *tools.Tool) map[string]any {
 	return map[string]any{
 		"readOnlyHint":    !t.IsWrite,
 		"destructiveHint": t.IsWrite && t.AppOnly,
-		"idempotentHint":  true,
 		"openWorldHint":   false,
 	}
 }
