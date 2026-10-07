@@ -21,7 +21,7 @@ export interface ViewerItem {
 const props = withDefaults(defineProps<{
   items: ViewerItem[]
   start: number
-  mode?: 'timeline' | 'album' | 'post'
+  mode?: 'timeline' | 'album' | 'post' | 'single'
   albumName?: string
 }>(), { mode: 'post' })
 
@@ -57,8 +57,9 @@ async function onSave() {
     kind: item.kind,
     url: mediaUrl(item).raw,
     taken_at: item.taken_at,
-    // 只有 post 模式（items 就是该动态的媒体）下标才等于「动态内序号」；
-    // 时间轴/相册模式下标是查看器自己的位置，不能拿来命名，留空 → 兜底用媒体 id
+    // 只有 post 模式（items 就是该动态的全部媒体）下标才等于「动态内序号」；
+    // timeline / album / single 的下标只是查看器自己的位置，不能拿来命名，一律留空，
+    // 让另存文件名回退到媒体 id（客户端设计「文件名：服务端为准，客户端同规则兜底」：绝不拿查看器索引当序号）。
     seq: props.mode === 'post' ? idx.value + 1 : undefined,
     onProgress: (loaded, total) => {
       if (total > 0) saveMsg.value = '保存中 ' + Math.round((loaded / total) * 100) + '%'

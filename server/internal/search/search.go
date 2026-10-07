@@ -60,6 +60,10 @@ type Index struct {
 	col *chromem.Collection
 	key string
 	dim int // 已知的向量维度；0 = 本进程尚未成功嵌入过
+	// writeCfg 本进程**实际写入过向量**的嵌入配置（Upsert 成功嵌入时记下）。
+	// 供 Remove 定位「向量真正落在哪个集合」：链首失败会下移到后续条目，
+	// 那时按链首去删会落到另一个集合上（白删）。零值 = 本进程还没写过。
+	writeCfg Config
 }
 
 // Open 打开（必要时创建）向量库目录；dir 一般取数据目录下的 vectors。
@@ -131,6 +135,7 @@ func (ix *Index) Upsert(ctx context.Context, postID int64, content string) error
 	if err != nil {
 		return err
 	}
+	ix.writeCfg = cfg // 记下实际生效的配置：Remove 要照它定位集合
 	col, err := ix.collectionLocked(ctx, cfg, len(vec))
 	if err != nil {
 		return err
@@ -145,11 +150,17 @@ func (ix *Index) Remove(ctx context.Context, postID int64) error {
 	if !ok {
 		return ErrDisabled
 	}
-	cfg := cfgs[0]
 	ix.mu.Lock()
 	defer ix.mu.Unlock()
 	if ix.dim == 0 {
 		return nil
+	}
+	// 用「本进程写入过向量的那个配置」定位集合：链首失败下移时，按链首删会删错集合
+	// （白删——真正存着向量的集合被换掉）。本进程还没写过（如重启后首次调用）就回退链首，
+	// 那种情况下的漏删由 janitor 回填兜底（向量是派生数据，可重建）。
+	cfg := cfgs[0]
+	if ix.writeCfg != (Config{}) {
+		cfg = ix.writeCfg
 	}
 	col, err := ix.collectionLocked(ctx, cfg, ix.dim)
 	if err != nil {

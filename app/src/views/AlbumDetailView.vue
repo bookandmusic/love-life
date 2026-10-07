@@ -10,6 +10,7 @@ import { useViewer } from '../composables/useViewer'
 import { groupByMonth } from '../utils/dates'
 import ConfirmSheet from '../components/ConfirmSheet.vue'
 import { useLongPress } from '../composables/useLongPress'
+import { KEYS, onceHint } from '../utils/storage'
 import { REMOVE_CONFIRM, REMOVE_TITLE, REMOVE_TOAST, removeMsg } from '../utils/deleteCopy'
 import MediaViewer from '../components/MediaViewer.vue'
 import PageLayout from '../components/PageLayout.vue'
@@ -193,7 +194,12 @@ async function confirmRemovePhoto() {
 // 路由参数变化（相册间跳转 / 月度切换）必须重载：此前只在 setup 时取一次，切换后仍是旧数据
 watch(() => [route.params.id, route.params.key], load)
 
-onMounted(load)
+onMounted(async () => {
+  await load()
+  // 手势要教一次：长按是隐形手势，首次进入本页提示一次（与动态/相册/纪念日/地图四页同款）。
+  // 月度分组页只读（askRemovePhoto 直接返回），在那里教这个手势等于教一个无效操作，故跳过。
+  if (!isMonth.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按照片可移出当前相册'
+})
 </script>
 
 <template>

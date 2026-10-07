@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -307,5 +308,54 @@ func TestIndexSimilarityThreshold(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != 1 {
 		t.Fatalf("ids = %v, want 只有 [1]（id 2 相似度 0 应被阈值过滤）", ids)
+	}
+}
+
+// 链首嵌入失败会下移到后续条目——此时向量写在**后续条目**的集合里。
+// Remove 若按链首定位集合，collectionLocked 会因为 key 不同而**把真正存着向量的集合整个删掉**
+// （不是只删目标那一条）：同批写入的其他向量会一起消失，属白删。
+// 故断言「删掉目标后，同批的另一条仍在」——这是能区分两种实现的观测点。
+func TestRemoveKeepsSiblingsInWrittenCollection(t *testing.T) {
+	up := newFakeUpstream(t, map[string][]float32{"海边": {1, 0, 0}, "山里": {0, 1, 0}})
+	dead := newFakeUpstream(t, nil)
+	dead.srv.Close()
+
+	cfgDead := Config{BaseURL: dead.srv.URL, APIKey: "test-key", Model: "m-dead"}
+	cfgOK := Config{BaseURL: up.srv.URL, APIKey: "test-key", Model: "m-ok"}
+	ix, err := Open(t.TempDir(), func(context.Context) ([]Config, bool) {
+		return []Config{cfgDead, cfgOK}, true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// 链首必然失败 → 两条都落在 cfgOK 的集合里
+	if err := ix.Upsert(ctx, 7, "海边"); err != nil {
+		t.Fatalf("upsert 7: %v", err)
+	}
+	if err := ix.Upsert(ctx, 8, "山里"); err != nil {
+		t.Fatalf("upsert 8: %v", err)
+	}
+	if err := ix.Remove(ctx, 7); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	// 兄弟条目必须仍在：删错集合的实现会把整个集合换掉，8 也一起没了
+	ids, err := ix.Query(ctx, "山里", 5)
+	if err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if !slices.Contains(ids, int64(8)) {
+		t.Fatalf("Remove 删错了集合（把同批的 8 也一起清了）：ids=%v", ids)
+	}
+	// 目标确实被删了
+	ids7, err := ix.Query(ctx, "海边", 5)
+	if err != nil {
+		t.Fatalf("query 7: %v", err)
+	}
+	for _, id := range ids7 {
+		if id == 7 {
+			t.Fatalf("目标 7 应已删除：ids=%v", ids7)
+		}
 	}
 }

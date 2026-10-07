@@ -964,7 +964,9 @@ onBeforeUnmount(() => {
         @remove="removeSession"
       />
     </template>
-    <MediaViewer v-if="viewerItems" :items="viewerItems" :start="viewerStart" mode="post" @close="viewerItems = null" />
+    <!-- AI 结果卡是单条记录，不是「某动态的全部媒体」：用 single 让序号留空、
+         归属类入口不渲染（客户端设计「文件名：服务端为准，客户端同规则兜底」：序号绝不取查看器索引） -->
+    <MediaViewer v-if="viewerItems" :items="viewerItems" :start="viewerStart" mode="single" @close="viewerItems = null" />
     <AppToast :text="toast" bottom="5rem" pill @done="toast = ''" />
   </PageLayout>
 </template>

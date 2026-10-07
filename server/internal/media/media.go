@@ -13,6 +13,7 @@ import (
 	"image"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -289,11 +290,27 @@ func (p *Pipeline) Discard(tokens []string, userID int64) int {
 			continue
 		}
 		sidecar := filepath.Join(p.dataDir, "media", "tmp", token+".json")
-		if b, err := os.ReadFile(sidecar); err == nil {
+		// sidecar 的「缺失」与「损坏」要分开处理（ARCHITECTURE「媒体上传管线」的临时区元数据行）：
+		//  - 文件不存在：可能已被 janitor 认领/清理，属正常收敛 → 仍放行删除，
+		//    否则过期的放弃/重试会留下删不掉的临时文件（用户看到失败，还得等 24h 兜底）；
+		//  - 文件存在但读不出/解析失败，或 OwnerID 缺失：被篡改或写坏的信号 → 拒绝删除并告警。
+		switch b, err := os.ReadFile(sidecar); {
+		case err == nil:
 			var meta tempMeta
-			if json.Unmarshal(b, &meta) == nil && meta.OwnerID != 0 && meta.OwnerID != userID {
+			if jerr := json.Unmarshal(b, &meta); jerr != nil {
+				slog.Warn("临时文件 sidecar 解析失败，拒绝删除", "token", token, "err", jerr)
+				continue
+			}
+			if meta.OwnerID == 0 {
+				slog.Warn("临时文件 sidecar 缺归属，拒绝删除", "token", token)
+				continue
+			}
+			if meta.OwnerID != userID {
 				continue // 归属不符：不是你的临时文件，跳过
 			}
+		case !errors.Is(err, fs.ErrNotExist):
+			slog.Warn("临时文件 sidecar 读取失败，拒绝删除", "token", token, "err", err)
+			continue
 		}
 		if os.Remove(raw) == nil {
 			removed++

@@ -53,7 +53,7 @@ android {
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("release")
-            // 仅内网 HTTP 部署需明文（DESIGN §11.2）：模板默认只给 debug 置 true，
+            // 仅内网 HTTP 部署需明文（ARCHITECTURE「网络访问（双通道）」）：模板默认只给 debug 置 true，
             // release 会继承 defaultConfig 的 false，故此处显式放开。
             manifestPlaceholders["usesCleartextTraffic"] = "true"
             isMinifyEnabled = true

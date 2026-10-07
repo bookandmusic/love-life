@@ -11,6 +11,8 @@ import { ACCENTS, ACCENT_IDS } from '../utils/accents'
 import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
 
 const PROJECT_HOME = 'https://github.com/bookandmusic/love-life'
+// 版本号来自构建期注入（vite.config.ts 读 src-tauri/tauri.conf.json），不硬编码
+const appVersion = __APP_VERSION__
 
 const router = useRouter()
 const auth = useAuth()
@@ -169,7 +171,7 @@ onMounted(() => {
       <div class="group">
         <div class="row">
           <span class="label">版本</span>
-          <span class="value num">0.1.0</span>
+          <span class="value num">{{ appVersion }}</span>
         </div>
         <div class="row">
           <span class="label">服务端</span>
