@@ -144,7 +144,7 @@ async function runRestore(target: RestoreTarget) {
           <thead>
             <tr>
               <th style="width: 36px">
-                <input type="checkbox" :checked="allChecked" @change="toggleAll" />
+                <input type="checkbox" class="form-checkbox" :checked="allChecked" @change="toggleAll" />
               </th>
               <th>内容类型</th><th>内容摘要</th><th>删除时间</th><th>删除者</th><th></th>
             </tr>
@@ -152,7 +152,7 @@ async function runRestore(target: RestoreTarget) {
           <tbody>
             <tr v-for="item in filtered" :key="item.id">
               <td>
-                <input type="checkbox" :checked="selected.has(item.id)" @change="toggleOne(item.id)" />
+                <input type="checkbox" class="form-checkbox" :checked="selected.has(item.id)" @change="toggleOne(item.id)" />
               </td>
               <td><AppBadge :variant="typeVariant[item.type]">{{ item.type }}</AppBadge></td>
               <td class="text-secondary">{{ item.summary }}</td>

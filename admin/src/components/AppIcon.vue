@@ -36,6 +36,8 @@ import {
   BellOff,
   Check,
   AlertCircle,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{ name: string; size?: number }>(), {
@@ -78,6 +80,8 @@ const ICONS: Record<string, unknown> = {
   save: Save,
   'user-plus': UserPlus,
   lock: Lock,
+  'chevron-up': ChevronUp,
+  'chevron-down': ChevronDown,
 }
 
 const icon = computed(() => ICONS[props.name] ?? MoreHorizontal)

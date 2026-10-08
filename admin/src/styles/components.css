@@ -459,6 +459,16 @@ tbody tr:hover td {
   margin-top: 6px;
 }
 
+/* 勾选框：浏览器默认外观（13px、无边框圆角）与其余表单控件不是一套语言，
+   故统一尺寸与强调色。`accent-color` 让选中态用主题色，不重画控件本身。 */
+.form-checkbox {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
 .form-select {
   appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%236b6560' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
