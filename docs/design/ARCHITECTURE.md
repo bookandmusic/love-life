@@ -188,25 +188,26 @@ flowchart TD
 
 ## 5. 后台管理页面实现
 
-导航：扁平 6 项（仪表盘 / 空间管理 / AI 配置 / 外部集成 / 回收站 / 审计日志）。AI 配置为单页 4 个 tab、外部集成为单页 2 个 tab，嵌套路由 `/ai/*`、`/integrations/*` 可直达；旧路径全部 redirect 到新路径（redirect 表见 `admin/src/router/index.ts` 兜底段）。整页 flex 视口锁定，页面不滚动，各数据容器内部滚动。功能范围见 PRODUCT「后台管理页面功能范围（admin）」。
+导航：扁平 6 项（仪表盘 / 空间管理 / AI 配置 / 外部集成 / 回收站 / 审计日志）。多段内容的页面用页内 tab 分区，一次只呈现一段：空间管理 3 个 tab、AI 配置 6 个 tab、外部集成 2 个 tab、回收站 2 个 tab；AI 配置与外部集成的 tab 走嵌套路由（`/ai/*`、`/integrations/*`）可直达，空间管理与回收站的 tab 是页内状态（同一路由），旧路径全部 redirect 到新路径（redirect 表见 `admin/src/router/index.ts` 兜底段）。整页 flex 视口锁定，页面不滚动，各数据容器内部滚动——**每屏至多一张 `.card-fill`**（该类 `flex-basis` 为 0，同屏多张会按张数而非内容需要平分高度，长表格被裁且滚不动）。后台是桌面形态（固定侧栏 + 视口锁定外壳），不设窄屏断点。功能范围见 PRODUCT「后台管理页面功能范围（admin）」。
 
 - **仪表盘**：内容统计（单空间部署口径）；AI 调用量 / Token 消耗 / 平均延迟——ai-usage 时序每点含 `avgLatencyMs`，页面按调用量加权汇总；异常告警；最近活动（后台流水 + 内容事件）。后台流水取自回收站操作日志（admin 的恢复、清理任务的系统超期永久删除，均带操作者与摘要）——那是唯一带操作者与摘要的运维流水；AI / PAT 的工具调用归「审计日志」页，不在本卡重复
-- **空间管理**
+- **空间管理**（页内 3 个 tab：空间信息 / 情侣成员 / 数据保留，同一路由切换）
   - 空间信息：名称 / 个性签名 / 在一起日期（在一起统计并入信息卡）
   - 空间成员：可创建、可改字段、不可删除等业务规则见 PRODUCT「后台管理页面功能范围（admin）」；此处只定接口与实现约束
   - admin 账号只读展示，由部署环境管理，后台不提供增改
   - 数据保留：**取值域与默认值见 PRODUCT「后台管理页面功能范围（admin）」**；本文件只管读写语义——回收站页只读读自同一数据源，对话历史不设保留期限（见「数据模型」的 User / ChatMessage）
   - 接口：`GET /api/v1/admin/users`、`POST /admin/users/couple`（原子创建）、`PUT /admin/users/{id}`（昵称 + 生日）、`POST /admin/users/{id}/avatar`（头像上传）、`POST /admin/users/{id}/reset-password`、`GET/PUT /space`、`GET/PUT /admin/security`
   - **保留策略部分更新**：`/admin/security` 请求体可只含本次变更字段（`recycleRetentionDays`），服务端按字段合并，**不得整体覆盖**；该接口无对话保留字段——对话历史不设保留期限（PRODUCT「会话模型」）
-- **AI 配置**（4 tabs，配置语义与拼装规则见 AI模式设计「配置中心与 Prompt 拼装」，此处只列接口）
-  - **模型与链路（/ai/providers）**：供应商增删改（Key 只写不读）+ 模型条目按类型分两条链（`chat` / `embedding`），链内顺序可调（上移下移），嵌入类型只允许 openai-chat 供应商；`POST /fetch-models` 取模型名候选。接口：`GET/POST /api/v1/admin/model-providers`、`PUT/DELETE /{id}`、`PUT /{id}/key`、`GET/POST /api/v1/admin/models`、`PUT/DELETE /api/v1/admin/models/{id}`、`PUT /api/v1/admin/models/order`（体带 `kind` + 有序 id 数组）
+- **AI 配置**（6 tabs，配置语义与拼装规则见 AI模式设计「配置中心与 Prompt 拼装」，此处只列接口）
+  - **供应商（/ai/providers）**：模型服务的增删改，Key 只写不读。接口：`GET/POST /api/v1/admin/model-providers`、`PUT/DELETE /{id}`、`PUT /{id}/key`
+  - **对话模型链（/ai/chat-chain）** / **嵌入模型链（/ai/embedding-chain）**：两条链各自一屏，同一组件按路由 `meta.kind` 区分链别；模型条目按类型分链（`chat` / `embedding`），链内顺序可调（上移下移），嵌入类型只允许 openai-chat 供应商；`POST /fetch-models` 取模型名候选。接口：`GET/POST /api/v1/admin/models`、`PUT/DELETE /api/v1/admin/models/{id}`、`PUT /api/v1/admin/models/order`（体带 `kind` + 有序 id 数组）
   - **提示词与风格（/ai/prompts）**：全局 System Prompt 模板、输出风格库增删改与默认设置。接口：`GET/PUT /admin/system-prompt`、`GET/POST /admin/styles`、`PUT/DELETE /admin/styles/{id}`、`PUT /admin/styles/default`、`GET /api/v1/styles`（APP 端并集 + 默认标记，仅此接口对 APP 开放）
   - **MCP 工具（/ai/tools）**：内置工具列表（名称 / 描述 / 参数 Schema）+ 启用停用开关；按类别分组展示，新工具复用既有类别无需改页面
   - **访问令牌（/ai/tokens）**：PAT 生成 / 吊销 / 档位 / 绑定用户
 - **外部集成**（2 tabs）
   - **通知渠道（/integrations/webhooks）**：渠道 CRUD + `[发送测试]`。接口：`GET/POST /api/v1/admin/webhooks`、`PUT/DELETE /{id}`、`POST /{id}/test`
   - **地图配置（/integrations/map）**：瓦片源卡片网格（等高），末尾固定「添加瓦片源」卡；支持启用（全局至多一个使用中）、删除（两步确认，使用中的源不可删），**不提供编辑**——配置有误删除后重加。接口 `GET/POST /admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`
-- **回收站管理**：列表按删除时间排序、按类型筛选（动态/评论/相册/纪念日/地图点位）、显示删除者（用户/AI）；**照片不单列为类型**——媒体无独立生命周期，随所属动态一并进入回收站、随动态恢复，不做单独恢复（PRODUCT「相册（独立底部 tab）」）；单条与批量恢复（二次确认）；操作日志（恢复 + 系统超期永久删除，不可删除、永久保留）
+- **回收站管理**（页内 2 个 tab：已删除内容 / 操作日志）：列表按删除时间排序、按类型筛选（动态/评论/相册/纪念日/地图点位）、显示删除者（用户/AI）；**照片不单列为类型**——媒体无独立生命周期，随所属动态一并进入回收站、随动态恢复，不做单独恢复（PRODUCT「相册（独立底部 tab）」）；单条与批量恢复（二次确认）；操作日志（恢复 + 系统超期永久删除，不可删除、永久保留）
 - **审计日志**：操作者筛选（user/ai/pat）+ 单条耗时列；模型响应延迟与用量报表归仪表盘
 - **交互约定（实现侧）**：全局反馈统一用 `AppToast`（不用原生 `alert`/`confirm`/`prompt`，避免布局跳动）；危险操作确认用应用内 `ConfirmDialog`。**需要哪些确认、按钮用什么色档**见 PRODUCT「后台管理页面功能范围（admin）」
 
@@ -382,6 +383,8 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | 否决项 | 理由 |
 |:---|:---|
 | Web 前台 | 用户侧客户端只做手机 APP；Web 只做 admin 后台。移动端优先，双端维护成本不划算 |
+| 侧栏二级子菜单 | 同类多段内容用页内 tab 分区，侧栏保持扁平 6 项（按管理对象分组）；层级只在页内编码一次，侧栏再挂一层是重复编码同一套层级 |
+| admin 窄屏适配 | 后台是桌面形态（固定 240px 侧栏 + 视口锁定外壳），窄屏下侧栏需要汉堡入口，等于另造一套导航形态；用户侧窄屏由 APP 承担（见「Web 前台」） |
 | PC 双栏仪表盘 | 保持 iOS 单栏心智，不为桌面单独设计一套布局 |
 | 应用锁 | 设备锁屏已覆盖基础场景 |
 | 帮助与反馈 | 自部署无接收方 |

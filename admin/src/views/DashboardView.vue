@@ -84,7 +84,11 @@ onMounted(load)
           <template #actions>
             <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="load">刷新</AppButton>
           </template>
-          <ul class="activity-list">
+          <div v-if="activity.length === 0" class="empty-state">
+            <AppIcon name="file-text" :size="40" />
+            <div class="empty-state-title">暂无活动记录</div>
+          </div>
+          <ul v-else class="activity-list">
             <li v-for="(a, i) in activity" :key="i" class="activity-item">
               <div class="activity-icon"><AppIcon :name="a.icon" :size="16" /></div>
               <div class="activity-content">

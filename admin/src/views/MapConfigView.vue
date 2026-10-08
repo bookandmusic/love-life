@@ -92,7 +92,7 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="tab-panel" style="max-width: 960px">
+  <div class="tab-panel">
     <div class="page-scroll">
       <AppAlert variant="info" icon="map-pin">
         服务端瓦片代理：APP 统一请求后端瓦片接口，密钥只存服务端永不下发。可添加多个瓦片源（类型限公开 XYZ 模板 / 天地图），任意时刻仅一个「使用中」；配置有误直接删除后重新添加。

@@ -11,7 +11,12 @@ import AppBadge from '../components/AppBadge.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppModal from '../components/AppModal.vue'
 import AppIcon from '../components/AppIcon.vue'
+import AppTabs from '../components/AppTabs.vue'
 import { toast } from '../lib/toast'
+
+// 三个数据集各占一屏，不上下堆叠（PRODUCT「后台管理页面功能范围（admin）」布局约定）
+const tabs = ['空间信息', '情侣成员', '数据保留']
+const activeTab = ref('空间信息')
 
 // ---------- 空间信息（含在一起统计，同一张卡） ----------
 const space = ref<SpaceInfo | null>(null)
@@ -208,16 +213,21 @@ onMounted(loadAll)
 
 <template>
   <div class="page">
-    <!-- 页面本身不滚动，内容容器内部滚动（PRODUCT「后台管理页面功能范围（admin）」布局约定）；
-         与其余页面同款 page-scroll，避免长内容在视口锁定下不可达 -->
-    <div class="page-scroll" style="display: flex; flex-direction: column; gap: var(--space-6)">
-    <AppAlert variant="info" icon="users">
-      单情侣应用：情侣账户需一次性同时创建（双方各一个账号）；建立后仅可修改昵称与重置密码，用户名与角色不可变更，不提供删除。
-    </AppAlert>
+    <AppTabs v-model="activeTab" :items="tabs" />
 
+    <!-- 页面本身不滚动，滚动只发生在内容区（PRODUCT「后台管理页面功能范围（admin）」布局约定）。
+         一屏一段是刻意的：同屏堆多段会让表格只分到窄列而被挤到换行。 -->
+    <div class="page-scroll">
+      <AppAlert
+        v-if="activeTab === '情侣成员'"
+        variant="info"
+        icon="users"
+        style="margin-bottom: var(--space-5)"
+      >
+        单情侣应用：情侣账户需一次性同时创建（双方各一个账号）；建立后仅可修改昵称与重置密码，用户名与角色不可变更，不提供删除。
+      </AppAlert>
 
-    <div class="grid-2">
-      <AppCard title="空间信息">
+      <AppCard v-if="activeTab === '空间信息'" title="空间信息">
         <template #actions>
           <div class="flex gap-2">
             <AppButton v-if="!editing" variant="secondary" size="sm" icon="edit" @click="editing = true">
@@ -255,7 +265,7 @@ onMounted(loadAll)
         <p v-else class="text-tertiary text-sm">空间信息加载中…</p>
       </AppCard>
 
-      <AppCard title="情侣成员">
+      <AppCard v-if="activeTab === '情侣成员'" title="情侣成员">
         <template v-if="!hasCouple">
           <form class="flex" style="flex-direction: column; gap: 16px" @submit.prevent="submitCouple">
             <div class="grid-2">
@@ -354,10 +364,8 @@ onMounted(loadAll)
           </table>
         </div>
       </AppCard>
-    </div>
 
-    <div class="grid-2">
-      <AppCard title="回收站保留期限">
+      <AppCard v-if="activeTab === '数据保留'" title="回收站保留期限">
         <div class="flex gap-2" style="align-items: flex-end">
           <div class="form-group" style="margin: 0; flex: 1">
             <label class="form-label">保留天数（7 ~ 365）</label>
@@ -374,9 +382,6 @@ onMounted(loadAll)
         </div>
         <p class="form-hint">超过此天数的已删除内容将被系统定时任务自动永久删除；回收站页顶部展示的期限提示读自此处。</p>
       </AppCard>
-
-    </div>
-
     </div>
 
     <AppModal v-if="editTarget" :title="`修改昵称 — ${editTarget.username}`" @close="editTarget = null">

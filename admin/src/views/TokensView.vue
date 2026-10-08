@@ -8,6 +8,7 @@ import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppModal from '../components/AppModal.vue'
+import AppIcon from '../components/AppIcon.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
@@ -88,7 +89,11 @@ onMounted(load)
     </div>
 
     <AppCard class="card-fill">
-      <div class="table-wrapper">
+      <div v-if="tokens.length === 0" class="empty-state">
+        <AppIcon name="key" :size="48" />
+        <div class="empty-state-title">还没有生成任何令牌</div>
+      </div>
+      <div v-else class="table-wrapper">
         <table>
           <thead>
             <tr><th>令牌名称</th><th>绑定用户</th><th>权限档位</th><th>创建时间</th><th>状态</th><th></th></tr>

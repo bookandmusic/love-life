@@ -6,7 +6,6 @@ import AppCard from '../components/AppCard.vue'
 import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppToggle from '../components/AppToggle.vue'
-import AppTabs from '../components/AppTabs.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppModal from '../components/AppModal.vue'
 import AppIcon from '../components/AppIcon.vue'
@@ -14,11 +13,12 @@ import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
 
 const tools = ref<McpTool[]>([])
-const activeTab = ref('全部')
+// 类别是筛选维度，不是页面导航：用下拉（与回收站、审计日志同口径），避免与页内 tab 条撞脸
+const category = ref('全部')
 const search = ref('')
 const detail = ref<McpTool | null>(null)
 
-const tabs = ['全部', '动态', '相册', '地图', '纪念日', '互动', '空间']
+const categories = ['全部', '动态', '相册', '地图', '纪念日', '互动', '空间']
 const categoryVariant: Record<ToolCategory, 'info' | 'warning' | 'success' | 'error' | 'neutral'> = {
   动态: 'info',
   相册: 'warning',
@@ -38,7 +38,7 @@ onMounted(async () => {
 
 const filtered = computed(() =>
   tools.value.filter((t) => {
-    const byCat = activeTab.value === '全部' || t.category === activeTab.value
+    const byCat = category.value === '全部' || t.category === category.value
     const bySearch =
       !search.value ||
       t.name.includes(search.value) ||
@@ -66,14 +66,16 @@ const schemaEntries = computed(() => Object.entries(detail.value?.schema ?? {}))
 
 <template>
   <div class="tab-panel">
-    <AppTabs v-model="activeTab" :items="tabs" />
-
-
     <div class="page-section-header">
       <h2 class="page-section-title">MCP 工具列表（{{ tools.length }} 个）</h2>
-      <div class="search-input" style="width: 220px">
-        <AppIcon name="search" :size="16" />
-        <input v-model="search" class="form-input" type="text" placeholder="搜索工具…" />
+      <div class="flex gap-3 items-center">
+        <select v-model="category" class="form-select" style="width: auto">
+          <option v-for="c in categories" :key="c" :value="c">{{ c === '全部' ? '全部类别' : c }}</option>
+        </select>
+        <div class="search-input" style="width: 220px">
+          <AppIcon name="search" :size="16" />
+          <input v-model="search" class="form-input" type="text" placeholder="搜索工具…" />
+        </div>
       </div>
     </div>
 

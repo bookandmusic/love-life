@@ -617,30 +617,17 @@ tbody tr:hover td {
 
 /* 内含表格的 card-fill：滚动口交给 `.table-wrapper`（见该规则处的说明），
    card-body 不再纵滚——否则表头以包装层为参照、被自己的盒子裁掉。
-   限定条件有三重，**不全局改**：
-   ① 只认 `card-fill` / `card-fixed`（同页其它卡片形态不变）；
+   限定条件有两重，**不全局改**：
+   ① 只认 `card-fill`（同页其它卡片形态不变）；
    ② 卡里确实有表格，且表格是 card-body 的**唯一**内容（`:only-child`）——表格旁边还有
       别的东西（如告警条、表单提示）时，把纵滚收走会把表格挤成 0 高度、内容再也够不着；
       这类卡继续由 card-body 滚动（表格照旧不吸顶，但内容可读，优先保证可用）。
-   ③ 与 `.card-fixed .card-body` 同款声明并列，两者都是「卡内唯一滚动口」的同一个口径。 */
-.card-fill:has(> .card-body > .table-wrapper:only-child) .card-body,
-.card-fixed:has(> .card-body > .table-wrapper:only-child) .card-body {
+   **前提是一屏只放一张**：本类 `flex: 1 1 0%`（basis 为 0），同屏多张会按张数平分高度而
+   不是按内容需要，长表格因此被裁到看不见且滚不动。每屏一段内容由页内 tab 保证。 */
+.card-fill:has(> .card-body > .table-wrapper:only-child) .card-body {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-}
-
-/* 数据卡片：限高内部滚动（次要列表） */
-.card-fixed {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  max-height: 240px;
-}
-
-.card-fixed .card-body {
-  min-height: 0;
-  overflow-y: auto;
 }
 
 .page-section-header {
@@ -748,24 +735,12 @@ tbody tr:hover td {
   width: 100%;
 }
 
-/* ============ 响应式 ============ */
+/* ============ 响应式（admin 为桌面形态：固定侧栏 + 视口锁定外壳，不设窄屏断点） ============ */
 @media (max-width: 1024px) {
   .stats-grid {
     grid-template-columns: repeat(2, 1fr);
   }
   .grid-2 {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 768px) {
-  .sidebar {
-    transform: translateX(-100%);
-  }
-  .main {
-    margin-left: 0;
-  }
-  .stats-grid {
     grid-template-columns: 1fr;
   }
 }

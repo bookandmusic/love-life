@@ -4,6 +4,7 @@ import { auditApi } from '../api'
 import type { AuditEntry, AuditActorType } from '../api/audit'
 import AppCard from '../components/AppCard.vue'
 import AppBadge from '../components/AppBadge.vue'
+import AppIcon from '../components/AppIcon.vue'
 import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
 
@@ -67,7 +68,11 @@ const resultMeta = (raw: string) => {
 
 
     <AppCard class="card-fill">
-      <div class="table-wrapper">
+      <div v-if="filtered.length === 0" class="empty-state">
+        <AppIcon name="file-text" :size="48" />
+        <div class="empty-state-title">暂无日志</div>
+      </div>
+      <div v-else class="table-wrapper">
         <table>
           <thead>
             <tr><th>时间</th><th>操作者</th><th>操作</th><th>参数摘要</th><th>耗时</th><th>结果</th></tr>

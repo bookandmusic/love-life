@@ -119,7 +119,7 @@ onMounted(() => {
 
 <template>
   <div class="tab-panel">
-    <AppCard title="全局 System Prompt 模板" class="card-fill">
+    <AppCard title="全局 System Prompt 模板">
       <textarea v-model="prompt" class="form-textarea" rows="8" placeholder="人设与行为边界主干；输出风格的语气片段会拼接在它之后。" />
       <div class="flex gap-2 items-center" style="margin-top: 12px; justify-content: space-between">
         <span class="text-tertiary text-sm">保存后对新会话生效；「输出风格」的语气片段会拼在这段主干之后。</span>

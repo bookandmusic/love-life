@@ -7,6 +7,7 @@ import AppButton from '../components/AppButton.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppAlert from '../components/AppAlert.vue'
 import AppIcon from '../components/AppIcon.vue'
+import AppTabs from '../components/AppTabs.vue'
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
@@ -17,6 +18,10 @@ interface RestoreTarget {
   ids: number[]
   summary: string
 }
+
+// 两个数据集各占一屏，不上下堆叠（PRODUCT「后台管理页面功能范围（admin）」布局约定）
+const tabs = ['已删除内容', '操作日志']
+const activeTab = ref('已删除内容')
 
 const items = ref<RecycleItem[]>([])
 const restoreLog = ref<RestoreLogEntry[]>([])
@@ -46,7 +51,7 @@ const typeVariant: Record<RecycleType, 'info' | 'neutral' | 'warning' | 'success
 async function load() {
   try {
     const [list, log] = await Promise.all([recycleApi.listRecycle(), recycleApi.listRestoreLog()])
- // ：按删除时间排序（倒序）；前端排序兜底，不依赖后端返回顺序
+    // 按删除时间排序（倒序）；前端排序兜底，不依赖后端返回顺序
     items.value = [...list].sort((a, b) => b.deletedAt.localeCompare(a.deletedAt))
     restoreLog.value = log.items
     selected.value = new Set()
@@ -110,11 +115,13 @@ async function runRestore(target: RestoreTarget) {
 
 <template>
   <div class="page">
-    <AppAlert variant="warning" icon="alert-triangle">
+    <AppTabs v-model="activeTab" :items="tabs" />
+
+    <AppAlert v-if="activeTab === '已删除内容'" variant="warning" icon="alert-triangle">
       回收站中的内容将保留 {{ retentionDays }} 天，超过期限将被系统自动永久删除，仅管理员可恢复；保留期限可在「空间管理 · 数据保留」中调整。
     </AppAlert>
 
-    <div class="page-section-header">
+    <div v-if="activeTab === '已删除内容'" class="page-section-header">
       <h2 class="page-section-title">已删除内容</h2>
       <div class="flex gap-3 items-center">
         <select v-model="filterType" class="form-select" style="width: auto">
@@ -127,7 +134,7 @@ async function runRestore(target: RestoreTarget) {
       </div>
     </div>
 
-    <AppCard class="card-fill">
+    <AppCard v-if="activeTab === '已删除内容'" class="card-fill">
       <div v-if="filtered.length === 0" class="empty-state">
         <AppIcon name="trash-2" :size="48" />
         <div class="empty-state-title">回收站是空的</div>
@@ -162,11 +169,11 @@ async function runRestore(target: RestoreTarget) {
       </div>
     </AppCard>
 
-    <div class="page-section-header">
+    <div v-if="activeTab === '操作日志'" class="page-section-header">
       <h2 class="page-section-title">回收站操作日志</h2>
     </div>
 
-    <AppCard class="card-fixed">
+    <AppCard v-if="activeTab === '操作日志'" class="card-fill">
       <div v-if="restoreLog.length === 0" class="empty-state">
         <AppIcon name="file-text" :size="40" />
         <div class="empty-state-title">暂无操作记录</div>
