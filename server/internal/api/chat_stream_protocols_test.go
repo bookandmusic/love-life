@@ -2,13 +2,17 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // ---- 四协议原生流式的端到端：增量下发、断连取舍、跨帧累积 ----
@@ -20,6 +24,13 @@ import (
 // 以 "event:" 开头或为空串的行按原样写出（供 anthropic / responses 的事件名）。
 // failAfter 为「发够 N 帧后硬断连接」的触发帧数（0 = 不断）。
 func sseUpstream(t *testing.T, frames []string, failAfter int) *httptest.Server {
+	t.Helper()
+	return sseUpstreamDelay(t, frames, failAfter, 0)
+}
+
+// sseUpstreamDelay 同上，但每帧之间停 delay——用于拉开「思考结束」与「整轮结束」的间隔，
+// 使「按整轮墙钟另算一次」的实现与「复用下发值」的实现给出不同的秒数。
+func sseUpstreamDelay(t *testing.T, frames []string, failAfter int, delay time.Duration) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -47,6 +58,9 @@ func sseUpstream(t *testing.T, frames []string, failAfter int) *httptest.Server 
 			}
 			if fl != nil {
 				fl.Flush()
+			}
+			if delay > 0 && i < len(frames)-1 {
+				time.Sleep(delay)
 			}
 		}
 	}))
@@ -359,5 +373,76 @@ func TestChatStreamingOpenAIChatNoSignatureLeak(t *testing.T) {
 		if strings.Contains(b, "sig-leak") {
 			t.Fatalf("签名泄漏到 openai-chat 上游")
 		}
+	}
+}
+
+// TestThinkingSecondsStreamedEqualsPersisted 思考秒数「流式下发的」与「落库的」必须一致
+// （AI模式设计「消息 parts 契约」：`thinking.seconds` 是该轮思考的时长，流式期间随
+// `thinking.end` 下发、落库复用同一个数）。
+//
+// 口径是**求和相等**，不是逐条相等：同一轮内正文首帧到达也会收一次思考（下发一个
+// `thinking.end`），而落库时一轮只落一条 `thinking` part，条数本就不必相同。
+//
+// 脚本故意让思考**分两段**（思考 → 正文 → 再思考），于是一轮内下发两次 `thinking.end`
+// 而落库只有一条 part。这样两种写错的实现都会红：①落库时另算一次整轮墙钟——正文生成
+// 的耗时会混进来；②落库时**覆写**而不是累加——只留下最后一次的值。单段的脚本对②无感
+// （累加与覆写同值），故必须分段。
+func TestThinkingSecondsStreamedEqualsPersisted(t *testing.T) {
+	ts, token, _ := newPostTestEnv(t)
+	// 每帧停 1.2s：第 2 帧（正文首帧）到达时下发第一次「思考结束」≈1 秒，第 4 帧收尾时
+	// 下发第二次≈3 秒（两次都从本轮起点计），合计 4；整轮墙钟到收尾才 ≈3.6 秒。
+	// 故「另算墙钟」得 3、「覆写」得 3，都与累加值 4 不等。
+	up := sseUpstreamDelay(t, []string{
+		`{"choices":[{"delta":{"reasoning_content":"想"}}]}`,
+		`{"choices":[{"delta":{"content":"今"}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"再"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	}, 0, 1200*time.Millisecond)
+	seedFakeProviderType(t, ts, "openai-chat", "m1", up.URL)
+
+	res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": "思考一下"})
+	body := sseBody(t, res)
+
+	// 流式侧：各次 thinking.end 的 seconds 之和
+	matches := regexp.MustCompile(`"seconds":(\d+)`).FindAllStringSubmatch(body, -1)
+	if len(matches) == 0 {
+		t.Fatalf("SSE 未下发 thinking.end:\n%s", body)
+	}
+	if len(matches) < 2 {
+		t.Fatalf("本用例要求一轮内下发多次 thinking.end（分段思考），实际 %d 次:\n%s", len(matches), body)
+	}
+	streamedSum := 0
+	for _, m := range matches {
+		n, _ := strconv.Atoi(m[1])
+		streamedSum += n
+	}
+
+	// 落库侧：各 thinking part 的 seconds 之和
+	var partsJSON string
+	if err := ts.db.QueryRow(
+		`SELECT parts FROM chat_messages WHERE role = 'assistant' ORDER BY id DESC LIMIT 1`).Scan(&partsJSON); err != nil {
+		t.Fatalf("读落库 parts: %v", err)
+	}
+	var parts []struct {
+		Type    string `json:"type"`
+		Seconds int    `json:"seconds"`
+	}
+	if err := json.Unmarshal([]byte(partsJSON), &parts); err != nil {
+		t.Fatalf("解析 parts: %v（%s）", err, partsJSON)
+	}
+	persistedSum := 0
+	persistedParts := 0
+	for _, p := range parts {
+		if p.Type == "thinking" {
+			persistedSum += p.Seconds
+			persistedParts++
+		}
+	}
+	if persistedParts == 0 {
+		t.Fatalf("落库无 thinking part（parts=%s）", partsJSON)
+	}
+	if streamedSum != persistedSum {
+		t.Fatalf("思考秒数：下发合计 %d、落库合计 %d —— 落库不得另算整轮墙钟（含正文生成）（parts=%s）",
+			streamedSum, persistedSum, partsJSON)
 	}
 }

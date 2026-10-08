@@ -669,8 +669,6 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 
 	// 轮级聚合缓存：思考文本 / 工具步骤（parts 契约：一轮助手消息只有一行）。
 	// turnParts 按发生顺序累积各轮内容，落库时一次写出（thinking → tool* → text/card）。
-	var roundReasoning string
-	thinkSeconds := 0
 	turnParts := []map[string]any{}
 	chain, err := s.chatTargets(r.Context())
 	if err != nil {
@@ -781,6 +779,16 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		// lastDeltas 为 nil（错误路径丢弃 deltas），所以这里同步累积一份，
 		// 使「意外断连」时手上已有全部已下发内容（否则落库时无正文可存）。
 		var streamReasoning, streamAnswer strings.Builder
+		// 本轮已下发的思考秒数之和：下发 thinking.end 时顺手累加，落库直接复用它，使
+		// 「流式期间看到的」与「刷新后看到的」构造上同值（AI模式设计「过程收起（客户端渲染口径）」）。
+		// 落库不得另算一次——那样算的是整轮墙钟，会把正文生成的耗时也算成思考。
+		roundThinkSeconds := 0
+		emitThinkEnd := func() {
+			secs := int(time.Since(thinkStart).Seconds())
+			roundThinkSeconds += secs
+			thinkOpen = false
+			s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": secs})
+		}
 		res, lastDeltas, rest, err := s.chatCallStream(r.Context(), w, flusher, chain,
 			&llm.ChatRequest{Messages: msgs, Tools: s.toolSpecs(r.Context())},
 			func(d llm.Delta) {
@@ -792,8 +800,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 					thinkStreamed = true
 				case d.Content != "":
 					if thinkOpen {
-						s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": int(time.Since(thinkStart).Seconds())})
-						thinkOpen = false
+						emitThinkEnd()
 					}
 					streamAnswer.WriteString(d.Content)
 					streamedAnswer = true
@@ -801,15 +808,15 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 				}
 			})
 		if thinkOpen {
-			s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": int(time.Since(thinkStart).Seconds())})
+			emitThinkEnd()
 		}
 		// 断连判定必须在 err 之前：连接断了（网络抖动 / 切后台 / 锁屏，或客户端未及发 abort）
 		// 会让上游调用报 ctx 取消错误，先走 err 分支就再也到不了这里。
 		if r.Context().Err() != nil {
-			// 思考秒数取**本轮**已流逝时间：turnParts 里各轮的 seconds 是各轮自己记的，
-			// 而本轮尚未 append，用外层的 thinkSeconds 会拿到上一轮（或 0）的陈旧值。
+			// 思考秒数同样复用本轮**已下发**的那个数（同上）：上面的收尾保证思考只要开过就
+			// 一定发过 thinking.end 并累加过，故这里直接取累加值，不再另算。
 			s.persistDisconnectedTurn(claims.UserID, sessionID, turnID, turnParts,
-				streamReasoning.String(), streamAnswer.String(), int(time.Since(thinkStart).Seconds()))
+				streamReasoning.String(), streamAnswer.String(), roundThinkSeconds)
 			return
 		}
 		if err != nil {
@@ -849,12 +856,10 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		if choice.Message.Reasoning != "" {
 			if !thinkStreamed {
 				s.sseEvent(w, flusher, "thinking.delta", map[string]any{"text": choice.Message.Reasoning})
-				s.sseEvent(w, flusher, "thinking.end", map[string]any{"seconds": int(time.Since(thinkStart).Seconds())})
+				emitThinkEnd()
 			}
-			thinkSeconds = int(time.Since(thinkStart).Seconds())
-			roundReasoning = choice.Message.Reasoning
 			// 本轮思考进 parts 累积（各轮按发生顺序，落库时一次写出）
-			turnParts = append(turnParts, map[string]any{"type": "thinking", "text": roundReasoning, "seconds": thinkSeconds})
+			turnParts = append(turnParts, map[string]any{"type": "thinking", "text": choice.Message.Reasoning, "seconds": roundThinkSeconds})
 		}
 		if len(choice.Message.ToolCalls) == 0 {
 			text := choice.Message.Content

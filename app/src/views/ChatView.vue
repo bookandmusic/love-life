@@ -7,6 +7,7 @@ import PageLayout from '../components/PageLayout.vue'
 import { useAuth } from '../stores/auth'
 import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
 import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
+import { appendThink, displayThinkSeconds } from '../utils/thinking'
 import MEDIA_LIMITS from '../../../server/internal/limits/media.json' with { type: 'json' }
 import NavActions from '../components/NavActions.vue'
 import MessageList from '../components/chat/MessageList.vue'
@@ -320,6 +321,10 @@ function discardAllCardTokens() {
 
 // 4.1①：loadHistory 恢复 card 快照（未确认且未过期 → pending 可继续确认；过期/已处理 → 只读态）
 // AP2：先展示 indexedDB 本地缓存（断网可用），后台拉服务端权威数据覆盖并回写缓存。
+
+// 思考分段与秒数口径见 thinking.ts（流式与回显两侧共用，口径正文见 AI模式设计
+// 「过程收起（客户端渲染口径）」）。
+
 function applyHistory(items: HistoryMsg[]) {
   const nextBubbles: Bubble[] = []
   const nextCards: Record<number, CardItem> = {}
@@ -346,7 +351,8 @@ function applyHistory(items: HistoryMsg[]) {
     // parts 驱动：一条消息按 parts 顺序渲染为一个气泡序列的最小单元
     let content = ''
     let reasoning = ''
-    let thinkSeconds: number | undefined
+    // 各 thinking part 的秒数之和（原值，不逐条抬下限，见「过程收起（客户端渲染口径）」）
+    let thinkRawSeconds = 0
     const media: import('../types/chat').ChatMedia[] = []
     // 历史回显的附件只有元数据（无本机文件），故用展示类型而非 PickedMedia
     const local: MediaView[] = []
@@ -354,8 +360,13 @@ function applyHistory(items: HistoryMsg[]) {
     let interrupted = false
     for (const part of m.parts ?? []) {
       if (part.type === 'text') content += part.text
-      else if (part.type === 'thinking') { reasoning = part.text; thinkSeconds = part.seconds }
-      else if (part.type === 'tool') {
+      else if (part.type === 'thinking') {
+        // 多轮工具循环会落多条 thinking part（一轮一条）：按同一分段口径拼接，
+        // 否则刷新后只剩最后一轮思考，与流式期间看到的形态不一致。
+        reasoning = appendThink(reasoning, part.text, false)
+        // 各轮秒数求和，与流式侧逐轮累加同一口径（「过程收起（客户端渲染口径）」）
+        thinkRawSeconds += part.seconds || 0
+      } else if (part.type === 'tool') {
         // 步骤条文案 = 人话标签 + 结果（「搜索动态 → 找到 3 条」）：label 是注册表给的人话，
         // text 是本步结果；两者都来自 parts，刷新后与流式中看到的形态一致。
         tools.push({
@@ -379,7 +390,9 @@ function applyHistory(items: HistoryMsg[]) {
       role: m.role as Bubble['role'], content,
       media: media.length ? media : undefined,
       localMedia: local.length ? local : undefined,
-      reasoning, thinkOpen: false, thinkSeconds,
+      reasoning, thinkOpen: false,
+      // 求和后只抬一次下限，与流式侧同一算法；无思考则不落该字段
+      thinkSeconds: reasoning ? displayThinkSeconds(thinkRawSeconds) : undefined,
       quoted: (m.quoted ?? []).map(quoteLabel), interrupted,
     }
     // 卡片挂在本条消息的主气泡上（其 parts 的思考与工具步骤照常各自成行）
@@ -543,15 +556,40 @@ const toolBubbles = new Map<string, Bubble>()
 // 等待指示：streaming 且本轮尚无内容落泡（reasoning/text/card 均未到）时为 true
 const thinking = ref(false)
 
-// 折叠思考区（正文/卡片到达即算思考完成），耗时按发送起点计
-let turnStartedAt = 0
+// 思考区（正文/卡片到达即算思考完成）
+//
+// 这里有两个**不同**的边界，混用会让「流式期间看到的」与「刷新后看到的」不一致：
+//   · 思考段：正文首帧到达时服务端也会发 `thinking.end`（同一轮内可以有多段），故它只用于给
+//     「这一段」计时，**不代表轮界**；
+//   · 工具轮：落库时一轮只落一条 `thinking` part（同一轮内的多段被拼成一整条），故分段空行
+//     只能按轮界来判——而轮界只可能由一个工具往返标出（见「过程收起（客户端渲染口径）」）。
+// 若按 `thinking.end` 分段，流式侧会在「甲」「乙」之间插空行，回显侧却是「甲乙」。
+let roundHasThink = false
+// 本段思考在等服务端的 thinking.end 收口（只用于「没等到」时的兜底计时）
+let segOpen = false
+// 本段首帧墙钟：起点取**本段首帧**而非发送起点——否则该段之前若有工具执行或上一轮思考，
+// 会被算进「已思考」。
+let segStartedAt = 0
+// 思考秒数：逐段累加服务端 thinking.end 给的秒数，与回显侧对各 thinking part 求和同一口径。
+// 累加值保持原样、不在此处抬下限——抬了下限会混进求和（轮1 的 0 被抬成 1 后再加轮2），
+// 与回显侧对不上；下限只在展示前抬一次。
+let thinkSecondsSum = 0
+
+// 收掉当前思考段：服务端给了秒数就以它为准（本段即使没有可见增量也照收，否则流式侧会比
+// 回显侧少一段），没给（帧没收到，如中途报错/被打断）才按本段首帧兜底。
+// 兜底同样下取整——服务端落的就是下取整，故误差至多一个取整单位。
+function closeThinkSeg(seconds?: number) {
+  if (seconds === undefined && !segOpen) return
+  thinkSecondsSum += seconds ?? (segStartedAt ? Math.floor((Date.now() - segStartedAt) / 1000) : 0)
+  segOpen = false
+  segStartedAt = 0
+}
+
 function collapseThink() {
-  if (turnBubble && turnBubble.reasoning) {
-    turnBubble.thinkOpen = false
-    if (!turnBubble.thinkSeconds) {
-      turnBubble.thinkSeconds = Math.max(1, Math.round((Date.now() - turnStartedAt) / 1000))
-    }
-  }
+  closeThinkSeg()
+  if (!turnBubble || !turnBubble.reasoning) return
+  turnBubble.thinkOpen = false
+  turnBubble.thinkSeconds = displayThinkSeconds(thinkSecondsSum)
 }
 
 function ensureTurn(): Bubble {
@@ -580,8 +618,11 @@ async function send(text?: string) {
   error.value = ''
   turnBubble = null
   toolBubbles.clear()
+  roundHasThink = false
+  segOpen = false
+  segStartedAt = 0
+  thinkSecondsSum = 0
   thinking.value = true
-  turnStartedAt = Date.now()
   currentTurnId = ''
   turnCardIds = []
   turnStartIdx = bubbles.value.length
@@ -636,13 +677,25 @@ async function send(text?: string) {
           currentTurnId = String(data.turn_id ?? '')
         } else if (ev === 'thinking.delta') {
           const b = ensureTurn()
-          b.thinkOpen = true
           const chunk = typeof data.text === 'string' ? data.text : ''
-          if (chunk) b.reasoning = b.reasoning ? `${b.reasoning}\n\n${chunk}` : chunk
+          // 原生流式每帧只 1 字：只有**新一轮的首帧**才补空行，轮内逐帧原样累积
+          // （逐帧插空行会把整段思考拆成「一字一行」）。空帧不动标记，保证「开了轮」就一定
+          // 有思考文本，collapseThink 的早退不会把轮留在开着的状态。
+          if (chunk) {
+            b.reasoning = appendThink(b.reasoning ?? '', chunk, roundHasThink)
+            roundHasThink = true
+            // 同轮内可以有多段（正文把思考截断后又起一段），故段与轮分开记
+            if (!segOpen) {
+              segOpen = true
+              segStartedAt = Date.now()
+            }
+            b.thinkOpen = true
+          }
           thinking.value = false
         } else if (ev === 'thinking.end') {
-          const b = ensureTurn()
-          if (typeof data.seconds === 'number') b.thinkSeconds = data.seconds
+          ensureTurn()
+          // 服务端给的秒数为准；收口后 collapseThink 的兜底不会再算一次
+          closeThinkSeg(typeof data.seconds === 'number' ? data.seconds : undefined)
           collapseThink()
         } else if (ev === 'answer.delta') {
           const chunk = typeof data.text === 'string' ? data.text : ''
@@ -676,6 +729,8 @@ async function send(text?: string) {
           }
           thinking.value = false
           collapseThink()
+          // 工具往返 = 轮界：下一段思考属于新一轮，落库时也会是与本条分开的另一条 part
+          roundHasThink = false
         } else if (ev === 'proposal') {
           collapseThink()
           const p = data.proposal ?? {}
