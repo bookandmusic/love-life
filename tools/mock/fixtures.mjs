@@ -212,18 +212,31 @@ export const recentActivity = [
 ]
 // AI 供应商与模型链（按类型分链）：供应商 = 协议 + 地址 + 秘钥（只写不读）；
 // 模型条目按 kind 分两条链（chat / embedding），链内顺序 = 故障切换顺序，供应商本身无默认模型。
-// models：每条 = { id, kind, temperature|null, max_tokens|null }——参数挂条目级，null = 调用不传。
+// models：每条 = { id, kind, max_tokens|null, thinking, thinking_levels, context_window|null }
+// ——参数挂条目级，null = 调用不传；只列现役模型（退市模型配了也调不通）。
 export const modelProviders = [
   { id: 1, api_type: 'openai-chat', name: 'OpenAI', base_url: 'https://api.openai.com/v1', has_key: true, models: [
-    { id: 'gpt-4o', kind: 'chat', temperature: null, max_tokens: null },
-    { id: 'gpt-4o-mini', kind: 'chat', temperature: null, max_tokens: null },
+    { id: 'gpt-5.5', kind: 'chat', max_tokens: null, thinking: 'off', thinking_levels: 'off', context_window: 400000 },
+    { id: 'gpt-5.5-mini', kind: 'chat', max_tokens: null, thinking: 'off', thinking_levels: 'off', context_window: 400000 },
   ] },
   { id: 2, api_type: 'openai-chat', name: '本地嵌入', base_url: 'http://127.0.0.1:11434/v1', has_key: true, models: [
-    { id: 'bge-m3', kind: 'embedding', temperature: null, max_tokens: null },
+    { id: 'bge-m3', kind: 'embedding', max_tokens: null, thinking: 'off', thinking_levels: 'off', context_window: null },
   ] },
   { id: 3, api_type: 'anthropic', name: 'Claude', base_url: 'https://api.anthropic.com', has_key: true, models: [
-    { id: 'claude-sonnet-4-20250514', kind: 'chat', temperature: 0.7, max_tokens: null },
-    { id: 'claude-opus-4-1-20250805', kind: 'chat', temperature: null, max_tokens: null },
+    { id: 'claude-fable-5-1', kind: 'chat', max_tokens: null, thinking: 'off',
+      thinking_levels: 'off,low,medium,high', context_window: 1000000 },
+    { id: 'claude-opus-5-5', kind: 'chat', max_tokens: null, thinking: 'off',
+      thinking_levels: 'off,low,medium,high', context_window: 1000000 },
+    { id: 'claude-sonnet-5-5', kind: 'chat', max_tokens: 8192, thinking: 'medium',
+      thinking_levels: 'off,low,medium,high', context_window: 1000000 },
+    { id: 'claude-haiku-5-5', kind: 'chat', max_tokens: null, thinking: 'off',
+      thinking_levels: 'off,low,medium,high', context_window: 200000 },
+  ] },
+  { id: 4, api_type: 'gemini', name: 'Gemini', base_url: 'https://generativelanguage.googleapis.com', has_key: true, models: [
+    { id: 'gemini-3.1-pro-preview', kind: 'chat', max_tokens: null, thinking: 'off',
+      thinking_levels: 'off,low,high', context_window: 1000000 },
+    { id: 'gemini-3.5-flash', kind: 'chat', max_tokens: null, thinking: 'off',
+      thinking_levels: 'off,low,medium,high', context_window: 1000000 },
   ] },
 ]
 export const systemPrompt = {

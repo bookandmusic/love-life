@@ -344,11 +344,14 @@ func (s *Service) systemPrompt(ctx context.Context, userStyle string) string {
 
 // chatTarget 一次对话可用的供应商与模型（统计落库需要 provider_id 与 model 名称）。
 type chatTarget struct {
-	Client      *llm.Client
-	ProviderID  int64
-	Model       string
-	Temperature *float64
-	MaxTokens   *int64
+	Client     *llm.Client
+	ProviderID int64
+	Model      string
+	MaxTokens  *int64
+	// Thinking 模型级思考档位（off/low/medium/high）；adapter 按协议映射到原生参数。
+	Thinking string
+	// ContextWindow 模型上下文窗口（token），nil = 未声明，用服务端兜底预算。
+	ContextWindow *int64
 }
 
 // chatTargets 构建 chat 链（模型条目按 chain_order, id 全局链序，跨供应商；
@@ -384,13 +387,14 @@ func (s *Service) chatTargets(ctx context.Context) ([]*chatTarget, error) {
 			return nil, fmt.Errorf("不支持的服务协议: %w", cerr)
 		}
 		t := &chatTarget{Client: client, ProviderID: p.ID, Model: model}
-		if e.Model.Temperature.Valid {
-			v := e.Model.Temperature.Float64
-			t.Temperature = &v
-		}
 		if e.Model.MaxTokens.Valid {
 			v := e.Model.MaxTokens.Int64
 			t.MaxTokens = &v
+		}
+		t.Thinking = e.Model.Thinking
+		if e.Model.ContextWindow.Valid {
+			v := e.Model.ContextWindow.Int64
+			t.ContextWindow = &v
 		}
 		targets = append(targets, t)
 	}
@@ -423,8 +427,8 @@ func (s *Service) chatCallStream(ctx context.Context, w http.ResponseWriter, flu
 	for len(chain) > 0 {
 		t := chain[0]
 		chain = chain[1:]
-		req.Temperature = t.Temperature
 		req.MaxTokens = t.MaxTokens
+		req.Thinking = t.Thinking
 		startedAt := time.Now()
 		var deltas []llm.Delta
 		var usage llm.Usage
@@ -469,8 +473,8 @@ func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.Ch
 	for len(chain) > 0 {
 		t := chain[0]
 		chain = chain[1:]
-		req.Temperature = t.Temperature
 		req.MaxTokens = t.MaxTokens
+		req.Thinking = t.Thinking
 		startedAt := time.Now()
 		res, err := t.Client.Chat(ctx, req)
 		elapsed := time.Since(startedAt).Milliseconds()
@@ -680,7 +684,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 
 	// 历史 + 用户风格；空间事实与工具约定固定追加在 system 末尾
 	user, _ := s.db.GetUserByID(r.Context(), claims.UserID)
-	ctxMsgs, resolvedSummary := s.buildModelHistory(r.Context(), claims.UserID, sessionID)
+	ctxMsgs, resolvedSummary := s.buildModelHistory(r.Context(), claims.UserID, sessionID, contextBudget(chain))
 	msgs := []llm.Message{{Role: "system", Content: s.systemPrompt(r.Context(), userStyle(user)) + s.promptTail(r.Context(), claims.UserID, resolvedSummary)}}
 	msgs = append(msgs, ctxMsgs...)
 	modelContent := req.Content
@@ -830,7 +834,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 					content.WriteString(d.Content)
 				}
 				if d.ToolCall != nil {
-					tc := llm.ToolCall{ID: d.ToolCall.ID, Type: "function"}
+					tc := llm.ToolCall{ID: d.ToolCall.ID, Type: "function", Signature: d.ToolCall.Signature}
 					tc.Function.Name = d.ToolCall.Name
 					tc.Function.Arguments = d.ToolCall.Arguments
 					toolCalls = append(toolCalls, tc)
@@ -1725,10 +1729,31 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+// contextBudget 可用历史 token 预算 = 链首模型的上下文窗口 − 输出预留。
+//
+// 取链首模型：上下文在请求前只构建一次（选链后立即组装），链内后续模型窗口更小也不重建——
+// 重建会改变已发出请求的内容，与「流式下切换窗口只到首个增量之前」冲突。这是已知近似。
+// 返回 0 表示未声明窗口，由 buildModelHistory 回落兜底预算（system 段与工具定义不计入，亦为近似）。
+func contextBudget(chain []*chatTarget) int {
+	if len(chain) == 0 || chain[0].ContextWindow == nil {
+		return 0
+	}
+	const defaultReserve = 4096 // 模型未配最大输出时的输出预留
+	reserve := defaultReserve
+	if chain[0].MaxTokens != nil {
+		reserve = int(*chain[0].MaxTokens)
+	}
+	budget := int(*chain[0].ContextWindow) - reserve
+	if budget < 1024 {
+		budget = 1024 // 下限：配错（窗口小于输出预留）也不至于把上下文压成空
+	}
+	return budget
+}
+
 // buildModelHistory 组装模型上下文：取自 chat_context（模型事实源），按 token 预算裁剪。
 //   - pinned（已裁决提案往返）永不淘汰；read_result 可淘汰，淘汰后留一行残留摘要进 system；
 //   - pending 卡片不进（未发生的操作不向模型透露）；thinking/UI 载荷从不进上下文。
-func (s *Service) buildModelHistory(ctx context.Context, userID, sessionID int64) ([]llm.Message, string) {
+func (s *Service) buildModelHistory(ctx context.Context, userID, sessionID int64, tokenBudget int) ([]llm.Message, string) {
 	rows, err := s.db.ListContext(ctx, sessionID)
 	if err != nil {
 		slog.Warn("加载模型上下文失败", "session_id", sessionID, "err", err)
@@ -1739,7 +1764,10 @@ func (s *Service) buildModelHistory(ctx context.Context, userID, sessionID int64
 	//
 	// 裁剪以「配对单元」为单位（assistant 带 tool_calls 与其后续 tool 行同进同出）：
 	// 逐行淘汰会把这一对拆开，重新造出孤儿 tool 行（AI模式设计「上下文组装」· 协议配对）。
-	const contextTokenBudget = 24000
+	const contextTokenBudget = 24000 // 兜底：模型未声明上下文窗口时用
+	if tokenBudget <= 0 {
+		tokenBudget = contextTokenBudget
+	}
 	type ctxUnit struct {
 		rows   []store.ContextRow
 		tokens int
@@ -1765,7 +1793,7 @@ func (s *Service) buildModelHistory(ctx context.Context, userID, sessionID int64
 		}
 		units = append(units, u)
 	}
-	budget := contextTokenBudget
+	budget := tokenBudget
 	keptUnits := make([]ctxUnit, 0, len(units))
 	trimmedRead := 0
 	for i := len(units) - 1; i >= 0; i-- {

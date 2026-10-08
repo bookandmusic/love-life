@@ -53,7 +53,7 @@ func TestProvidersCRUD(t *testing.T) {
 		"api_type": "openai-chat", "name": "  主力  ", "base_url": "https://api.example.com/v1",
 		"api_key": "sk-live",
 		"models": []map[string]any{
-			{"id": "gpt-4o", "kind": "chat", "temperature": 0.7, "max_tokens": 4096},
+			{"id": "gpt-4o", "kind": "chat", "max_tokens": 4096, "context_window": 128000},
 			{"id": "gpt-4o-mini", "kind": "chat"},
 		},
 	})
@@ -74,12 +74,18 @@ func TestProvidersCRUD(t *testing.T) {
 		t.Fatalf("models = %+v", models)
 	}
 	m0 := models[0].(map[string]any)
-	if m0["id"] != "gpt-4o" || m0["temperature"] != 0.7 || m0["max_tokens"] != float64(4096) {
+	if m0["id"] != "gpt-4o" || m0["max_tokens"] != float64(4096) || m0["context_window"] != float64(128000) {
 		t.Fatalf("models[0] = %+v", m0)
 	}
+	if m0["thinking"] != "off" || m0["thinking_levels"] != "off" {
+		t.Fatalf("thinking 缺省应为 off / off: %+v", m0)
+	}
 	m1 := models[1].(map[string]any)
-	if m1["temperature"] != nil || m1["max_tokens"] != nil {
+	if m1["max_tokens"] != nil || m1["context_window"] != nil {
 		t.Fatalf("null params must stay null: %+v", m1)
+	}
+	if _, has := m0["temperature"]; has {
+		t.Fatalf("temperature 已从参数面删除，不得回显: %+v", m0)
 	}
 	id := int64(created["id"].(float64))
 
@@ -105,7 +111,7 @@ func TestProvidersCRUD(t *testing.T) {
 
 	// 编辑：部分更新——name trim 空保留、models 整表替换
 	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/model-providers/"+itoa(id), adminToken, map[string]any{
-		"name": "   ", "models": []map[string]any{{"id": "gpt-4.1", "kind": "chat", "temperature": 0.2}},
+		"name": "   ", "models": []map[string]any{{"id": "gpt-4.1", "kind": "chat", "max_tokens": 2048}},
 	})
 	var updated map[string]any
 	_ = json.NewDecoder(res.Body).Decode(&updated)
@@ -226,9 +232,13 @@ func TestProvidersValidation(t *testing.T) {
 		{"缺 base_url", map[string]any{"api_type": "openai-chat", "api_key": "k"}, "base_url 必填"},
 		{"缺 api_key", map[string]any{"api_type": "openai-chat", "base_url": "u"}, "api_key 必填"},
 		{"空模型名", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": " "}}}, "模型名为空"},
-		{"temperature 越界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "temperature": 2.5}}}, "temperature 需在 0~2 之间"},
 		{"max_tokens 下界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "max_tokens": 100}}}, "max_tokens 需为 256~32768 整数"},
 		{"max_tokens 非整数", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "max_tokens": 4096.5}}}, "max_tokens 需为 256~32768 整数"},
+		{"context_window 越界", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "context_window": 100}}}, "context_window 需为 1024~2000000 整数"},
+		{"max_tokens 超窗口", map[string]any{"api_type": "openai-chat", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "max_tokens": 8192, "context_window": 4096}}}, "max_tokens 不得超过 context_window"},
+		{"thinking 非法", map[string]any{"api_type": "anthropic", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "thinking": "ultra"}}}, "thinking 需为 off / low / medium / high"},
+		{"thinking_levels 非法", map[string]any{"api_type": "anthropic", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "thinking_levels": "off,ultra"}}}, "thinking_levels 需为 off / low / medium / high 的逗号分隔子集"},
+		{"thinking 不在声明集内", map[string]any{"api_type": "gemini", "base_url": "u", "api_key": "k", "models": []map[string]any{{"id": "m", "kind": "chat", "thinking": "medium", "thinking_levels": "off,low,high"}}}, "thinking 需在 thinking_levels 声明的档位内"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

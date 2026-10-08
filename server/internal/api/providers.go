@@ -23,12 +23,15 @@ type providersAPI struct {
 
 // modelOut / providerOut 响应形状（对齐 mock）：has_key 布尔，密钥不出网。
 type modelOut struct {
-	ID          string   `json:"id"`
-	Kind        string   `json:"kind"`
-	Temperature *float64 `json:"temperature"`
-	MaxTokens   *int64   `json:"max_tokens"`
-	// Thinking 思考档位（off/low/medium/high）；off = 不注入任何思考参数。
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	MaxTokens *int64 `json:"max_tokens"`
+	// Thinking 思考档位（off/low/medium/high）；off = 该协议的最低档（现役模型关不掉思考）。
 	Thinking string `json:"thinking"`
+	// ThinkingLevels 该模型支持的思考档位（"off,low,high" 之类），admin 下拉的可选项来源。
+	ThinkingLevels string `json:"thinking_levels"`
+	// ContextWindow 模型上下文窗口（token），null = 未声明、用服务端兜底预算。
+	ContextWindow *int64 `json:"context_window"`
 }
 
 type providerOut struct {
@@ -41,17 +44,17 @@ type providerOut struct {
 }
 
 func toModelOut(m store.ProviderModel) modelOut {
-	var temp *float64
-	var maxTok *int64
-	if m.Temperature.Valid {
-		t := m.Temperature.Float64
-		temp = &t
-	}
+	var maxTok, ctxWin *int64
 	if m.MaxTokens.Valid {
 		mt := m.MaxTokens.Int64
 		maxTok = &mt
 	}
-	return modelOut{ID: m.ModelID, Kind: m.Kind, Temperature: temp, MaxTokens: maxTok, Thinking: m.Thinking}
+	if m.ContextWindow.Valid {
+		cw := m.ContextWindow.Int64
+		ctxWin = &cw
+	}
+	return modelOut{ID: m.ModelID, Kind: m.Kind, MaxTokens: maxTok, Thinking: m.Thinking,
+		ThinkingLevels: m.ThinkingLevels, ContextWindow: ctxWin}
 }
 
 func toProviderOut(p *store.ModelProvider) providerOut {
@@ -67,15 +70,16 @@ func toProviderOut(p *store.ModelProvider) providerOut {
 
 // modelRowOut 模型条目行（链视图）：链序 = 数组顺序（chain_order, id）。
 type modelRowOut struct {
-	ID          int64    `json:"id"`
-	ProviderID  int64    `json:"provider_id"`
-	ProviderNm  string   `json:"provider_name"`
-	APIType     string   `json:"api_type"`
-	Kind        string   `json:"kind"`
-	ModelID     string   `json:"model_id"`
-	Temperature *float64 `json:"temperature"`
-	MaxTokens   *int64   `json:"max_tokens"`
-	Thinking    string   `json:"thinking"`
+	ID             int64  `json:"id"`
+	ProviderID     int64  `json:"provider_id"`
+	ProviderNm     string `json:"provider_name"`
+	APIType        string `json:"api_type"`
+	Kind           string `json:"kind"`
+	ModelID        string `json:"model_id"`
+	MaxTokens      *int64 `json:"max_tokens"`
+	Thinking       string `json:"thinking"`
+	ThinkingLevels string `json:"thinking_levels"`
+	ContextWindow  *int64 `json:"context_window"`
 }
 
 func toModelRowOut(e store.ChainEntry) modelRowOut {
@@ -83,9 +87,11 @@ func toModelRowOut(e store.ChainEntry) modelRowOut {
 		ID: e.Model.ID, ProviderID: e.Provider.ID, ProviderNm: e.Provider.Name,
 		APIType: e.Provider.APIType, Kind: e.Model.Kind, ModelID: e.Model.ModelID,
 	}
-	o.Temperature = toModelOut(e.Model).Temperature
-	o.MaxTokens = toModelOut(e.Model).MaxTokens
-	o.Thinking = e.Model.Thinking
+	m := toModelOut(e.Model)
+	o.MaxTokens = m.MaxTokens
+	o.Thinking = m.Thinking
+	o.ThinkingLevels = m.ThinkingLevels
+	o.ContextWindow = m.ContextWindow
 	return o
 }
 
@@ -104,8 +110,7 @@ func (a *providersAPI) modelsOut(ctx context.Context) (map[string][]modelRowOut,
 	return out, nil
 }
 
-func sqlNullFloat(f float64) sql.NullFloat64 { return sql.NullFloat64{Float64: f, Valid: true} }
-func sqlNullInt(i int64) sql.NullInt64       { return sql.NullInt64{Int64: i, Valid: true} }
+func sqlNullInt(i int64) sql.NullInt64 { return sql.NullInt64{Int64: i, Valid: true} }
 
 func (a *providersAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListProviders(r.Context())
@@ -120,15 +125,20 @@ func (a *providersAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
-// modelIn 请求侧模型条目：temperature/max_tokens 可能是 null / 数字 / 数字字符串 / 空串。
+// modelIn 请求侧模型条目：max_tokens / context_window 可能是 null / 数字 / 数字字符串 / 空串。
 type modelIn struct {
-	ID          string `json:"id"`
-	Kind        string `json:"kind"`
-	Temperature any    `json:"temperature"`
-	MaxTokens   any    `json:"max_tokens"`
+	ID        string `json:"id"`
+	Kind      string `json:"kind"`
+	MaxTokens any    `json:"max_tokens"`
 	// Thinking 思考档位；缺省（空串/缺失）= off。未知取值在校验处拒绝而非静默归 off，
 	// 以便配置界面写错时立刻可见。
 	Thinking string `json:"thinking"`
+	// ThinkingLevels 该模型支持的思考档位（逗号分隔子集）；缺省只有 off。
+	// 思考档位必须落在集合内：档位取值是模型属性（Gemini 3 Pro 只接受 low/high），
+	// 在配置面声明即可，代码不判模型名（别名会让名称匹配落空）。
+	ThinkingLevels string `json:"thinking_levels"`
+	// ContextWindow 模型上下文窗口（token），可空。
+	ContextWindow any `json:"context_window"`
 }
 
 // numOrNull 归一：null/”/缺失 → ok=false（存 NULL）；数字或数字字符串 → 值。
@@ -163,8 +173,25 @@ func checkThinkingAllowed(apiType string, models []store.ProviderModel) string {
 		return ""
 	}
 	for _, m := range models {
-		if m.Thinking != store.ThinkingOff {
+		// 声明集只允许 off 即可覆盖档位：档位必须落在声明集内（normalizeModels 已校验），
+		// 集合只有 off 时档位自然也只剩 off。此处单独判 thinking 只为给出更直白的文案。
+		if m.Thinking != store.ThinkingOff || m.ThinkingLevels != store.ThinkingOff {
 			return "OpenAI Chat 协议没有统一的思考参数，思考档位只能为关"
+		}
+	}
+	return ""
+}
+
+// embeddingOffProtocol 嵌入条目的协议一致性：嵌入只允许挂 openai-chat 供应商。
+// 三处入口（建模型、编辑供应商带 models、改协议）共用一处文案，措辞与 mock 逐字一致——
+// 两处各写一遍就会漂移，而 mock 存在的意义正是「本地能存的形态与 server 一致」。
+func embeddingOffProtocol(apiType string, models []store.ProviderModel) string {
+	if apiType == llm.APITypeOpenAIChat {
+		return ""
+	}
+	for _, m := range models {
+		if m.Kind == "embedding" {
+			return "嵌入模型只能挂 openai-chat 供应商"
 		}
 	}
 	return ""
@@ -183,12 +210,6 @@ func normalizeModels(raw []modelIn) ([]store.ProviderModel, string) {
 			return nil, "模型 " + id + " 的 kind 需为 chat 或 embedding"
 		}
 		entry := store.ProviderModel{Kind: kind, ModelID: id}
-		if t, provided := numOrNull(m.Temperature); provided {
-			if t < 0 || t > 2 {
-				return nil, "模型 " + id + " 的 temperature 需在 0~2 之间，或不设置"
-			}
-			entry.Temperature = sqlNullFloat(t)
-		}
 		if mt, provided := numOrNull(m.MaxTokens); provided {
 			mti := int64(mt)
 			if mt != float64(mti) || mti < 256 || mti > 32768 {
@@ -196,11 +217,31 @@ func normalizeModels(raw []modelIn) ([]store.ProviderModel, string) {
 			}
 			entry.MaxTokens = sqlNullInt(mti)
 		}
+		if cw, provided := numOrNull(m.ContextWindow); provided {
+			cwi := int64(cw)
+			if cw != float64(cwi) || cwi < 1024 || cwi > 2000000 {
+				return nil, "模型 " + id + " 的 context_window 需为 1024~2000000 整数，或不设置"
+			}
+			entry.ContextWindow = sqlNullInt(cwi)
+		}
+		// 最大输出不得超过上下文窗口：否则「窗口 − 输出预留」为负，历史预算恒被压到下限。
+		if entry.MaxTokens.Valid && entry.ContextWindow.Valid && entry.MaxTokens.Int64 > entry.ContextWindow.Int64 {
+			return nil, "模型 " + id + " 的 max_tokens 不得超过 context_window"
+		}
 		thinking, ok := store.NormalizeThinking(strings.TrimSpace(m.Thinking))
 		if !ok {
 			return nil, "模型 " + id + " 的 thinking 需为 off / low / medium / high"
 		}
+		levels, lok := store.NormalizeThinkingLevels(m.ThinkingLevels)
+		if !lok {
+			return nil, "模型 " + id + " 的 thinking_levels 需为 off / low / medium / high 的逗号分隔子集"
+		}
+		// 档位必须落在声明的支持集合内：否则选了该模型会向供应商发它不认的档位（轻则报错重则静默降级）。
+		if !store.ThinkingLevelAllowed(levels, thinking) {
+			return nil, "模型 " + id + " 的 thinking 需在 thinking_levels 声明的档位内"
+		}
 		entry.Thinking = thinking
+		entry.ThinkingLevels = levels
 		out = append(out, entry)
 	}
 	return out, ""
@@ -239,11 +280,9 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, terr)
 		return
 	}
-	for _, m := range models {
-		if m.Kind == "embedding" && req.APIType != llm.APITypeOpenAIChat {
-			writeError(w, http.StatusBadRequest, "嵌入模型只能挂 openai-chat 供应商")
-			return
-		}
+	if eerr := embeddingOffProtocol(req.APIType, models); eerr != "" {
+		writeError(w, http.StatusBadRequest, eerr)
+		return
 	}
 	enc, err := crypto.Encrypt(a.key, req.APIKey)
 	if err != nil {
@@ -324,6 +363,10 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	replaceModels := req.Models != nil
+	// 落库后的条目形态：带 models 用请求里的，不带则沿用名下旧条目。
+	// 档位校验一律对「落库后的形态」做——只改协议、不带 models 的编辑（admin 的供应商表单正是如此）
+	// 会把旧条目原样留下，只校验请求里的条目就会漏掉它们，留下该协议根本不认的档位。
+	next := p.Models
 	var models []store.ProviderModel
 	if replaceModels {
 		norm, merr := normalizeModels(*req.Models)
@@ -331,17 +374,15 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, merr)
 			return
 		}
-		if terr := checkThinkingAllowed(p.APIType, norm); terr != "" {
-			writeError(w, http.StatusBadRequest, terr)
-			return
-		}
-		for _, m := range norm {
-			if m.Kind == "embedding" && p.APIType != llm.APITypeOpenAIChat {
-				writeError(w, http.StatusBadRequest, "嵌入模型只能挂 openai-chat 供应商")
-				return
-			}
-		}
-		models = norm
+		next, models = norm, norm
+	}
+	if terr := checkThinkingAllowed(p.APIType, next); terr != "" {
+		writeError(w, http.StatusBadRequest, terr)
+		return
+	}
+	if eerr := embeddingOffProtocol(p.APIType, next); eerr != "" {
+		writeError(w, http.StatusBadRequest, eerr)
+		return
 	}
 	if err := a.db.UpdateProvider(r.Context(), id, p.APIType, p.Name, p.BaseURL, models, replaceModels); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
@@ -402,12 +443,13 @@ func (a *providersAPI) modelsList(w http.ResponseWriter, r *http.Request) {
 
 func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Kind        string `json:"kind"`
-		ProviderID  int64  `json:"provider_id"`
-		ModelID     string `json:"model_id"`
-		Temperature any    `json:"temperature"`
-		MaxTokens   any    `json:"max_tokens"`
-		Thinking    string `json:"thinking"`
+		Kind           string `json:"kind"`
+		ProviderID     int64  `json:"provider_id"`
+		ModelID        string `json:"model_id"`
+		MaxTokens      any    `json:"max_tokens"`
+		Thinking       string `json:"thinking"`
+		ThinkingLevels string `json:"thinking_levels"`
+		ContextWindow  any    `json:"context_window"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
@@ -430,11 +472,12 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	if req.Kind == "embedding" && p.APIType != llm.APITypeOpenAIChat {
-		writeError(w, http.StatusBadRequest, "嵌入模型只能挂 openai-chat 供应商")
+	// 嵌入守卫放在归一之前：与 mock 的判定顺序一致（两处都先拒协议不符，再报字段错误）。
+	if eerr := embeddingOffProtocol(p.APIType, []store.ProviderModel{{Kind: req.Kind}}); eerr != "" {
+		writeError(w, http.StatusBadRequest, eerr)
 		return
 	}
-	m, merr := normalizeOne(req.Kind, strings.TrimSpace(req.ModelID), req.Temperature, req.MaxTokens, req.Thinking)
+	m, merr := normalizeOne(req.Kind, strings.TrimSpace(req.ModelID), req.MaxTokens, req.Thinking, req.ThinkingLevels, req.ContextWindow)
 	if merr != "" {
 		writeError(w, http.StatusBadRequest, merr)
 		return
@@ -457,8 +500,9 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 // normalizeOne 单条模型条目归一与校验（与 normalizeModels 同参数口径）。
-func normalizeOne(kind, id string, temp, maxTok any, thinking string) (store.ProviderModel, string) {
-	m, err := normalizeModels([]modelIn{{ID: id, Kind: kind, Temperature: temp, MaxTokens: maxTok, Thinking: thinking}})
+func normalizeOne(kind, id string, maxTok any, thinking, thinkingLevels string, ctxWindow any) (store.ProviderModel, string) {
+	m, err := normalizeModels([]modelIn{{ID: id, Kind: kind, MaxTokens: maxTok,
+		Thinking: thinking, ThinkingLevels: thinkingLevels, ContextWindow: ctxWindow}})
 	if err != "" {
 		return store.ProviderModel{}, err
 	}
@@ -472,17 +516,20 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ModelID     *string `json:"model_id"`
-		Temperature any     `json:"temperature"`
-		MaxTokens   any     `json:"max_tokens"`
-		// Thinking 指针：nil = 未传（保留原值），空串 = 显式置 off
-		Thinking *string `json:"thinking"`
+		ModelID       *string `json:"model_id"`
+		MaxTokens     any     `json:"max_tokens"`
+		ContextWindow any     `json:"context_window"`
+		// Thinking / ThinkingLevels 指针：nil = 未传（保留原值），空串 = 显式置 off
+		Thinking       *string `json:"thinking"`
+		ThinkingLevels *string `json:"thinking_levels"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
-	// 现值兜底：部分更新——未传字段保留原值
+	// 现值兜底：model_id / thinking / thinking_levels 未传则保留原值。
+	// max_tokens / context_window 是「整值替换」——省略或 null 都会落 NULL（清空），
+	// 因为这两个字段要支持「清掉已配的上限」；前端表单每次提交都带全量字段。
 	chain, err := a.db.ListModels(r.Context(), "chat")
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
@@ -517,7 +564,11 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 	if req.Thinking != nil {
 		thinking = *req.Thinking
 	}
-	m, merr := normalizeOne(cur.Kind, modelID, req.Temperature, req.MaxTokens, thinking)
+	levels := cur.ThinkingLevels
+	if req.ThinkingLevels != nil {
+		levels = *req.ThinkingLevels
+	}
+	m, merr := normalizeOne(cur.Kind, modelID, req.MaxTokens, thinking, levels, req.ContextWindow)
 	if merr != "" {
 		writeError(w, http.StatusBadRequest, merr)
 		return
@@ -534,7 +585,7 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, terr)
 		return
 	}
-	if err := a.db.UpdateModel(r.Context(), id, m.ModelID, m.Temperature, m.MaxTokens, m.Thinking); err != nil {
+	if err := a.db.UpdateModel(r.Context(), id, m.ModelID, m.MaxTokens, m.Thinking, m.ThinkingLevels, m.ContextWindow); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "模型条目不存在")
 			return

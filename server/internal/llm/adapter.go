@@ -48,6 +48,9 @@ type ToolCallDelta struct {
 	ID        string
 	Name      string
 	Arguments string // 已拼全的参数 JSON（解析在上层执行）
+	// Signature 协议私有思考凭据（gemini 3 系的 thoughtSignature），仅该协议填充；
+	// 上层原样存进 ToolCall.Signature 以便历史回传（其余协议恒为空）。
+	Signature string
 }
 
 // selectAdapter 按 api_type 选 adapter。所有协议 adapter 均已实现。
@@ -70,9 +73,6 @@ func selectAdapter(apiType string) (adapter, error) {
 // （openai-chat / openai-responses / anthropic 三协议字段名一致，共用此注入；
 // gemini 走 generationConfig，由其 adapter 自行组装）。nil = 未设置，不传。
 func applyModelParams(body map[string]any, req *ChatRequest) {
-	if req.Temperature != nil {
-		body["temperature"] = *req.Temperature
-	}
 	if req.MaxTokens != nil {
 		body["max_tokens"] = *req.MaxTokens
 	}

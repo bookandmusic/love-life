@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { providersApi } from '../api'
 import { THINKING_OPTIONS, type AiProvider, type ApiProtocol, type ModelKind, type ModelRow, type ThinkingLevel } from '../api/providers'
 import { API_PROTOCOLS, protocolLabel } from '../api/providers'
@@ -116,9 +116,11 @@ const editingModelId = ref<number | null>(null)
 const mKind = ref<ModelKind>('chat')
 const mProviderId = ref<number | null>(null)
 const mModelId = ref('')
-const mTemperature = ref<number | null>(null)
 const mMaxTokens = ref<number | null>(null)
 const mThinking = ref<ThinkingLevel>('off')
+/** 该模型支持的思考档位（多选）：档位取值是模型属性，故由这里声明，不在代码里判模型名。 */
+const mThinkingLevels = ref<ThinkingLevel[]>(['off'])
+const mContextWindow = ref<number | null>(null)
 const mSaving = ref(false)
 
 const kindLabel: Record<ModelKind, string> = { chat: '对话模型链', embedding: '嵌入模型链' }
@@ -135,6 +137,41 @@ const providerOptions = computed(() =>
 const thinkingDisabled = computed(
   () => providers.value.find((x) => x.id === mProviderId.value)?.api_type === 'openai-chat',
 )
+
+// 声明集恒含「关」（关是任何模型的合法选择）：下拉选项、回落判断、提交串三处共用，
+// 各写一遍迟早漂移（漏一处就会出现「界面上没有关、提交时又带了关」这类不一致）。
+const withOff = (levels: ThinkingLevel[]): ThinkingLevel[] => [...new Set([...levels, 'off' as ThinkingLevel])]
+
+// 「思考」下拉的选项 = 该模型声明的支持档位（含恒有的「关」）。
+// 声明集外选不出来：档位取值是模型属性（如 Gemini 3 Pro 只接受低/高），
+// 在配置面声明即可，避免在代码里解析模型名（别名会让名称匹配落空）。
+const thinkingChoices = computed(() => {
+  const allowed = withOff(mThinkingLevels.value)
+  return THINKING_OPTIONS.filter((o) => allowed.includes(o.value))
+})
+
+// 取消勾选当前选中的档位时，把「思考」回落到「关」。
+// 不回落就会留下「下拉空着、内部仍是旧档位」的状态：提交时送出的档位不在声明集内，
+// 被服务端以「thinking 需在 thinking_levels 声明的档位内」拒绝（400），
+// 而界面上看不出哪里不对。watch 而非在 change 里判断，是为了两处入口都覆盖到。
+watch(mThinkingLevels, (levels) => {
+  if (!withOff(levels).includes(mThinking.value)) mThinking.value = 'off'
+})
+
+// openai-chat 无统一思考参数，声明集只能是 off：选中该协议就把多选与档位都落回「关」。
+// 只置灰不落值会留下「勾选框灰着但仍勾着中/高」的状态——提交必被服务端拒（400），
+// 而界面上看不出哪里可改（新建时供应商可切换，故该路径可达）。
+watch(thinkingDisabled, (disabled) => {
+  if (disabled) {
+    mThinkingLevels.value = ['off']
+    mThinking.value = 'off'
+  }
+})
+
+/** 档位的显示名（列表用；取值面只在 THINKING_OPTIONS 一处）。 */
+function thinkingLabel(level: ThinkingLevel): string {
+  return THINKING_OPTIONS.find((o) => o.value === level)?.label ?? level
+}
 
 // 获取模型列表：以所选供应商的地址与已存秘钥为准
 async function fetchModelList() {
@@ -161,9 +198,10 @@ function openModelCreate(kind: ModelKind) {
   mKind.value = kind
   mProviderId.value = providerOptions.value[0]?.id ?? null
   mModelId.value = ''
-  mTemperature.value = null
   mMaxTokens.value = null
   mThinking.value = 'off'
+  mThinkingLevels.value = ['off']
+  mContextWindow.value = null
   showModelForm.value = true
 }
 
@@ -172,9 +210,10 @@ function openModelEdit(row: ModelRow) {
   mKind.value = row.kind
   mProviderId.value = row.provider_id
   mModelId.value = row.model_id
-  mTemperature.value = row.temperature
   mMaxTokens.value = row.max_tokens
   mThinking.value = row.thinking
+  mThinkingLevels.value = row.thinking_levels.split(',').filter(Boolean) as ThinkingLevel[]
+  mContextWindow.value = row.context_window
   showModelForm.value = true
 }
 
@@ -193,23 +232,27 @@ async function submitModelForm() {
   }
   mSaving.value = true
   try {
-    const temp = normalizeParam(mTemperature.value)
     const maxTok = normalizeParam(mMaxTokens.value)
+    const ctxWin = normalizeParam(mContextWindow.value)
+    // 声明集恒含「关」（关是任何模型的合法选择），顺序交给服务端归一
+    const levels = withOff(mThinkingLevels.value).join(',')
     if (editingModelId.value === null) {
       chains.value = await providersApi.createModel({
         kind: mKind.value,
         provider_id: mProviderId.value!,
         model_id: mModelId.value.trim(),
-        temperature: temp,
         max_tokens: maxTok,
         thinking: mThinking.value,
+        thinking_levels: levels,
+        context_window: ctxWin,
       })
     } else {
       chains.value = await providersApi.updateModel(editingModelId.value, {
         model_id: mModelId.value.trim(),
-        temperature: temp,
         max_tokens: maxTok,
         thinking: mThinking.value,
+        thinking_levels: levels,
+        context_window: ctxWin,
       })
     }
     showModelForm.value = false
@@ -306,7 +349,7 @@ async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
             <thead>
               <tr>
                 <th style="width: 44px">链序</th><th>供应商</th><th>协议</th><th>模型</th>
-                <th>Temperature</th><th>Max Tokens</th><th></th>
+                <th>思考</th><th>支持的思考</th><th>上下文</th><th>最大输出</th><th></th>
               </tr>
             </thead>
             <tbody>
@@ -319,7 +362,9 @@ async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
                 <td>{{ row.provider_name }}</td>
                 <td><code>{{ protocolLabel(row.api_type) }}</code></td>
                 <td><code>{{ row.model_id }}</code></td>
-                <td>{{ row.temperature ?? '—' }}</td>
+                <td>{{ thinkingLabel(row.thinking) }}</td>
+                <td><code>{{ row.thinking_levels }}</code></td>
+                <td>{{ row.context_window ?? '—' }}</td>
                 <td>{{ row.max_tokens ?? '—' }}</td>
                 <td class="text-right">
                   <div class="flex gap-2" style="justify-content: flex-end">
@@ -399,7 +444,7 @@ async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
         <div class="form-group" style="margin: 0">
           <label class="form-label">模型名</label>
           <div class="flex gap-2">
-            <input v-model="mModelId" class="form-input" placeholder="如 gpt-4o / deepseek-chat / bge-m3" required />
+            <input v-model="mModelId" class="form-input" placeholder="如 gpt-5.5 / claude-sonnet-5-5 / bge-m3" required />
             <AppButton
               v-if="editingModelId === null"
               variant="secondary"
@@ -415,22 +460,36 @@ async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
         </div>
         <div class="flex gap-3">
           <div class="form-group" style="flex: 1; margin: 0">
-            <label class="form-label">Temperature（可选）</label>
-            <input v-model.number="mTemperature" class="form-input" type="number" min="0" max="2" step="0.1" placeholder="不传" />
-          </div>
-          <div class="form-group" style="flex: 1; margin: 0">
-            <label class="form-label">Max Tokens（可选）</label>
+            <label class="form-label">最大输出（可选）</label>
             <input v-model.number="mMaxTokens" class="form-input" type="number" min="256" max="32768" step="256" placeholder="不传" />
           </div>
+          <div class="form-group" style="flex: 1; margin: 0">
+            <label class="form-label">上下文窗口（可选）</label>
+            <input v-model.number="mContextWindow" class="form-input" type="number" min="1024" max="2000000" step="1" placeholder="不传" />
+          </div>
+        </div>
+        <p class="form-hint">上下文窗口是模型的 token 上限，用于裁剪送入模型的历史；不填则用服务端兜底预算。最大输出不得超过它。</p>
+        <div class="form-group">
+          <label class="form-label">支持的思考档位</label>
+          <div class="flex gap-3">
+            <label v-for="o in THINKING_OPTIONS" :key="o.value" class="flex" style="align-items: center; gap: 6px">
+              <input v-model="mThinkingLevels" type="checkbox" :value="o.value" :disabled="thinkingDisabled && o.value !== 'off'" />
+              <span>{{ o.label }}</span>
+            </label>
+          </div>
+          <p class="form-hint">
+            按供应商文档填该模型实际支持的档位（如 Gemini 3 Pro 只有低/高，选「中」会被供应商拒绝）。
+            「关」恒在集合内。档位在配置面声明，服务端不解析模型名——供应商改别名也不会失效。
+          </p>
         </div>
         <div class="form-group">
           <label class="form-label">思考</label>
           <select v-model="mThinking" class="form-select" :disabled="thinkingDisabled">
-            <option v-for="o in THINKING_OPTIONS" :key="o.value" :value="o.value">{{ o.label }}</option>
+            <option v-for="o in thinkingChoices" :key="o.value" :value="o.value">{{ o.label }}</option>
           </select>
           <p class="form-hint">
             <template v-if="thinkingDisabled">OpenAI Chat 协议没有统一的思考参数，是否回思考由供应商自定，故不可配置。</template>
-            <template v-else>开启后模型会先思考再作答，思考同样消耗 token（按模型计费）；关闭则由服务端不传任何思考参数。</template>
+            <template v-else>开启后模型会先思考再作答，思考同样消耗 token（按模型计费）。「关」= 该模型的最低档——现役模型无法真正关闭思考，省略参数只会让它留在默认档。</template>
           </p>
         </div>
         <div class="flex gap-2" style="justify-content: flex-end">

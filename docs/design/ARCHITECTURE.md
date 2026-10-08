@@ -318,7 +318,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | User | id, username, password_hash, role(admin/girl/boy), nickname, avatar_path?, birthday, ai_style | 用户级 AI 偏好（**仅输出风格**）内嵌本表，按用户生效；**无 `chat_retention_days`**——对话历史不设保留时长。admin 由部署环境变量内置。`avatar_path` 见「媒体上传管线」无主文件通道；`birthday` 仅后台维护，不下发 APP |
 | Space | id, name, signature, love_start_date | 单行表（单空间部署）；`GET /space` 额外返回即时聚合字段 members / days_together / next_anniversary / anniversary_count / album_count（首页「全新部署空态」判定用：无动态 + 无纪念日 + 无相册；用计数而非 `next_anniversary.name`，否则「纪念日存在但日期全部无效」会被误判成空态） |
 | ModelProvider | id, api_type(openai-chat/openai-responses/anthropic/gemini), name, base_url, api_key_enc | admin 域；Key 加密存储，客户端永不接触。**无 `default_model` / `sort_order`**：用哪个模型、按什么顺序重试，全部由模型条目的链序决定 |
-| ProviderModel | id, provider_id, model_id, kind(chat/embedding), temperature?, max_tokens?, thinking(off/low/medium/high, 默认 off), chain_order | 模型条目：`kind` 决定属于哪条链，`chain_order` 是**同类型内的全局链序**（跨供应商，重试即按它依次走）；`(provider_id, kind, model_id)` UNIQUE，删除供应商时级联。嵌入类型只允许 openai-chat 供应商（应用层校验）。`temperature` / `max_tokens` 可空 = 调用不传。`thinking` 为**按模型的思考档位**：`off` = 服务端不注入任何思考参数（缺省，不产生思考计费），`low/medium/high` 由 adapter 按协议**与模型代际**映射到原生参数（AI模式设计「模型网关」）——anthropic 开思考时**不得同时传 temperature**（供应商要求二者互斥），故注入逻辑按协议分支。**无视觉能力字段**：媒体一律不入模型（AI模式设计「模型网关与配置中心」） |
+| ProviderModel | id, provider_id, model_id, kind(chat/embedding), max_tokens?, thinking(off/low/medium/high, 默认 off), thinking_levels(默认 off), context_window?, chain_order | 模型条目：`kind` 决定属于哪条链，`chain_order` 是**同类型内的全局链序**（跨供应商，重试即按它依次走）；`(provider_id, kind, model_id)` UNIQUE，删除供应商时级联。嵌入类型只允许 openai-chat 供应商（应用层校验）。`max_tokens` / `context_window` 可空 = 调用不传；后者的用途见 AI模式设计「上下文组装」。`thinking` 与 `thinking_levels` 分别是按模型的思考档位与它声明支持的档位集合，写入时校验档位落在集合内；取值口径、协议映射与「关」的语义见 AI模式设计「模型网关与配置中心」。**无 `temperature`、无视觉能力字段**（理由见「明确不做与已否决项 · AI 能力」） |
 | OutputStyle | id, name, prompt, builtin, sort_order? | 输出风格库：内置固化 + 后台自定义；全局默认风格为单行配置（default_style_id，存 AppSetting） |
 | AppSetting | key, value | admin 域全局单值配置（default_style_id、system_prompt 等），键值存储，客户端永不接触。**嵌入模型不再走这里**：嵌入链由 `ProviderModel(kind=embedding)` 表达 |
 | RefreshToken | id, user_id, token_hash, expires_at, created_at | 仅存 hash；刷新时顺延（30 天），过期行由 janitor 每小时清理（见「定时任务总表」） |
@@ -396,6 +396,8 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | 否决项 | 理由 |
 |:---|:---|
 | 视觉能力（看图） | 媒体一律不入模型，详见 AI模式设计「模型网关与配置中心」；附件与「看图」边界见 PRODUCT「图片与「看图」边界」 |
+| 采样参数（temperature 等） | 现役模型的思考参数恒开且与它互斥（同传即 400，等于静默丢弃用户配置）；PRODUCT 也未承诺采样参数。模型级参数面收敛为 max_tokens / thinking / thinking_levels / context_window |
+| 按模型名判定代际 / 能力 | 供应商别名与改名会让名称匹配落空，退化成 400 或静默失效；能力差异改由配置面声明（`thinking_levels`），adapter 不解析模型名 |
 | AI 主动推送 / 主动提醒 | 不做 AI 主动发起；提醒走通知系统，归用户配置 |
 | 年度回顾 / 情感洞察 | 属「AI 替用户总结情感」，与「记录工具」定位不符；且需要长期数据积累才有意义 |
 | 语音输入 | 首版不做 |

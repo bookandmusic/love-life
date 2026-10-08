@@ -36,8 +36,19 @@
 
 | 层 | 内容 |
 |:---|:---|
-| 全局（admin） | 供应商（协议 / 地址 / Key）、**模型条目与两条链的顺序**（条目挂类型 `chat` / `embedding`，链序即重试顺序）、模型级参数（temperature / max_tokens 可空 = 调用不传，用供应商默认；Anthropic / OpenAI-Responses 的 `max_tokens` 为必填字段，未设时用协议默认 4096 / 16384。另有**思考档位** `thinking` = off/low/medium/high，**默认 off = 不注入任何思考参数**（开启会产生思考 token 计费，PRODUCT「后台管理页面功能范围（admin）」）；由 adapter 按协议**与模型代际**映射到原生参数，见「模型网关」）、全局 System Prompt 主干、输出风格库、工具启停。**没有「空间级」独立层**：单空间部署下空间即全局，入口与存储都只有这一份（PRODUCT「后台管理页面功能范围（admin）」） |
+| 全局（admin） | 供应商（协议 / 地址 / Key）、**模型条目与两条链的顺序**（条目挂类型 `chat` / `embedding`，链序即重试顺序）、模型级参数（见下表）、全局 System Prompt 主干、输出风格库、工具启停。**没有「空间级」独立层**：单空间部署下空间即全局，入口与存储都只有这一份（PRODUCT「后台管理页面功能范围（admin）」） |
 | 用户级 | 输出风格偏好（在 APP 设置页配置，仅对该用户发起的会话生效）。**无对话保留时长**：历史不自动过期 |
+
+模型级参数面收敛为四项（`null` = 调用不传、用供应商默认）：
+
+| 参数 | 语义 |
+|:---|:---|
+| `max_tokens` | 单次回答的输出上限。Anthropic / OpenAI-Responses 的 `max_tokens` 为必填字段，未设时用协议默认 4096 / 16384 |
+| `thinking` | **思考档位** = off/low/medium/high，默认 off。**off = 该协议的最低档**，不是「不请求思考」：现役模型（Anthropic adaptive、Gemini 3.x）关不掉思考，省略参数只会让它停在自身默认档，反而违背「关」的意图——用户选「关」要的是省钱省时。开启会产生思考 token 计费（PRODUCT「后台管理页面功能范围（admin）」） |
+| `thinking_levels` | 该模型**声明支持**的档位集合（逗号分隔、恒含 off）。档位取值是**模型**属性而非协议属性（如 Gemini 3 Pro 只接受 low/high，发 medium 即 400），故放在配置面声明；adapter 只做「已选档位 → 原生参数」的映射、**不解析模型名**（别名会让名称匹配落空，退化成 400 或静默失效）。写入时归一为固定顺序并校验 `thinking` 落在集合内；OpenAI Chat 协议无统一思考参数，其声明集只允许 off |
+| `context_window` | 模型上下文窗口（token）。用于裁剪送入模型的历史：预算 = 窗口 − 输出预留（`max_tokens` 未设时预留 4096），下限 1024；不填则用兜底预算。见「上下文组装」 |
+
+**不设 `temperature`**：理由见 ARCHITECTURE「明确不做与已否决项 · AI 能力」。
 
 **最终 System Prompt = 全局模板主干 + 当前生效风格提示词片段 + 工具使用约定**
 
@@ -304,7 +315,7 @@ UI 块载荷（缩略图 URL、网格结构）**永不进模型上下文**——
 | 预算三维 | 轮次上限 8、工具调用总数上限 16、整轮墙钟 90s。任一触顶即进入收尾，**不静默结束**。（**初始值**：无实测依据，上线后按观测调整） |
 | 读工具并行 | 同一次模型响应里的多个 tool_calls：读工具（`!IsWrite`）**并行执行**（用标准库 `sync.WaitGroup`，不为此新增第三方依赖）；写工具（提案）串行，且一旦产出提案即停止本轮（一轮只出一张卡，媒体也只归首张卡）。并行只覆盖「首个写工具之前」的那段读工具——出提案会中止其后所有 call，把提案之后的读工具也跑掉就是执行了不该执行的调用 |
 | 收尾义务 | 预算耗尽必须再补一次**不带工具**的调用，让模型基于已获得的信息作答并说明哪些没完成；该调用也失败才回退固定文案。`stop_reason=budget` |
-| tool_calls 增量累积 | 流式下工具参数分片到达，形状各协议不同：openai-chat `delta.tool_calls[i]` 带 index、arguments 按 index 拼字符串；openai-responses `response.function_call_arguments.delta`；anthropic `content_block_delta.input_json_delta.partial_json`（按 content_block 序号归组）；gemini `parts[].functionCall` 分片。**累积在 adapter 内部完成，Agent 层只看到完整的 tool_call**（协议差异不外泄） |
+| tool_calls 增量累积 | 流式下工具参数分片到达，形状各协议不同：openai-chat `delta.tool_calls[i]` 带 index、arguments 按 index 拼字符串；openai-responses `response.function_call_arguments.delta`；anthropic `content_block_delta.input_json_delta.partial_json`（按 content_block 序号归组）；gemini `parts[].functionCall` **整块到达**（Gemini API 不分片：`args` 是 JSON object，官方标注 `partialArgs` / `willContinue` 仅 Vertex 支持，故不做分片累积）。**累积在 adapter 内部完成，Agent 层只看到完整的 tool_call**（协议差异不外泄） |
 | 分片跨帧 | arguments 的 JSON 片段可能跨 SSE 帧截断：累积器只拼字符串、不中途解析，到 `finish_reason` / `content_block_stop` 才 `json.Unmarshal` |
 | 落库时机 | 增量只走 SSE，**轮末一次落库**（`chat_messages.parts` + `chat_context`）；中途断连不产生半截行，已下发的内容按 parts 完整保留 |
 | 断连出口 | 「保留已产生内容」对**所有**轮末出口生效，不止工具循环内那处：预算收尾调用（`chatCall`）也可被断连打断，同样要按 parts 落库并标 `interrupted`。任何「请求 ctx 已取消时还直接写库」的出口都会静默丢内容，新增出口时须一并处理 |
@@ -317,13 +328,14 @@ UI 块载荷（缩略图 URL、网格结构）**永不进模型上下文**——
 |:---|:---|
 | 取数 | `SELECT … WHERE session_id=? ORDER BY seq`，按 `tokens` 累计裁剪 |
 | 裁剪单位 | 以「配对单元」为单位：带 `tool_calls` 的 assistant 行与其后续 `tool` 行同进同出。**不得逐行淘汰**——把这一对拆开会重新造出孤儿 `tool` 行（或无回执的 `tool_calls`），正是「协议配对」要防的违规。`read_result` 的残留摘要也按单元计数，不按行 |
-| token 预算 | 按 **token 估算**裁剪而不是按条数（20 条短消息与 20 条长消息的体积差一个数量级） |
+| token 预算 | 按 **token 估算**裁剪而不是按条数（20 条短消息与 20 条长消息的体积差一个数量级）。预算取链首模型条目的 `context_window` 减去输出预留（`max_tokens` 未设时预留 4096，下限 1024）；未声明窗口时用兜底预算。上下文在 `chatTargets` 之后、按链首组装一次，故用链首的窗口近似（切换后的模型窗口可能不同）；system 段与工具定义不计入该预算，两项都是已知近似 |
 | `kind` 取值 | 四分类：`system`（常驻 system prompt 段）/ `dialogue`（用户消息与助手正文）/ `read_result`（旧读工具 `ModelText`）/ `proposal`（提案往返，同时 `pinned=1`）——取值决定淘汰策略，写入时由服务端判定，不由模型决定 |
 | 助手正文全覆盖 | `dialogue` 的「助手正文」包含**所有**助手文本出口：工具循环内的正常回答，以及预算耗尽的**收尾回答**。只写展示面 `chat_messages` 而不写 `chat_context` 会让模型下一轮看不到自己说过的话（多轮指代失忆） |
 | 三级淘汰 | ① `pinned=1`（已裁决提案往返）**永不淘汰** ② `kind=read_result`（旧读工具 ModelText）可淘汰但留一行残留摘要（「更早查询过 N 次动态/媒体，结果已省略」）③ 思考链与 UI 载荷从不进上下文 |
 | 不进上下文 | `pending` 提案（未发生的操作不向模型透露）、`reasoning` 思考链、UI 载荷、媒体 base64（只给文件名与数量） |
 | 已裁决提案归一 | 已执行→结果正文；失败→「执行失败：原因」；取消→「用户取消了该操作，未执行」；过期→「确认卡片已过期，未执行」 |
 | 协议配对 | `tool_calls_json` 存 assistant 轮的 name+arguments，回放时原样还原配对——**不需要合成往返 id、不需要「工具名不下发」的补丁** |
+| 协议私有凭据 | 工具调用可带**协议私有凭据**（如 gemini 的 `thoughtSignature`），与 name+arguments 一并落 `tool_calls_json`、跨轮回放。凭据由**产出它的协议**解释，只有该协议回传：gemini 以 **part 级**字段与 `functionCall` 平级带回（缺失即 400），其余协议不回传；openai-chat 直接序列化消息，发请求前**必须剥掉**（未知字段会被上游拒或误当参数）。历史缺凭据时**不伪造**，让上游报错可见 |
 
 ---
 

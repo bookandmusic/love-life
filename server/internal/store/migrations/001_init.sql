@@ -8,7 +8,9 @@
 --   chat_messages.turn_id 按轮回滚（2026-09-22）；
 --   confirm_actions.preview_json 提案自构造预览落库、chat_result_sets 结果集句柄（2026-09-23）；
 --   provider_models.kind + chain_order 模型按类型分链、chat_context 上下文事实源（2026-09-26）；
---   provider_models.thinking 按模型的思考档位（off/low/medium/high，默认 off）（2026-10-08）。
+--   provider_models.thinking 按模型的思考档位（off/low/medium/high，默认 off）；
+--   provider_models 参数面收敛为 max_tokens / thinking / thinking_levels / context_window
+--   （删 temperature，加支持的思考档位与上下文窗口）（2026-10-08）。
 -- 本文件一次性建出最新库：新部署空库直接应用，无历史升级路径。
 
 -- ============ 账号与配置（ARCHITECTURE「数据模型」） ============
@@ -352,19 +354,25 @@ CREATE TABLE model_providers (
 
 -- 模型条目：kind 决定属于哪条链（chat / embedding），chain_order 是同类型内的全局链序
 -- （跨供应商，重试即按它依次走）；嵌入类型只允许 openai-chat 供应商（应用层校验）。
--- temperature/max_tokens 可空 = 调用不传，用供应商默认。
+-- max_tokens / context_window 可空 = 调用不传，用供应商默认（context_window 空则用服务端兜底预算）。
+-- 不设 temperature：现役模型的思考恒开，anthropic 侧与 temperature 互斥、同传即 400，
+-- 留着只会形成「配了不生效」的静默错觉（详见 AI模式设计「模型网关与配置中心」）。
 CREATE TABLE provider_models (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     provider_id INTEGER NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
     kind        TEXT    NOT NULL CHECK (kind IN ('chat', 'embedding')),
     model_id    TEXT    NOT NULL,
-    temperature REAL,
     max_tokens  INTEGER,
-    -- 思考档位：off（缺省，服务端不注入任何思考参数）/ low / medium / high。
-    -- 存在理由：三协议默认都不开思考（anthropic 需 thinking、gemini 需 thinkingConfig、
-    -- openai-responses 需 reasoning），开启会产生思考 token 计费，故由用户按模型决定。
+    -- 思考档位：off（缺省）/ low / medium / high。现役模型关不掉思考，故 off = 该协议的最低档
+    -- （仍可能产生少量思考 token）；档位由用户按模型决定，因为开启会产生思考 token 计费。
     -- 用 NOT NULL DEFAULT 'off' 而非可空：off 与「未设置」同义，避免一个语义两种表示。
     thinking    TEXT    NOT NULL DEFAULT 'off',
+    -- 该模型支持的思考档位（off/low/medium/high 的子集，逗号分隔且按固定顺序），缺省只有 off。
+    -- 存在的理由：档位取值是模型属性而非协议属性（如 Gemini 3 Pro 只接受 low/high，发 medium 即 400）。
+    -- 放配置面声明而不在代码里判模型名：供应商别名会让名称匹配落空，落空即报错或静默失效。
+    thinking_levels TEXT NOT NULL DEFAULT 'off',
+    -- 模型上下文窗口（token）。空 = 用服务端兜底预算；消费者是上下文组装的裁剪预算。
+    context_window INTEGER,
     chain_order INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
     UNIQUE (provider_id, kind, model_id)

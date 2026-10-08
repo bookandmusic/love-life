@@ -153,10 +153,17 @@ func TestFullSchema(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO model_providers (api_type, name, base_url) VALUES ('bogus', 'X', 'u')`); err == nil {
 		t.Fatal("invalid api_type must be rejected")
 	}
-	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature) VALUES (1, 'chat', 'gpt-4o', 0.7)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, max_tokens, thinking, thinking_levels, context_window) VALUES (1, 'chat', 'gpt-5.5', 8192, 'medium', 'off,low,medium,high', 400000)`); err != nil {
 		t.Fatalf("model entry must be accepted: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id) VALUES (1, 'chat', 'gpt-4o')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id) VALUES (1, 'chat', 'gpt-5.5-mini')`); err != nil {
+		t.Fatalf("params must be optional (defaults apply): %v", err)
+	}
+	// 参数面收敛：temperature 已删（与现役模型的思考参数互斥），列不存在即是最硬的守卫
+	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature) VALUES (1, 'chat', 'x')`); err == nil {
+		t.Fatal("temperature column must be gone")
+	}
+	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id) VALUES (1, 'chat', 'gpt-5.5')`); err == nil {
 		t.Fatal("UNIQUE(provider_id, kind, model_id) must reject duplicate")
 	}
 	if _, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id) VALUES (1, 'bogus', 'x')`); err == nil {

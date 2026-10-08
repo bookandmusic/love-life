@@ -20,8 +20,8 @@ func insertProvider(t *testing.T, db *DB, apiType, name, keyEnc string) int64 {
 
 func insertModel(t *testing.T, db *DB, providerID int64, kind, modelID string, order int) int64 {
 	t.Helper()
-	res, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, chain_order) VALUES (?, ?, ?, ?, ?, ?)`,
-		providerID, kind, modelID, 0.7, 4096, order)
+	res, err := db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, max_tokens, thinking, thinking_levels, context_window, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		providerID, kind, modelID, 4096, "medium", "off,low,medium,high", 200000, order)
 	if err != nil {
 		t.Fatalf("insert model %s: %v", modelID, err)
 	}
@@ -65,8 +65,14 @@ func TestListProviders(t *testing.T) {
 	if list[1].Models[2].Kind != "embedding" {
 		t.Fatalf("last entry = %+v", list[1].Models[2])
 	}
-	if !list[1].Models[0].Temperature.Valid || list[1].Models[0].Temperature.Float64 != 0.7 {
-		t.Fatalf("temperature mapping broken: %+v", list[1].Models[0].Temperature)
+	if !list[1].Models[0].MaxTokens.Valid || list[1].Models[0].MaxTokens.Int64 != 4096 {
+		t.Fatalf("max_tokens mapping broken: %+v", list[1].Models[0].MaxTokens)
+	}
+	if list[1].Models[0].Thinking != ThinkingMedium || list[1].Models[0].ThinkingLevels != "off,low,medium,high" {
+		t.Fatalf("thinking mapping broken: %+v", list[1].Models[0])
+	}
+	if !list[1].Models[0].ContextWindow.Valid || list[1].Models[0].ContextWindow.Int64 != 200000 {
+		t.Fatalf("context_window mapping broken: %+v", list[1].Models[0].ContextWindow)
 	}
 	if len(list[2].Models) != 0 {
 		t.Fatal("providers without models must have empty Models slice")
@@ -174,6 +180,51 @@ func TestNormalizeThinkingFallsBackToOff(t *testing.T) {
 	for in, want := range cases {
 		if got := normalizeThinking(in); got != want {
 			t.Errorf("normalizeThinking(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// 档位集合的写入侧归一：去重、按 off/low/medium/high 固定顺序、恒含 off。
+// 集合是「该模型支持哪些档位」的声明，顺序必须稳定——否则库里同一集合会有多种写法。
+func TestNormalizeThinkingLevels(t *testing.T) {
+	cases := map[string]string{
+		"":                    ThinkingOff, // 未传 → 只有关
+		"off":                 ThinkingOff,
+		"medium,off,low":      "off,low,medium", // 乱序输入按固定顺序落地
+		"high,high,low":       "off,low,high",   // 去重，且自动补 off
+		"low, medium , high":  "off,low,medium,high",
+		"off,low,medium,high": "off,low,medium,high",
+	}
+	for in, want := range cases {
+		got, ok := NormalizeThinkingLevels(in)
+		if !ok || got != want {
+			t.Errorf("NormalizeThinkingLevels(%q) = %q,%v want %q,true", in, got, ok, want)
+		}
+	}
+
+	// 非法取值必须显式报错：静默兜 off 会把「不支持思考的模型」伪装成「用户选了关」
+	for _, bad := range []string{"ultra", "off,ultra", "HIGH"} {
+		if got, ok := NormalizeThinkingLevels(bad); ok {
+			t.Errorf("NormalizeThinkingLevels(%q) = %q, want !ok", bad, got)
+		}
+	}
+}
+
+// 档位必须在声明集内：声明集是发给供应商的取值面，含不在集合里的档位会被拒或静默降级。
+func TestThinkingLevelAllowed(t *testing.T) {
+	cases := []struct {
+		levels, level string
+		want          bool
+	}{
+		{"off", ThinkingOff, true},
+		{"off", ThinkingLow, false},
+		{"off,low,high", ThinkingLow, true},
+		{"off,low,high", ThinkingMedium, false}, // Gemini 3 Pro 没有「中」
+		{"off,low,high", ThinkingHigh, true},
+	}
+	for _, c := range cases {
+		if got := ThinkingLevelAllowed(c.levels, c.level); got != c.want {
+			t.Errorf("ThinkingLevelAllowed(%q,%q) = %v, want %v", c.levels, c.level, got, c.want)
 		}
 	}
 }

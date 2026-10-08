@@ -6,7 +6,7 @@ import { http } from '../lib/http'
  * - 供应商 = 协议类型 + 地址 + 秘钥（只写不读）
  * - 模型条目按 kind 分两条链（chat / embedding），链内顺序 = 故障切换顺序；
  *   用哪个模型、按什么顺序重试，全部由链序决定（供应商本身无默认模型）
- * - 模型参数（temperature/max_tokens）可选，null = 调用时不传该参数
+ * - 模型参数（max_tokens / thinking / thinking_levels / context_window）可选，null = 调用时不传该参数
  * - 嵌入链只允许 openai-chat 供应商（服务端校验）
  */
 
@@ -27,7 +27,8 @@ export type ModelKind = 'chat' | 'embedding'
 
 /**
  * 思考档位（按模型，缺省 off）。
- * off = 服务端不注入任何思考参数；开启会产生**思考 token 计费**，故由使用者按模型决定。
+ * off = 该协议的最低档——现役模型关不掉思考，省略参数只会让它留在自己的默认档；
+ * 开启会产生**思考 token 计费**，故由使用者按模型决定。
  * 各协议映射到原生参数（anthropic thinking / gemini thinkingConfig / responses reasoning）。
  */
 export const THINKING_OPTIONS = [
@@ -44,9 +45,12 @@ export interface ModelEntry {
   id: string
   kind: ModelKind
   /** null = 未设置，调用该模型时不传此参数（用供应商默认值） */
-  temperature: number | null
   max_tokens: number | null
   thinking: ThinkingLevel
+  /** 该模型支持的思考档位集合（逗号分隔，服务端归一为固定顺序且恒含 off）；「思考」下拉的可选项来源 */
+  thinking_levels: string
+  /** 模型上下文窗口（token）；null = 未声明，用服务端兜底预算 */
+  context_window: number | null
 }
 
 export interface AiProvider {
@@ -73,9 +77,10 @@ export interface ModelRow {
   api_type: ApiProtocol
   kind: ModelKind
   model_id: string
-  temperature: number | null
   max_tokens: number | null
   thinking: ThinkingLevel
+  thinking_levels: string
+  context_window: number | null
 }
 
 export type ModelChains = { chat: ModelRow[]; embedding: ModelRow[] }
@@ -88,9 +93,10 @@ export function createModel(payload: {
   kind: ModelKind
   provider_id: number
   model_id: string
-  temperature?: number | null
   max_tokens?: number | null
   thinking?: ThinkingLevel
+  thinking_levels?: string
+  context_window?: number | null
 }): Promise<ModelChains> {
   return http<ModelChains>('/api/v1/admin/models', { method: 'POST', body: JSON.stringify(payload) })
 }
@@ -99,9 +105,10 @@ export function updateModel(
   id: number,
   payload: {
     model_id?: string
-    temperature?: number | null
     max_tokens?: number | null
     thinking?: ThinkingLevel
+    thinking_levels?: string
+    context_window?: number | null
   },
 ): Promise<ModelChains> {
   return http<ModelChains>(`/api/v1/admin/models/${id}`, { method: 'PUT', body: JSON.stringify(payload) })

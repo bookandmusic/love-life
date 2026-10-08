@@ -1,11 +1,11 @@
 package llm
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -26,13 +26,25 @@ var openaiHTTP = &http.Client{
 	},
 }
 
-func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+// buildOpenAIChatBody 组装请求体。Chat 与 StreamChat 共用一处装配，避免两条路径各拼一份
+// 而漂移（新增参数只改一边 = 「配了不生效」）。
+func buildOpenAIChatBody(model string, req *ChatRequest, stream bool) map[string]any {
 	body := map[string]any{
 		"model":    model,
-		"messages": req.Messages,
+		"messages": stripSignatures(req.Messages),
 		"tools":    req.Tools,
 	}
+	if stream {
+		// include_usage：流式下 usage 只在末帧给出，不开就收不到用量。
+		body["stream"] = true
+		body["stream_options"] = map[string]any{"include_usage": true}
+	}
 	applyModelParams(body, req)
+	return body
+}
+
+func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+	body := buildOpenAIChatBody(model, req, false)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, err
@@ -51,15 +63,25 @@ func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string
 	defer res.Body.Close()
 	// 原生 usage 字段名与归一化命名一致（prompt_tokens/completion_tokens/total_tokens），
 	// 故直接解到 ChatResponse.Usage。上游不返回 usage 时为零值。
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	return parseOpenAIChatBody(data, res.StatusCode)
+}
+
+// parseOpenAIChatBody 解析整块（非流式）响应体。非流式调用与「忽略 stream:true 直接回 JSON」
+// 的兜底路径共用同一份解析，避免两处各写一遍解码与空响应判断。
+func parseOpenAIChatBody(data []byte, status int) (*ChatResponse, error) {
 	var out ChatResponse
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+	if err := json.Unmarshal(data, &out); err != nil {
 		return nil, fmt.Errorf("decode model response: %w", err)
 	}
 	if out.Error != nil {
 		return nil, fmt.Errorf("模型服务错误: %s", out.Error.Message)
 	}
 	if len(out.Choices) == 0 {
-		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
+		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", status)
 	}
 	return &out, nil
 }
@@ -87,14 +109,7 @@ type streamDelta struct {
 // StreamChat 流式实现：SSE 逐帧解析 data: 行；[DONE] 结束。
 // tool_calls 分片按 index 累积——adapter 内部完成归组，Agent 层只见完整 tool_call。
 func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
-	body := map[string]any{
-		"model":          model,
-		"messages":       req.Messages,
-		"tools":          req.Tools,
-		"stream":         true,
-		"stream_options": map[string]any{"include_usage": true},
-	}
-	applyModelParams(body, req)
+	body := buildOpenAIChatBody(model, req, true)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return "", err
@@ -111,41 +126,13 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 		return "", err
 	}
 	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		var out ChatResponse
-		_ = json.NewDecoder(res.Body).Decode(&out)
-		if out.Error != nil {
-			return "", fmt.Errorf("模型服务错误: %s", out.Error.Message)
-		}
-		return "", fmt.Errorf("模型服务返回 HTTP %d", res.StatusCode)
+	if err := streamStatusError(res); err != nil {
+		return "", err
 	}
 	// 非事件流响应（兼容生态对 stream:true 仍回 JSON）：一次性解析并回放 Delta，
-	// 不重发请求（同一响应、同一计费）。
-	if ct := res.Header.Get("Content-Type"); !strings.Contains(ct, "text/event-stream") {
-		var out ChatResponse
-		if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-			return "", fmt.Errorf("decode model response: %w", err)
-		}
-		if out.Error != nil {
-			return "", fmt.Errorf("模型服务错误: %s", out.Error.Message)
-		}
-		if len(out.Choices) == 0 {
-			return "", fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
-		}
-		m := out.Choices[0].Message
-		if m.Reasoning != "" {
-			onDelta(Delta{Reasoning: m.Reasoning})
-		}
-		if m.Content != "" {
-			onDelta(Delta{Content: m.Content})
-		}
-		for i := range m.ToolCalls {
-			onDelta(Delta{ToolCall: &ToolCallDelta{ID: m.ToolCalls[i].ID,
-				Name: m.ToolCalls[i].Function.Name, Arguments: m.ToolCalls[i].Function.Arguments}})
-		}
-		u := out.Usage
-		onDelta(Delta{Usage: &u})
-		return out.Choices[0].FinishReason, nil
+	// 不重发请求（同一响应、同一计费）。回放顺序与原生流式一致，走共享实现。
+	if !isEventStream(res) {
+		return streamFallbackReplay(res, parseOpenAIChatBody, onDelta)
 	}
 
 	finish := ""
@@ -160,19 +147,17 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 	}
 	pending := map[int]*pendingCall{}
 	var pendingOrder []int
-	scanner := bufio.NewScanner(res.Body)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "data: ") {
-			continue
+	sc := newSSEScanner(res.Body)
+	for {
+		data, ok := sc.next()
+		if !ok {
+			break
 		}
-		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
 			break
 		}
 		var frame streamDelta
-		if json.Unmarshal([]byte(data), &frame) != nil {
+		if !sseJSON(data, &frame) {
 			continue
 		}
 		if frame.Usage != nil {
@@ -207,7 +192,7 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 			finish = c.FinishReason
 		}
 	}
-	if err := scanner.Err(); err != nil {
+	if err := sc.err(); err != nil {
 		return "", err
 	}
 	// 整流通了再各发一次完整 tool_call（按 index 发起顺序，上层据 Index/顺序归位）

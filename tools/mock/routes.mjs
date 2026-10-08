@@ -1301,15 +1301,65 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/dashboard\/ai-usage$/,
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/dashboard\/alerts$/, handler: () => ok({ items: alerts }) })
 
 // AI 供应商（协议化配置）：列表有序 = 故障切换链（从第一个开始、失败依次向下）
+// 模型清单只列现役代：退市模型配了也调不通，留着只会误导（与真实供应商的可用清单同步）。
 const API_PROTOCOLS = {
-  'openai-chat': ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'o3-mini', 'deepseek-chat', 'deepseek-r1', 'kimi-k2', 'qwen3-max'],
-  'openai-responses': ['gpt-5', 'gpt-5-mini', 'gpt-4.1', 'gpt-4o', 'o3', 'o4-mini'],
-  'anthropic': ['claude-opus-4-1-20250805', 'claude-sonnet-4-20250514', 'claude-3-7-sonnet-20250219', 'claude-3-5-haiku-20241022'],
-  'gemini': ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  'openai-chat': ['gpt-5.5', 'gpt-5.5-mini', 'deepseek-chat', 'kimi-k2', 'qwen3-max'],
+  'openai-responses': ['gpt-5.5', 'gpt-5.5-mini', 'gpt-5', 'o4-mini'],
+  'anthropic': ['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'],
+  'gemini': ['gemini-3.1-pro-preview', 'gemini-3.5-flash'],
 }
 const protocolInvalid = (t) => badRequest('api_type 不支持（openai-chat / openai-responses / anthropic / gemini）')
 
-// models 条目校验：{ id 必填, kind=chat|embedding, temperature|null, max_tokens|null }——参数挂条目级，null = 调用不传
+// THINKING_ORDER 档位规范顺序，同时是集合排序与成员判断的依据。
+const THINKING_ORDER = ['off', 'low', 'medium', 'high']
+
+// normalizeThinking 归一单个思考档位：空串 → 'off'（缺省只有关）；非法取值 → null（调用方报错）。
+// 注意与 normalizeThinkingLevels 的区别：那是**集合**（逗号分隔、恒含 off），这是**单值**——
+// 单值走集合归一会被拼成 'off,medium' 这种带逗号的串，后续成员判断永远不成立。
+const normalizeThinking = (v) => {
+  if (v === undefined || v === null || String(v).trim() === '') return 'off'
+  const p = String(v).trim()
+  return THINKING_ORDER.includes(p) ? p : null
+}
+
+// normalizeThinkingLevels 归一思考档位集合：去重、按 off/low/medium/high 固定顺序拼接、恒含 off。
+// 非法取值 → null（调用方报错）；空串 → 'off'（缺省只有关，与服务端同口径）。
+const normalizeThinkingLevels = (v) => {
+  if (v === undefined || v === null || String(v).trim() === '') return 'off'
+  const set = new Set()
+  for (const part of String(v).split(',')) {
+    const p = part.trim()
+    if (p === '') continue
+    if (!THINKING_ORDER.includes(p)) return null
+    set.add(p)
+  }
+  if (set.size === 0) return 'off'
+  set.add('off')
+  return THINKING_ORDER.filter((lv) => set.has(lv)).join(',')
+}
+
+// models 条目校验：{ id 必填, kind=chat|embedding, max_tokens|null, thinking, thinking_levels, context_window|null }
+// 参数挂条目级，null = 调用不传。不设 temperature：现役模型的思考参数恒开，与它互斥、同传即 400。
+// checkThinkingAllowed 思考档位与协议的一致性（与 server 同口径的服务端校验）。
+// OpenAI Chat 协议没有统一的思考参数（是否回思考由供应商自定），故该协议下不允许配置档位：
+// 声明集与所选档位都只能是 off。只在下拉上限制不够——接口可被直接调用，
+// 写进去的值最终会被 adapter 忽略，形成「配了不生效」的静默错觉。
+const checkThinkingAllowed = (apiType, models) => {
+  if (apiType !== 'openai-chat') return null
+  for (const m of models) {
+    if ((m.thinking ?? 'off') !== 'off' || (m.thinking_levels ?? 'off') !== 'off') {
+      return 'OpenAI Chat 协议没有统一的思考参数，思考档位只能为关'
+    }
+  }
+  return null
+}
+
+// 嵌入只允许挂 openai-chat 供应商（与 server 同口径）。返回首个越协议的嵌入条目，无则 null。
+const embeddingOffProtocol = (apiType, models) => {
+  if (apiType === 'openai-chat') return null
+  return models.find((m) => m.kind === 'embedding') ?? null
+}
+
 const normalizedModels = (raw) => {
   if (!Array.isArray(raw)) return { error: 'models 必填（数组）' }
   const entries = []
@@ -1319,11 +1369,18 @@ const normalizedModels = (raw) => {
     const kind = String(m?.kind ?? '').trim()
     if (kind !== 'chat' && kind !== 'embedding') return { error: `模型 ${id} 的 kind 需为 chat 或 embedding` }
     // ''/undefined 一律先归一为 null（不设置），再做区间校验
-    const t = m.temperature === '' || m.temperature === undefined ? null : m.temperature
-    if (t !== null && !(Number(t) >= 0 && Number(t) <= 2)) return { error: `模型 ${id} 的 temperature 需在 0~2 之间，或不设置` }
     const mt = m.max_tokens === '' || m.max_tokens === undefined ? null : m.max_tokens
     if (mt !== null && (!Number.isInteger(Number(mt)) || Number(mt) < 256 || Number(mt) > 32768)) return { error: `模型 ${id} 的 max_tokens 需为 256~32768 整数，或不设置` }
-    entries.push({ id, kind, temperature: t === null ? null : Number(t), max_tokens: mt === null ? null : Number(mt) })
+    const cw = m.context_window === '' || m.context_window === undefined ? null : m.context_window
+    if (cw !== null && (!Number.isInteger(Number(cw)) || Number(cw) < 1024 || Number(cw) > 2000000)) return { error: `模型 ${id} 的 context_window 需为 1024~2000000 整数，或不设置` }
+    if (mt !== null && cw !== null && Number(mt) > Number(cw)) return { error: `模型 ${id} 的 max_tokens 不得超过 context_window` }
+    const thinking = normalizeThinking(m.thinking)
+    if (thinking === null) return { error: `模型 ${id} 的 thinking 需为 off / low / medium / high` }
+    const levels = normalizeThinkingLevels(m.thinking_levels)
+    if (levels === null) return { error: `模型 ${id} 的 thinking_levels 需为 off / low / medium / high 的逗号分隔子集` }
+    if (!levels.split(',').includes(thinking)) return { error: `模型 ${id} 的 thinking 需在 thinking_levels 声明的档位内` }
+    entries.push({ id, kind, max_tokens: mt === null ? null : Number(mt), thinking,
+      thinking_levels: levels, context_window: cw === null ? null : Number(cw) })
   }
   return { entries }
 }
@@ -1337,7 +1394,8 @@ const modelChains = () => {
       out[m.kind].push({
         id: m.row_id ?? `${p.id}:${m.id}:${m.kind}`,
         provider_id: p.id, provider_name: p.name, api_type: p.api_type,
-        kind: m.kind, model_id: m.id, temperature: m.temperature, max_tokens: m.max_tokens,
+        kind: m.kind, model_id: m.id, max_tokens: m.max_tokens, thinking: m.thinking ?? 'off',
+        thinking_levels: m.thinking_levels ?? 'off', context_window: m.context_window ?? null,
       })
     }
   }
@@ -1354,9 +1412,12 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/models$/, handler: (u
   const provider = modelProviders.find((p) => p.id === Number(b.provider_id))
   if (!provider) return notFound('供应商不存在')
   if (b.kind !== 'chat' && b.kind !== 'embedding') return badRequest('kind 需为 chat 或 embedding')
-  if (b.kind === 'embedding' && provider.api_type !== 'openai-chat') return badRequest('嵌入模型只能挂 openai-chat 供应商')
-  const m = normalizedModels([{ id: b.model_id, kind: b.kind, temperature: b.temperature, max_tokens: b.max_tokens }])
+  if (embeddingOffProtocol(provider.api_type, [{ kind: b.kind }])) return badRequest('嵌入模型只能挂 openai-chat 供应商')
+  const m = normalizedModels([{ id: b.model_id, kind: b.kind, max_tokens: b.max_tokens,
+    thinking: b.thinking, thinking_levels: b.thinking_levels, context_window: b.context_window }])
   if (m.error) return badRequest(m.error)
+  const terr = checkThinkingAllowed(provider.api_type, m.entries)
+  if (terr) return badRequest(terr)
   provider.models.push(m.entries[0])
   return created(modelChains())
 } })
@@ -1377,17 +1438,18 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/models\/order$/, handl
   for (const id of ids) {
     const row = byId[id]
     const provider = modelProviders.find((p) => p.id === row.provider_id)
-    provider.models.push({ id: row.model_id, kind: row.kind, temperature: row.temperature, max_tokens: row.max_tokens })
+    provider.models.push({ id: row.model_id, kind: row.kind, max_tokens: row.max_tokens,
+      thinking: row.thinking, thinking_levels: row.thinking_levels, context_window: row.context_window })
   }
   return ok(modelChains())
 } })
 
 routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/models\/[^/]+$/, handler: (url, body) => {
   const rowId = decodeURIComponent(url.split('/').pop())
-  const target = modelChains()[Object.keys(modelChains())].find?.(() => false)
+  const chains = modelChains()
   let hit = null
   for (const kind of ['chat', 'embedding']) {
-    const row = modelChains()[kind].find((r) => String(r.id) === rowId)
+    const row = chains[kind].find((r) => String(r.id) === rowId)
     if (row) { hit = { row, kind }; break }
   }
   if (!hit) return notFound('模型条目不存在')
@@ -1396,12 +1458,27 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/models\/[^/]+$/, handl
   const entry = provider.models.find((m) => m.id === hit.row.model_id && m.kind === hit.kind)
   if (!entry) return notFound('模型条目不存在')
   const modelId = String(b.model_id ?? hit.row.model_id).trim() || hit.row.model_id
-  if (modelId !== entry.id) {
-    if (provider.models.some((m) => m.kind === entry.kind && m.id === modelId)) return badRequest('该供应商已有同名同类型模型条目')
-    entry.id = modelId
+  if (modelId !== entry.id && provider.models.some((m) => m.kind === entry.kind && m.id === modelId)) {
+    return badRequest('该供应商已有同名同类型模型条目')
   }
-  if (b.temperature !== undefined) entry.temperature = b.temperature === '' ? null : Number(b.temperature)
-  if (b.max_tokens !== undefined) entry.max_tokens = b.max_tokens === '' ? null : Number(b.max_tokens)
+  // 部分更新：model_id / thinking / thinking_levels 未传则保留原值。
+  // max_tokens / context_window 是**整值替换**——省略或 null 都落 null（清空），
+  // 因为这两个字段要支持「清掉已配的上限」；admin 表单每次提交都带全量字段。
+  // 不能把 null 送进 Number()：Number(null) === 0，会被区间校验当越界值拒掉，
+  // 于是同一份表单在 mock 上改不了、在 server 上却成功（本地能存的数据 server 会拒）。
+  const next = {
+    id: modelId, kind: entry.kind,
+    max_tokens: b.max_tokens === undefined ? null : b.max_tokens,
+    thinking: b.thinking === undefined ? entry.thinking : b.thinking,
+    thinking_levels: b.thinking_levels === undefined ? entry.thinking_levels : b.thinking_levels,
+    context_window: b.context_window === undefined ? null : b.context_window,
+  }
+  const v = normalizedModels([next])
+  if (v.error) return badRequest(v.error)
+  const terr = checkThinkingAllowed(provider.api_type, v.entries)
+  if (terr) return badRequest(terr)
+  // 校验通过才落库：entry 是内存共享对象，先改名再校验失败会留下改了一半的条目。
+  Object.assign(entry, v.entries[0])
   return ok(modelChains())
 } })
 
@@ -1435,6 +1512,9 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/model-providers$/, ha
   if (!b.api_key) return badRequest('api_key 必填')
   const m = normalizedModels(b.models ?? [])
   if (m.error) return badRequest(m.error)
+  const terr = checkThinkingAllowed(b.api_type, m.entries)
+  if (terr) return badRequest(terr)
+  if (embeddingOffProtocol(b.api_type, m.entries)) return badRequest('嵌入模型只能挂 openai-chat 供应商')
   const item = {
     id: ++seq.provider,
     api_type: b.api_type,
@@ -1452,20 +1532,32 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/model-providers\/\d+$/
   const item = modelProviders.find((p) => p.id === idOf(url))
   if (!item) return notFound('供应商不存在')
   const b = JSON.parse(body || '{}')
-  if (b.api_type !== undefined) {
-    if (!API_PROTOCOLS[b.api_type]) return protocolInvalid()
-    item.api_type = b.api_type
-  }
-  if (b.name !== undefined) item.name = String(b.name).trim() || item.name
-  if (b.base_url !== undefined) {
-    if (!b.base_url) return badRequest('base_url 不能为空')
-    item.base_url = b.base_url
-  }
+  // 先校验再落库：item 是内存里的共享对象，就地改完才发现不合法会把状态改坏
+  // （校验失败要原样保留，请求返回 400 后前端会重新拉列表）。
+  if (b.api_type !== undefined && !API_PROTOCOLS[b.api_type]) return protocolInvalid()
+  if (b.base_url !== undefined && !b.base_url) return badRequest('base_url 不能为空')
+  const nextApiType = b.api_type !== undefined ? b.api_type : item.api_type
+  let nextModels = item.models
   if (b.models !== undefined) {
     const m = normalizedModels(b.models)
     if (m.error) return badRequest(m.error)
-    item.models = m.entries
+    nextModels = m.entries
   }
+  // 协议改离 openai-chat 时，名下已有嵌入条目要拦住（嵌入只允许 openai-chat）。
+  // 与 server 同形：这里查的是「原样留下的旧条目」，随请求替换的条目在下面单独查。
+  if (b.api_type !== undefined && nextApiType !== 'openai-chat' && embeddingOffProtocol(nextApiType, item.models)) {
+    return badRequest('该供应商名下有嵌入模型，请先移出后再改协议（嵌入只允许 openai-chat）')
+  }
+  // 改协议且不带 models 时，名下旧条目按新协议复校：否则会把该协议
+  // 根本不认的档位留在库里（admin 的供应商表单正是只提交 api_type/name/base_url）。
+  const terr = checkThinkingAllowed(nextApiType, nextModels)
+  if (terr) return badRequest(terr)
+  if (embeddingOffProtocol(nextApiType, nextModels)) return badRequest('嵌入模型只能挂 openai-chat 供应商')
+
+  if (b.api_type !== undefined) item.api_type = b.api_type
+  if (b.name !== undefined) item.name = String(b.name).trim() || item.name
+  if (b.base_url !== undefined) item.base_url = b.base_url
+  if (b.models !== undefined) item.models = nextModels
   return ok(item)
 } })
 
@@ -1615,20 +1707,23 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/admin\/tokens\/\d+\/revoke$/
 //  gemini: /v1beta/models/{model}:generateContent）。启发式响应：消息含「记」→ propose_post
 // tool_call；含「相册」→ propose_album；否则文本回复。开发态不校验 Key。
 
-// 从各协议请求体提取最后一条真实用户输入（tool_result / functionResponse 载荷无文本，天然跳过）
-// 与工具名清单。
-function parseUpstreamIntent(body, apiType) {
-  const b = JSON.parse(body || '{}')
+// 从已解析的各协议请求体提取最后一条真实用户输入
+// （tool_result / functionResponse 载荷无文本，天然跳过）、工具名清单，以及是否已带回工具结果。
+function parseUpstreamIntent(b, apiType) {
   let lastUser = ''
   let toolNames = []
+  // 请求里已带回工具结果 = 「工具回灌后的第二次调用」，不能再触发同一个工具（会死循环）
+  let hasToolResult = false
   if (apiType === 'openai-chat') {
     toolNames = (b.tools || []).map((t) => t.function && t.function.name).filter(Boolean)
     for (const m of (b.messages || [])) {
+      if (m.role === 'tool') hasToolResult = true
       if (m.role === 'user' && typeof m.content === 'string') lastUser = m.content
     }
   } else if (apiType === 'openai-responses') {
     toolNames = (b.tools || []).map((t) => t.name).filter(Boolean)
     for (const item of (b.input || [])) {
+      if (item.type === 'function_call_output') hasToolResult = true
       if (item.role === 'user' && typeof item.content === 'string') lastUser = item.content
     }
   } else if (apiType === 'anthropic') {
@@ -1637,6 +1732,7 @@ function parseUpstreamIntent(body, apiType) {
       if (m.role !== 'user') continue
       if (typeof m.content === 'string') lastUser = m.content
       else if (Array.isArray(m.content)) {
+        if (m.content.some((c) => c.type === 'tool_result')) hasToolResult = true
         const text = m.content.filter((c) => c.type === 'text').map((c) => c.text).join(' ')
         if (text) lastUser = text
       }
@@ -1648,18 +1744,28 @@ function parseUpstreamIntent(body, apiType) {
       const text = (c.parts || []).filter((p) => p.text).map((p) => p.text).join(' ')
       if (text) lastUser = text
     }
+    if ((b.contents || []).some((c) => (c.parts || []).some((p) => p.functionResponse))) hasToolResult = true
   }
-  return { lastUser, toolNames }
+  return { lastUser, toolNames, hasToolResult }
 }
 
-// 启发式决定回复：写工具候选优先
-function decideUpstreamReply(lastUser, toolNames) {
+// 启发式决定回复：写工具候选优先。
+//
+// 读工具（find_*）也要有触发词：写工具的提案是 pending 卡片，按设计不进模型上下文，
+// 因此**同轮不会产生第二次上游调用**——想联调「工具结果回灌后的第二次请求」
+// （如 gemini 的 thoughtSignature 往返）只能用读工具。
+function decideUpstreamReply(lastUser, toolNames, hasToolResult) {
   const has = (n) => toolNames.includes(n)
-  if (lastUser.includes('相册') && has('propose_album')) {
-    return { tool: 'propose_album', args: { name: '旅行' } }
-  }
-  if (lastUser.includes('记') && has('propose_post')) {
-    return { tool: 'propose_post', args: { content: String(lastUser).slice(0, 50), mood: '开心' } }
+  if (!hasToolResult) {
+    if (lastUser.includes('相册') && has('propose_album')) {
+      return { tool: 'propose_album', args: { name: '旅行' } }
+    }
+    if (lastUser.includes('记') && has('propose_post')) {
+      return { tool: 'propose_post', args: { content: String(lastUser).slice(0, 50), mood: '开心' } }
+    }
+    if ((lastUser.includes('找') || lastUser.includes('查')) && has('find_posts')) {
+      return { tool: 'find_posts', args: { query: String(lastUser).slice(0, 20) } }
+    }
   }
   return { text: '（mock 上游）收到：' + String(lastUser || '').slice(0, 40) }
 }
@@ -1678,13 +1784,192 @@ const upstreamText = (text) => ({
   'gemini': () => ({ candidates: [{ content: { parts: [{ text }] }, finishReason: 'STOP' }] }),
 })
 
-// 上游 chat 端点工厂：按协议解析意图并按 native 形状回包
+// 上游 chat 端点工厂：按协议解析意图并按 native 形状回包。
+//
+// 请求体带 stream:true 时改写真 SSE（不再走 JSON 分支）——四协议各自的**原生**事件
+// 形状都必须在这里被真实覆盖，否则服务端的原生流式实现只有单测、没有联调路径：
+//   · 正文与思考都**逐字分片**（单帧多字会让「跨帧累积」的实现差异测不出来）
+//   · 工具 arguments **跨多帧**到达（覆盖分片拼接）
+//   · 按协议给各自的思考事件形状（anthropic thinking_delta / responses reasoning_summary /
+//     gemini thought:true 的 part / openai-chat reasoning_content）
+//   · gemini 侧覆盖 part 级 thoughtSignature（服务端必须原样回传，否则 400）
+//   · 两种可触发故障：「首帧前失败」「首帧后失败」，用于验证换链与不换链
+//
+// 故障触发关键词写在用户消息里（联调时人工输入即可）：
+//   「首帧前失败」→ 立刻回 500（无任何 SSE 帧）；「首帧后失败」→ 先发若干帧再中断连接。
+const STREAM_FAIL_BEFORE = '首帧前失败'
+const STREAM_FAIL_AFTER = '首帧后失败'
+
 function upstreamChatHandler(apiType) {
   return (url, body) => {
-    const { lastUser, toolNames } = parseUpstreamIntent(body, apiType)
-    const call = decideUpstreamReply(lastUser, toolNames)
-    if (call.tool) return ok(upstreamToolCall(call)[apiType]())
-    return ok(upstreamText(call.text)[apiType]())
+    const b = JSON.parse(body || '{}')
+    const { lastUser, toolNames, hasToolResult } = parseUpstreamIntent(b, apiType)
+    const call = decideUpstreamReply(lastUser, toolNames, hasToolResult)
+    // gemini 的流式由 **URL**（:streamGenerateContent）表达，请求体里没有 stream 字段；
+    // 只看 b.stream 会把 gemini 的流式请求错当非流式，返回整块 JSON——
+    // 服务端的原生流式就永远拿不到真实 SSE 帧（且非流式分支的行为与流式不一致）。
+    const wantsStream = !!b.stream || String(url).includes(':streamGenerateContent')
+    if (!wantsStream) {
+      if (call.tool) return ok(upstreamToolCall(call)[apiType]())
+      return ok(upstreamText(call.text)[apiType]())
+    }
+    return upstreamStream(apiType, lastUser, call)
+  }
+}
+
+// 逐字切分（含多字节安全：JS 字符串按 UTF-16 码元切，中文一个字一个码元）
+function charChunks(s) {
+  return Array.from(String(s || ''))
+}
+
+// 各协议的 SSE 帧序列。返回 [{ event, data }]，data 为对象（undefined = 只发 event 行）。
+function streamFrames(apiType, text, call, thinking) {
+  const frames = []
+  const push = (event, data) => frames.push({ event, data })
+  const textChars = charChunks(text)
+  const thinkChars = charChunks(thinking)
+  // 工具参数跨帧：切成 3 段（不足 3 字符则逐字符）
+  const argStr = call ? JSON.stringify(call.args) : ''
+  const argParts = argStr.length >= 3
+    ? [argStr.slice(0, 1), argStr.slice(1, -1), argStr.slice(-1)]
+    : charChunks(argStr)
+
+  if (apiType === 'openai-chat') {
+    const delta = (d) => push('', { choices: [{ index: 0, delta: d }] })
+    if (thinking) for (const ch of thinkChars) delta({ reasoning_content: ch })
+    if (call) {
+      delta({ tool_calls: [{ index: 0, id: 'mock-1', type: 'function', function: { name: call.tool, arguments: '' } }] })
+      for (const p of argParts) delta({ tool_calls: [{ index: 0, function: { arguments: p } }] })
+      push('', { choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] })
+    } else {
+      for (const ch of textChars) delta({ content: ch })
+      push('', { choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })
+    }
+    // 兼容生态的 usage 末帧（choices 为空数组）
+    push('', { choices: [], usage: { prompt_tokens: 12, completion_tokens: 34, total_tokens: 46 } })
+    return frames
+  }
+
+  if (apiType === 'anthropic') {
+    push('message_start', { type: 'message_start', message: { usage: { input_tokens: 12, output_tokens: 0 } } })
+    let idx = 0
+    if (thinking) {
+      push('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'thinking' } })
+      for (const ch of thinkChars) push('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'thinking_delta', thinking: ch } })
+      // signature_delta 是思考块完整性凭据，本仓不消费——这里真实发一帧，
+      // 确保服务端「按规范忽略」而不是误当未知事件报错
+      push('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'signature_delta', signature: 'sig-mock' } })
+      push('content_block_stop', { type: 'content_block_stop', index: idx })
+      idx++
+    }
+    if (call) {
+      push('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'tool_use', id: 'toolu_mock1', name: call.tool } })
+      for (const p of argParts) push('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'input_json_delta', partial_json: p } })
+      push('content_block_stop', { type: 'content_block_stop', index: idx })
+      push('message_delta', { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 34 } })
+    } else {
+      push('content_block_start', { type: 'content_block_start', index: idx, content_block: { type: 'text' } })
+      for (const ch of textChars) push('content_block_delta', { type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: ch } })
+      push('content_block_stop', { type: 'content_block_stop', index: idx })
+      push('message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 34 } })
+    }
+    push('message_stop', { type: 'message_stop' })
+    return frames
+  }
+
+  if (apiType === 'openai-responses') {
+    let seq = 0
+    const next = () => ++seq
+    if (thinking) {
+      push('response.reasoning_summary_part.added', { type: 'response.reasoning_summary_part.added', sequence_number: next() })
+      for (const ch of thinkChars) push('response.reasoning_summary_text.delta', { type: 'response.reasoning_summary_text.delta', sequence_number: next(), delta: ch })
+    }
+    if (call) {
+      push('response.output_item.added', { type: 'response.output_item.added', sequence_number: next(), item: { type: 'function_call', id: 'fc_mock1', call_id: 'call_mock1', name: call.tool, arguments: '' } })
+      for (const p of argParts) push('response.function_call_arguments.delta', { type: 'response.function_call_arguments.delta', sequence_number: next(), item_id: 'fc_mock1', delta: p })
+      push('response.function_call_arguments.done', { type: 'response.function_call_arguments.done', sequence_number: next(), item_id: 'fc_mock1', arguments: argStr })
+      push('response.output_item.done', { type: 'response.output_item.done', sequence_number: next(), item: { type: 'function_call', id: 'fc_mock1', call_id: 'call_mock1', name: call.tool, arguments: argStr } })
+    } else {
+      push('response.output_item.added', { type: 'response.output_item.added', sequence_number: next(), item: { type: 'message', id: 'msg_mock1' } })
+      for (const ch of textChars) push('response.output_text.delta', { type: 'response.output_text.delta', sequence_number: next(), item_id: 'msg_mock1', delta: ch })
+      push('response.output_item.done', { type: 'response.output_item.done', sequence_number: next(), item: { type: 'message', id: 'msg_mock1' } })
+    }
+    // usage 只在 response.completed 出现
+    push('response.completed', { type: 'response.completed', sequence_number: next(), response: { usage: { input_tokens: 12, output_tokens: 34, total_tokens: 46 } } })
+    return frames
+  }
+
+  // gemini：alt=sse，每帧一个完整 GenerateContentResponse。
+  // 注意 args 是 JSON **object**（不是字符串），故**无法**像其余协议那样表达「半截
+  // 参数」——真实 Gemini API 也不分片（partialArgs 仅 Vertex 支持）。这里保持与真实
+  // 端点一致：一帧给完整 args。
+  const frame = (p) => push('', { candidates: [{ content: { parts: p }, finishReason: 'STOP' }] })
+  if (thinking) {
+    for (const ch of thinkChars) frame([{ text: ch, thought: true }])
+  }
+  if (call) {
+    // part 级 thoughtSignature（与 functionCall 平级）——服务端必须原样回传，否则 400
+    frame([{ functionCall: { name: call.tool, args: call.args }, thoughtSignature: 'sig-mock-gemini' }])
+  } else {
+    for (const ch of textChars) frame([{ text: ch }])
+  }
+  // usageMetadata 在末帧
+  push('', { candidates: [{ content: { parts: [] }, finishReason: 'STOP' }], usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 34, totalTokenCount: 46 } })
+  return frames
+}
+
+// 写 SSE 响应（真流式：逐帧 write + flush 语义由 Node 自动处理）
+// 帧间隔：真实上游不会把整段回复在同一个瞬间塞进一个 TCP 包。
+// 不 pace 的话服务端与客户端都是一次性拿到全文，「逐字展开」这条联调路径等于没测
+// （首帧时间与整段结束时间会几乎相同）。可用 MOCK_STREAM_DELAY_MS 调整或置 0 关闭。
+const STREAM_FRAME_DELAY_MS = Number(process.env.MOCK_STREAM_DELAY_MS ?? 12)
+
+const sleep = (ms) => (ms > 0 ? new Promise((r) => setTimeout(r, ms)) : Promise.resolve())
+
+async function writeSSE(res, frames, { failAfterFirst = false } = {}) {
+  res.statusCode = 200
+  res.setHeader('Content-Type', 'text/event-stream;charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  // 先把响应头刷出去：否则下面的 write 会留在 Node 的缓冲里，
+  // res.destroy() 时连同数据一起丢弃，客户端一个字节都收不到——
+  // 「首帧后失败」就退化成「首帧前失败」，测不出「已下发增量后不得换链」。
+  res.flushHeaders()
+  let sent = 0
+  for (const f of frames) {
+    // 「首帧后失败」：发够几帧就硬断连接（不写 res.end），验证服务端不换链。
+    // 用 setImmediate 让已 write 的数据真正落到 socket 再销毁。
+    if (failAfterFirst && sent >= 2) {
+      setImmediate(() => res.destroy())
+      return
+    }
+    let chunk = ''
+    if (f.event) chunk += `event: ${f.event}\n`
+    if (f.data !== undefined) chunk += `data: ${JSON.stringify(f.data)}\n`
+    chunk += '\n'
+    res.write(chunk)
+    sent++
+    await sleep(STREAM_FRAME_DELAY_MS)
+  }
+  res.end()
+}
+
+function upstreamStream(apiType, lastUser, call) {
+  return (res) => {
+    // 「首帧前失败」：一个 SSE 帧都不发就报错——此时换链是安全且必要的
+    if (String(lastUser).includes(STREAM_FAIL_BEFORE)) {
+      res.statusCode = 500
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: { message: 'mock 上游：首帧前失败' } }))
+      return
+    }
+    const text = call.tool ? '' : call.text
+    // 思考链：消息含「思考」才下发（与 /api/v1/chat 的 mock 同口径）
+    const thinking = /思考/.test(String(lastUser))
+      ? `用户说「${String(lastUser).slice(0, 20)}」，我先梳理一下意图再作答。`
+      : ''
+    const frames = streamFrames(apiType, text, call.tool ? call : null, thinking)
+    return writeSSE(res, frames, { failAfterFirst: String(lastUser).includes(STREAM_FAIL_AFTER) })
   }
 }
 
@@ -1703,6 +1988,8 @@ routes.push({ method: 'GET', pattern: /^\/upstream\/anthropic\/v1\/models$/, han
 routes.push({ method: 'POST', pattern: /^\/upstream\/anthropic\/v1\/messages$/, handler: upstreamChatHandler('anthropic') })
 routes.push({ method: 'GET', pattern: /^\/upstream\/gemini\/v1beta\/models$/, handler: () => upstreamModels('gemini') })
 routes.push({ method: 'POST', pattern: /^\/upstream\/gemini\/v1beta\/models\/[^:]+:generateContent$/, handler: upstreamChatHandler('gemini') })
+// 原生流式端点（streamGenerateContent?alt=sse）：同一 handler，按 **URL** 判定走 SSE
+routes.push({ method: 'POST', pattern: /^\/upstream\/gemini\/v1beta\/models\/[^:]+:streamGenerateContent$/, handler: upstreamChatHandler('gemini') })
 
 
 export { routes }

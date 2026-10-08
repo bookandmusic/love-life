@@ -4,24 +4,30 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"slices"
 	"strings"
 )
 
 // 模型供应商：api_type 决定协议适配；用哪个模型、按什么顺序重试由模型条目决定——
 // provider_models.kind 决定属于 chat / embedding 哪条链，chain_order 是同类型内的全局链序
-// （跨供应商）。temperature/max_tokens 挂模型级，NULL = 调用不传（chat 组装请求时消费）。
+// （跨供应商）。max_tokens / context_window 挂模型级，NULL = 调用不传（chat 组装请求时消费）。
 
 type ProviderModel struct {
-	ID          int64
-	ProviderID  int64
-	Kind        string // chat / embedding：决定属于哪条链
-	ModelID     string
-	Temperature sql.NullFloat64
-	MaxTokens   sql.NullInt64
-	// Thinking 思考档位：off（缺省）/ low / medium / high。off 即服务端不注入任何思考参数。
-	// 存在的理由：三协议默认都不开思考，开启会产生思考 token 计费，故由用户按模型决定。
-	Thinking   string
-	ChainOrder int // 同类型内的全局链序（跨供应商，重试即按它依次走）
+	ID         int64
+	ProviderID int64
+	Kind       string // chat / embedding：决定属于哪条链
+	ModelID    string
+	MaxTokens  sql.NullInt64
+	// Thinking 思考档位：off（缺省）/ low / medium / high。现役模型关不掉思考，故 off = 该协议的最低档
+	// （仍可能产生少量思考 token）。存在的理由：开启思考会产生思考 token 计费，故由用户按模型决定。
+	Thinking string
+	// ThinkingLevels 该模型支持的思考档位（"off,low,high" 之类，逗号分隔、固定顺序），缺省 "off"。
+	// 放配置面而不在代码里判模型名：档位取值是模型属性（Gemini 3 Pro 只接受 low/high），
+	// 而供应商别名会让名称匹配落空，落空即 400 或静默失效。
+	ThinkingLevels string
+	// ContextWindow 模型上下文窗口（token），NULL = 用服务端兜底预算；消费者是上下文组装的裁剪预算。
+	ContextWindow sql.NullInt64
+	ChainOrder    int // 同类型内的全局链序（跨供应商，重试即按它依次走）
 }
 
 type ModelProvider struct {
@@ -61,7 +67,7 @@ func (d *DB) attachModels(ctx context.Context, providers []*ModelProvider) error
 		args[i] = p.ID
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT id, provider_id, kind, model_id, temperature, max_tokens, thinking, chain_order
+		`SELECT id, provider_id, kind, model_id, max_tokens, thinking, thinking_levels, context_window, chain_order
 			FROM provider_models WHERE provider_id IN (`+strings.Join(marks, ",")+`) ORDER BY provider_id, kind, chain_order, id`,
 		args...)
 	if err != nil {
@@ -71,7 +77,7 @@ func (d *DB) attachModels(ctx context.Context, providers []*ModelProvider) error
 	byProvider := map[int64][]ProviderModel{}
 	for rows.Next() {
 		var m ProviderModel
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.Temperature, &m.MaxTokens, &m.Thinking, &m.ChainOrder); err != nil {
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.MaxTokens, &m.Thinking, &m.ThinkingLevels, &m.ContextWindow, &m.ChainOrder); err != nil {
 			return err
 		}
 		byProvider[m.ProviderID] = append(byProvider[m.ProviderID], m)
@@ -125,7 +131,7 @@ func (d *DB) ListModels(ctx context.Context, kind string) ([]ChainEntry, error) 
 		where += ` AND p.api_type = 'openai-chat' AND p.api_key_enc != ''`
 	}
 	rows, err := d.QueryContext(ctx,
-		`SELECT pm.id, pm.provider_id, pm.kind, pm.model_id, pm.temperature, pm.max_tokens, pm.thinking, pm.chain_order,
+		`SELECT pm.id, pm.provider_id, pm.kind, pm.model_id, pm.max_tokens, pm.thinking, pm.thinking_levels, pm.context_window, pm.chain_order,
 			p.id, p.api_type, p.name, p.base_url, p.api_key_enc
 		 FROM provider_models pm JOIN model_providers p ON p.id = pm.provider_id`+where+`
 		 ORDER BY pm.chain_order, pm.id`, kind)
@@ -137,7 +143,7 @@ func (d *DB) ListModels(ctx context.Context, kind string) ([]ChainEntry, error) 
 	for rows.Next() {
 		var m ProviderModel
 		p := &ModelProvider{}
-		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.Temperature, &m.MaxTokens, &m.Thinking, &m.ChainOrder,
+		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.MaxTokens, &m.Thinking, &m.ThinkingLevels, &m.ContextWindow, &m.ChainOrder,
 			&p.ID, &p.APIType, &p.Name, &p.BaseURL, &p.APIKeyEnc); err != nil {
 			return nil, err
 		}
@@ -182,20 +188,20 @@ func insertProviderModels(tx *sql.Tx, providerID int64, models []ProviderModel) 
 		return err
 	}
 	for _, m := range models {
-		var temp, maxTok any
-		if m.Temperature.Valid {
-			temp = m.Temperature.Float64
-		}
+		var maxTok, ctxWin any
 		if m.MaxTokens.Valid {
 			maxTok = m.MaxTokens.Int64
+		}
+		if m.ContextWindow.Valid {
+			ctxWin = m.ContextWindow.Int64
 		}
 		order, ok := nextOrder[m.Kind]
 		if !ok {
 			order = 0
 		}
 		nextOrder[m.Kind] = order + 1
-		if _, err := tx.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, thinking, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			providerID, m.Kind, m.ModelID, temp, maxTok, normalizeThinking(m.Thinking), order); err != nil {
+		if _, err := tx.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, max_tokens, thinking, thinking_levels, context_window, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			providerID, m.Kind, m.ModelID, maxTok, normalizeThinking(m.Thinking), normalizeThinkingLevels(m.ThinkingLevels), ctxWin, order); err != nil {
 			return err
 		}
 	}
@@ -304,16 +310,16 @@ func (d *DB) CreateModel(ctx context.Context, m *ProviderModel) (int64, error) {
 		return 0, err
 	}
 	m.ChainOrder = order
-	var temp, maxTok any
-	if m.Temperature.Valid {
-		temp = m.Temperature.Float64
-	}
+	var maxTok, ctxWin any
 	if m.MaxTokens.Valid {
 		maxTok = m.MaxTokens.Int64
 	}
+	if m.ContextWindow.Valid {
+		ctxWin = m.ContextWindow.Int64
+	}
 	res, err := d.ExecContext(ctx,
-		`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, thinking, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		m.ProviderID, m.Kind, m.ModelID, temp, maxTok, normalizeThinking(m.Thinking), order)
+		`INSERT INTO provider_models (provider_id, kind, model_id, max_tokens, thinking, thinking_levels, context_window, chain_order) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		m.ProviderID, m.Kind, m.ModelID, maxTok, normalizeThinking(m.Thinking), normalizeThinkingLevels(m.ThinkingLevels), ctxWin, order)
 	if err != nil {
 		return 0, err
 	}
@@ -321,10 +327,10 @@ func (d *DB) CreateModel(ctx context.Context, m *ProviderModel) (int64, error) {
 }
 
 // UpdateModel 更新模型条目（模型名与参数；kind 不可改——换链删了重加）。
-func (d *DB) UpdateModel(ctx context.Context, id int64, modelID string, temperature sql.NullFloat64, maxTokens sql.NullInt64, thinking string) error {
+func (d *DB) UpdateModel(ctx context.Context, id int64, modelID string, maxTokens sql.NullInt64, thinking, thinkingLevels string, contextWindow sql.NullInt64) error {
 	res, err := d.ExecContext(ctx,
-		`UPDATE provider_models SET model_id = ?, temperature = ?, max_tokens = ?, thinking = ? WHERE id = ?`,
-		modelID, temperature, maxTokens, normalizeThinking(thinking), id)
+		`UPDATE provider_models SET model_id = ?, max_tokens = ?, thinking = ?, thinking_levels = ?, context_window = ? WHERE id = ?`,
+		modelID, maxTokens, normalizeThinking(thinking), normalizeThinkingLevels(thinkingLevels), contextWindow, id)
 	if err != nil {
 		return err
 	}
@@ -387,4 +393,52 @@ func NormalizeThinking(v string) (string, bool) {
 func normalizeThinking(v string) string {
 	n, _ := NormalizeThinking(v)
 	return n
+}
+
+// thinkingOrder 是档位的规范顺序，同时是「支持档位」集合的排序与去重依据。
+var thinkingOrder = []string{ThinkingOff, ThinkingLow, ThinkingMedium, ThinkingHigh}
+
+// NormalizeThinkingLevels 归一「该模型支持的思考档位」：逗号分隔的档位子集 → 去重、
+// 按 off/low/medium/high 固定顺序拼接；空串 → off；含未知档位 → off 且 ok=false。
+//
+// 归一成固定顺序是为了让「同一集合」只有一种落库形态：否则 "low,high" 与 "high,low"
+// 会写成两行不同字符串，比较（校验档位是否在集合内）就得先排序，白白复杂。
+func NormalizeThinkingLevels(v string) (string, bool) {
+	seen := map[string]bool{}
+	for _, part := range strings.Split(v, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue // 容忍 "low, high" 与末尾逗号，不算非法
+		}
+		if !slices.Contains(thinkingOrder, p) {
+			return ThinkingOff, false
+		}
+		seen[p] = true
+	}
+	if len(seen) == 0 {
+		return ThinkingOff, true
+	}
+	// off 恒在集合内：档位为 off 时必须可配置（关是任何模型的合法选择）。
+	seen[ThinkingOff] = true
+	kept := make([]string, 0, len(seen))
+	for _, lv := range thinkingOrder {
+		if seen[lv] {
+			kept = append(kept, lv)
+		}
+	}
+	return strings.Join(kept, ","), true
+}
+
+// normalizeThinkingLevels 写入侧兜底：未知取值一律落 off（调用方已负责拒绝非法值）。
+func normalizeThinkingLevels(v string) string {
+	n, _ := NormalizeThinkingLevels(v)
+	return n
+}
+
+// ThinkingLevelAllowed 报告档位是否在该模型声明的支持集合内。
+// 校验与注入分离：adapter 只注入被选中的档位，不参与「这个模型支持什么」的判断。
+// 前置条件：levels 与 level 均已归一（NormalizeThinkingLevels / NormalizeThinking），
+// 即逗号分隔、无空格——非归一的输入会得到 false。
+func ThinkingLevelAllowed(levels, level string) bool {
+	return slices.Contains(strings.Split(levels, ","), level)
 }

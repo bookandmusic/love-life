@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 )
 
 // openaiResponsesAdapter 适配 OpenAI Responses API（POST /responses）。
@@ -13,22 +15,37 @@ import (
 // 响应是 output 数组（非 choices）、tool 调用以 function_call/function_call_output + call_id 关联。
 type openaiResponsesAdapter struct{}
 
-func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+// responsesDefaultMaxTokens 模型级未配置 max_tokens 时的兜底上限。
+// Responses API 的 max_tokens 可省略，但省略后由供应商取默认值、不受我们控制，故显式兜底。
+const responsesDefaultMaxTokens = 16384
+
+// buildResponsesBody 组装请求体。Chat 与 StreamChat 共用一处装配，避免两条路径各拼一份
+// 而漂移（新增参数只改一边 = 「配了不生效」）。
+func buildResponsesBody(model string, req *ChatRequest, stream bool) map[string]any {
 	systemPrompt, inputItems := buildResponsesInput(req.Messages)
 	tools := buildResponsesTools(req.Tools)
 
 	body := map[string]any{
 		"model":      model,
 		"input":      inputItems,
-		"max_tokens": 16384, // 模型级未配置时的兜底上限
+		"max_tokens": responsesDefaultMaxTokens,
+	}
+	if stream {
+		body["stream"] = true
 	}
 	applyModelParams(body, req)
+	applyResponsesThinking(body, req.Thinking)
 	if systemPrompt != "" {
 		body["instructions"] = systemPrompt
 	}
 	if len(tools) > 0 {
 		body["tools"] = tools
 	}
+	return body
+}
+
+func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+	body := buildResponsesBody(model, req, false)
 
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
@@ -47,32 +64,51 @@ func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model s
 	}
 	defer res.Body.Close()
 
-	var raw struct {
-		Output []struct {
-			Type    string `json:"type"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			CallID    string `json:"call_id"`
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
-		} `json:"output"`
-		// Responses API 的 usage 用 input_tokens/output_tokens 命名（归一化）
-		Usage *struct {
-			InputTokens  int64 `json:"input_tokens"`
-			OutputTokens int64 `json:"output_tokens"`
-			TotalTokens  int64 `json:"total_tokens"`
-		} `json:"usage"`
-		Error *struct {
-			Message string `json:"message"`
-		} `json:"error"`
+	respBody, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
 	}
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+	return parseResponsesBody(respBody, res.StatusCode)
+}
+
+// responsesRaw Responses API 整块响应体（Chat 与「非事件流兜底」共用同一解析）。
+type responsesRaw struct {
+	Output []struct {
+		Type    string `json:"type"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		// reasoning 项的思考摘要（summary[].text）；与 message 项的 content 同层
+		Summary []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"summary"`
+		CallID    string `json:"call_id"`
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"output"`
+	// Responses API 的 usage 用 input_tokens/output_tokens 命名（归一化）
+	Usage *struct {
+		InputTokens  int64 `json:"input_tokens"`
+		OutputTokens int64 `json:"output_tokens"`
+		TotalTokens  int64 `json:"total_tokens"`
+	} `json:"usage"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+func parseResponsesBody(data []byte, status int) (*ChatResponse, error) {
+	var raw responsesRaw
+	if err := json.Unmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("decode model response: %w", err)
 	}
 	if raw.Error != nil {
 		return nil, fmt.Errorf("模型服务错误: %s", raw.Error.Message)
+	}
+	if len(raw.Output) == 0 {
+		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", status)
 	}
 
 	out := &ChatResponse{}
@@ -88,15 +124,19 @@ func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model s
 					choice.Message.Content += c.Text
 				}
 			}
+		case "reasoning":
+			// 思考摘要：summary[].text 拼成思考链（不回传上游，只做展示与落库）
+			for _, s := range item.Summary {
+				if s.Text != "" {
+					choice.Message.Reasoning += s.Text
+				}
+			}
 		case "function_call":
 			tc := ToolCall{ID: item.CallID, Type: "function"}
 			tc.Function.Name = item.Name
 			tc.Function.Arguments = item.Arguments
 			choice.Message.ToolCalls = append(choice.Message.ToolCalls, tc)
 		}
-	}
-	if len(raw.Output) == 0 {
-		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
 	}
 	out.Choices = append(out.Choices, choice)
 	// 归一化 usage（上游字段名为 input/output；total 缺失时按两者之和补齐）
@@ -172,29 +212,168 @@ func buildResponsesTools(tools []Tool) []any {
 	return out
 }
 
-// StreamChat 过渡实现：整块请求一次，拆成单个 Delta 回调（不阻塞 D3 其余部分；
-// 各协议原生流式随后逐个补齐—— anthropic content_block_delta / openai-responses
-// response.*.delta / gemini alt=sse）。
-func (self openaiResponsesAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
-	out, err := self.Chat(ctx, baseURL, apiKey, model, req)
+// StreamChat 原生流式（POST /responses + stream:true）。
+//
+// 事件时序：response.output_item.added（function_call 项在此拿到 name/call_id）→
+// response.output_text.delta（正文）/ response.reasoning_summary_text.delta（思考摘要，
+// 部分网关发 response.reasoning_text.delta，两个都认）/
+// response.function_call_arguments.delta（参数分片）→ response.output_item.done
+// （该事件的 arguments 是**拼好的完整串**）→ response.completed（usage 只在这里）。
+//
+// 参数分片按 item_id 分桶累积；output_item.done 到达时以它的完整串为准
+// （同一 item 只下发一次），因为增量只是「过程中的碎片」，done 才是权威结果。
+func (openaiResponsesAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+	body := buildResponsesBody(model, req, true)
+
+	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
-	if len(out.Choices) == 0 {
-		return "", nil
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/responses", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return "", err
 	}
-	m := out.Choices[0].Message
-	if m.Reasoning != "" {
-		onDelta(Delta{Reasoning: m.Reasoning})
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
+
+	res, err := openaiHTTP.Do(httpReq)
+	if err != nil {
+		return "", err
 	}
-	if m.Content != "" {
-		onDelta(Delta{Content: m.Content})
+	defer res.Body.Close()
+	if err := streamStatusError(res); err != nil {
+		return "", err
 	}
-	for i := range m.ToolCalls {
-		onDelta(Delta{ToolCall: &ToolCallDelta{ID: m.ToolCalls[i].ID, Name: m.ToolCalls[i].Function.Name,
-			Arguments: m.ToolCalls[i].Function.Arguments}})
+	if !isEventStream(res) {
+		return streamFallbackReplay(res, parseResponsesBody, onDelta)
 	}
-	u := out.Usage
-	onDelta(Delta{Usage: &u})
-	return out.Choices[0].FinishReason, nil
+
+	// 工具项累积器：key = item_id（output_item.added 给 name/call_id，delta 给参数碎片）
+	type callItem struct {
+		callID    string
+		name      string
+		args      strings.Builder
+		completed string // output_item.done 的权威完整串（非空则优先）
+	}
+	items := map[string]*callItem{}
+	var order []string
+
+	var usage *Usage
+	sc := newSSEScanner(res.Body)
+	for {
+		data, ok := sc.next()
+		if !ok {
+			break
+		}
+		var f struct {
+			Type      string `json:"type"`
+			Delta     string `json:"delta"`
+			ItemID    string `json:"item_id"`
+			Arguments string `json:"arguments"`
+			Item      *struct {
+				Type      string `json:"type"`
+				ID        string `json:"id"`
+				CallID    string `json:"call_id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			} `json:"item"`
+			Response *struct {
+				Usage *struct {
+					InputTokens  int64 `json:"input_tokens"`
+					OutputTokens int64 `json:"output_tokens"`
+					TotalTokens  int64 `json:"total_tokens"`
+				} `json:"usage"`
+				Error *struct {
+					Message string `json:"message"`
+				} `json:"error"`
+			} `json:"response"`
+			Error *struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if !sseJSON(data, &f) {
+			continue
+		}
+		if f.Error != nil {
+			return "", fmt.Errorf("模型服务错误: %s", f.Error.Message)
+		}
+		if f.Response != nil && f.Response.Error != nil {
+			return "", fmt.Errorf("模型服务错误: %s", f.Response.Error.Message)
+		}
+		switch f.Type {
+		case "response.output_text.delta":
+			if f.Delta != "" {
+				onDelta(Delta{Content: f.Delta})
+			}
+		case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+			if f.Delta != "" {
+				onDelta(Delta{Reasoning: f.Delta})
+			}
+		case "response.output_item.added":
+			if f.Item != nil && f.Item.Type == "function_call" {
+				it := &callItem{callID: f.Item.CallID, name: f.Item.Name}
+				items[f.Item.ID] = it
+				order = append(order, f.Item.ID)
+			}
+		case "response.function_call_arguments.delta":
+			if it := items[f.ItemID]; it != nil {
+				it.args.WriteString(f.Delta)
+			}
+		case "response.function_call_arguments.done":
+			// 该事件的权威字段是 arguments（不是 delta，这里没有 delta）。
+			if it := items[f.ItemID]; it != nil {
+				it.completed = f.Arguments
+			}
+		case "response.output_item.done":
+			if f.Item != nil && f.Item.Type == "function_call" {
+				it := items[f.Item.ID]
+				if it == nil {
+					it = &callItem{callID: f.Item.CallID, name: f.Item.Name}
+					items[f.Item.ID] = it
+					order = append(order, f.Item.ID)
+				}
+				if it.callID == "" {
+					it.callID = f.Item.CallID
+				}
+				if it.name == "" {
+					it.name = f.Item.Name
+				}
+				if f.Item.Arguments != "" {
+					it.completed = f.Item.Arguments
+				}
+			}
+		case "response.completed":
+			if f.Response != nil && f.Response.Usage != nil {
+				u := Usage{
+					PromptTokens:     f.Response.Usage.InputTokens,
+					CompletionTokens: f.Response.Usage.OutputTokens,
+					TotalTokens:      f.Response.Usage.TotalTokens,
+				}
+				if u.TotalTokens == 0 {
+					u.TotalTokens = u.PromptTokens + u.CompletionTokens
+				}
+				usage = &u
+			}
+		}
+	}
+	if err := sc.err(); err != nil {
+		return "", err
+	}
+	// 工具调用在流结束后按出现顺序下发（与 OpenAI Chat 同一契约：
+	// Agent 层只看到完整 tool_call，且不会在参数还半截时就去执行）
+	for _, id := range order {
+		it := items[id]
+		args := it.completed
+		if args == "" {
+			args = it.args.String()
+		}
+		if args == "" {
+			args = "{}"
+		}
+		onDelta(Delta{ToolCall: &ToolCallDelta{ID: it.callID, Name: it.name, Arguments: args}})
+	}
+	if usage != nil {
+		onDelta(Delta{Usage: usage})
+	}
+	return "", nil
 }

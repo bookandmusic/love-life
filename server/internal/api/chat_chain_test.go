@@ -151,14 +151,14 @@ func TestChatSkipsProviderWithoutModels(t *testing.T) {
 	assertTextReply(t, ts, token, "在吗", "无模型跳过")
 }
 
-// TestChatModelLevelParamsEndToEnd provider_models 配置的 temperature/max_tokens
+// TestChatModelLevelParamsEndToEnd provider_models 配置的 max_tokens
 // 进入发往上游的请求体（openai-chat 形状）。
 func TestChatModelLevelParamsEndToEnd(t *testing.T) {
 	ts, token, _ := newPostTestEnv(t)
 
 	srv, bodies := newCapturingChatUpstream(t)
 	_ = seedNamedProvider(t, ts, "openai-chat", "params", "gpt-x", srv.URL, 0)
-	if _, err := ts.db.Exec(`UPDATE provider_models SET temperature = 0.7, max_tokens = 2048 WHERE model_id = 'gpt-x'`); err != nil {
+	if _, err := ts.db.Exec(`UPDATE provider_models SET max_tokens = 2048, context_window = 128000 WHERE model_id = 'gpt-x'`); err != nil {
 		t.Fatalf("seed provider_models: %v", err)
 	}
 
@@ -167,8 +167,16 @@ func TestChatModelLevelParamsEndToEnd(t *testing.T) {
 	if len(*bodies) != 1 {
 		t.Fatalf("upstream calls = %d, want 1", len(*bodies))
 	}
-	if !strings.Contains((*bodies)[0], `"temperature":0.7`) || !strings.Contains((*bodies)[0], `"max_tokens":2048`) {
+	if !strings.Contains((*bodies)[0], `"max_tokens":2048`) {
 		t.Fatalf("model params missing in request body:\n%s", (*bodies)[0])
+	}
+	// 上下文窗口只用于裁剪历史，不是请求参数，不得下发上游
+	if strings.Contains((*bodies)[0], "context_window") {
+		t.Fatalf("context_window must not reach upstream:\n%s", (*bodies)[0])
+	}
+	// temperature 已从参数面删除：任何配置下都不得下发
+	if strings.Contains((*bodies)[0], "temperature") {
+		t.Fatalf("temperature must not be sent:\n%s", (*bodies)[0])
 	}
 }
 
@@ -231,7 +239,7 @@ func TestChatModelParamsFallbackToUnset(t *testing.T) {
 	srv, bodies := newCapturingChatUpstream(t)
 	id := seedNamedProvider(t, ts, "openai-chat", "manual", "gpt-x", srv.URL, 0)
 	// 参数只挂在另一个模型条目 gpt-y 上；gpt-x 的条目无参数
-	if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, temperature, max_tokens, chain_order) VALUES (?, 'chat', 'gpt-y', 0.7, 2048, 1)`, id); err != nil {
+	if _, err := ts.db.Exec(`INSERT INTO provider_models (provider_id, kind, model_id, max_tokens, chain_order) VALUES (?, 'chat', 'gpt-y', 2048, 1)`, id); err != nil {
 		t.Fatalf("seed provider_models: %v", err)
 	}
 
