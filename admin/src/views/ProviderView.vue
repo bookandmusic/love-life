@@ -461,7 +461,7 @@ async function moveModel(kind: ModelKind, idx: number, dir: -1 | 1) {
         <div class="flex gap-3">
           <div class="form-group" style="flex: 1; margin: 0">
             <label class="form-label">最大输出（可选）</label>
-            <input v-model.number="mMaxTokens" class="form-input" type="number" min="256" max="32768" step="256" placeholder="不传" />
+            <input v-model.number="mMaxTokens" class="form-input" type="number" min="256" max="32768" step="1" placeholder="不传" />
           </div>
           <div class="form-group" style="flex: 1; margin: 0">
             <label class="form-label">上下文窗口（可选）</label>

@@ -11,6 +11,7 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { nextLunarOccurrence } from '../../app/src/utils/lunar.ts'
 import { mediaKindLabel } from '../../app/src/utils/mediaKind.ts'
+import MEDIA_LIMITS from '../../server/internal/limits/media.json' with { type: 'json' }
 import {
   USERS, tokenStore, space, posts, comments, likes, favorites,
   albums, timelineMedia, anniversaries, notifications, mapSources, mapPoints,
@@ -1027,12 +1028,27 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/proposals\/(\d+)\/reso
   if (!action) return notFound('确认卡片不存在')
   if (action.resolved) return { _s: 409, d: { error: '卡片已处理过（单次有效）' } }
   if (Date.now() > action.created_at + ACTION_TTL_MS) return { _s: 410, d: { error: '确认卡片已过期，请重新发起' } }
+  // 入参把关分两段，顺序与真实服务端一致（取消在最前、不受入参把关影响）：
+  // · 结构性上限（媒体条数）在**认领之前**拒绝，卡片保持待裁决、可重试——认领是消耗性的，
+  //   先认领再发现入参不合法，卡片就被吃掉却从未执行；
+  // · 业务规则（相册不收新附件）在**认领之后**判失败，卡片置 failed 并回原因——响应是
+  //   200 + status:failed 而非 400，历史回显据此显示「未执行 + 原因」而不是「已执行」。
   if (b.decision !== 'approve') {
     action.resolved = 'cancelled'
     return ok({ status: 'cancelled' })
   }
-  action.resolved = 'executed'
   const tokens = Array.isArray(b.media_tokens) ? b.media_tokens.map(String) : []
+  if (tokens.length > MEDIA_LIMITS.maxMediaPerChatMessage) {
+    return badRequest(`单条动态最多 ${MEDIA_LIMITS.maxMediaPerChatMessage} 个媒体文件`)
+  }
+  if (action.tool === 'propose_album_members' && tokens.length) {
+    // 原因写进 action.result：卡片列表（本文件上方 status 映射处）回显的就是它，
+    // 不写的话刷新后只剩「失败」两个字、看不到为什么。
+    action.resolved = 'failed'
+    action.result = '新附件不能直接加入相册：媒体只能随动态发布，请先发布动态再选入相册'
+    return ok({ status: 'failed', error: action.result })
+  }
+  action.resolved = 'executed'
   const done = (result) => { action.result = result; return ok({ status: 'executed', result }) }
   if (action.tool === 'propose_post') {
     const pid = ++seq.post
@@ -1047,9 +1063,6 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/chat\/proposals\/(\d+)\/reso
   if (action.tool === 'propose_album') {
     albums.push({ id: ++seq.album, name: action.params.name || '新相册', description: '', cover_url: '', item_count: 0, created_by: action.user_id })
     return done(`相册「${action.params.name}」已创建`)
-  }
-  if (action.tool === 'propose_album_members' && tokens.length) {
-    return badRequest('新附件不能直接加入相册：媒体只能随动态发布，请先发布动态再选入相册')
   }
   return done('已执行')
 }})
