@@ -323,7 +323,7 @@ UI 块载荷（缩略图 URL、网格结构）**永不进模型上下文**——
 | 项 | 口径 |
 |:---|:---|
 | 调度单位 | 一轮（turn）= 一次用户消息触发的完整往返，可含多次模型调用与多次工具执行；`turn_id` 贯穿事件、落库与回滚 |
-| 预算三维 | 轮次上限 8、工具调用总数上限 16、整轮墙钟 90s。任一触顶即进入收尾，**不静默结束**。（**初始值**：无实测依据，上线后按观测调整） |
+| 预算三维 | 轮次上限 8、工具调用总数上限 16、整轮墙钟 90s。**预算同时约束链内逐个模型的重试**：当一条链路有 4 条候选时，每条各自可能耗尽连接期超时（30s），若不加预算检查会线性超预算（4×30s = 120s > 90s）。故链循环在每次尝试前先判是否已过 deadline——已过期就直接放弃剩余链。预算的粒度是「两次尝试之间」，故单条在途尝试仍受自身的连接期超时（30s）约束，最后一次尝试可以略微越过预算。（初始值：无实测依据，上线后按观测调整） |
 | 读工具并行 | 同一次模型响应里的多个 tool_calls：读工具（`!IsWrite`）**并行执行**（用标准库 `sync.WaitGroup`，不为此新增第三方依赖）；写工具（提案）串行，且一旦产出提案即停止本轮（一轮只出一张卡，媒体也只归首张卡）。并行只覆盖「首个写工具之前」的那段读工具——出提案会中止其后所有 call，把提案之后的读工具也跑掉就是执行了不该执行的调用 |
 | 收尾义务 | 预算耗尽必须再补一次**不带工具**的调用，让模型基于已获得的信息作答并说明哪些没完成；该调用也失败才回退固定文案。`stop_reason=budget` |
 | tool_calls 增量累积 | 流式下工具参数分片到达，形状各协议不同：openai-chat `delta.tool_calls[i]` 带 index、arguments 按 index 拼字符串；openai-responses `response.function_call_arguments.delta`；anthropic `content_block_delta.input_json_delta.partial_json`（按 content_block 序号归组）；gemini `parts[].functionCall` **整块到达**（Gemini API 不分片：`args` 是 JSON object，官方标注 `partialArgs` / `willContinue` 仅 Vertex 支持，故不做分片累积）。**累积在 adapter 内部完成，Agent 层只看到完整的 tool_call**（协议差异不外泄） |
