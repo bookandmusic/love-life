@@ -34,7 +34,7 @@ func buildAnthropicBody(model string, req *ChatRequest, stream bool) map[string]
 	if stream {
 		body["stream"] = true
 	}
-	applyModelParams(body, req)
+	applyMaxTokens(body, req)
 	// 思考参数：现役代 adaptive 恒开，档位映射见 llm/thinking.go（不解析模型名）。
 	applyAnthropicThinking(body, req.Thinking)
 	if system != "" {
@@ -102,7 +102,7 @@ func parseAnthropicBody(data []byte, status int) (*ChatResponse, error) {
 		return nil, fmt.Errorf("decode model response: %w", err)
 	}
 	if raw.Error != nil {
-		return nil, fmt.Errorf("模型服务错误: %s", raw.Error.Message)
+		return nil, upstreamMessage(status, raw.Error.Message)
 	}
 	if len(raw.Content) == 0 {
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", status)
@@ -306,7 +306,7 @@ func (anthropicAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model s
 			continue
 		}
 		if f.Error != nil {
-			return "", fmt.Errorf("模型服务错误: %s", f.Error.Message)
+			return "", upstreamMessage(0, f.Error.Message)
 		}
 		switch f.Type {
 		case "message_start":

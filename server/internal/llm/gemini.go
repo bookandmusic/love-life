@@ -106,7 +106,7 @@ func parseGeminiBody(data []byte, status int) (*ChatResponse, error) {
 		return nil, fmt.Errorf("decode model response: %w", err)
 	}
 	if raw.Error != nil {
-		return nil, fmt.Errorf("模型服务错误: %s", raw.Error.Message)
+		return nil, upstreamMessage(status, raw.Error.Message)
 	}
 	if len(raw.Candidates) == 0 {
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", status)
@@ -329,7 +329,7 @@ func (geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model stri
 		}
 		sawFrame = true
 		if f.Error != nil {
-			return "", fmt.Errorf("模型服务错误: %s", f.Error.Message)
+			return "", upstreamMessage(0, f.Error.Message)
 		}
 		if len(f.Candidates) > 0 {
 			c := f.Candidates[0]

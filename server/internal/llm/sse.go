@@ -3,7 +3,6 @@ package llm
 import (
 	"bufio"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -52,10 +51,10 @@ func streamStatusError(res *http.Response) error {
 	}
 	var out ChatResponse
 	_ = json.NewDecoder(res.Body).Decode(&out)
-	if out.Error != nil {
-		return fmt.Errorf("模型服务错误: %s", out.Error.Message)
+	if out.Error != nil && out.Error.Message != "" {
+		return upstreamMessage(res.StatusCode, out.Error.Message)
 	}
-	return fmt.Errorf("模型服务返回 HTTP %d", res.StatusCode)
+	return upstreamStatus(res.StatusCode)
 }
 
 // sseJSON 解析一帧载荷；非 JSON（心跳、空帧、[DONE]）返回 false，由调用方跳过。

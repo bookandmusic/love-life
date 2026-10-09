@@ -10,6 +10,7 @@ import (
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/config"
+	"github.com/bookandmusic/love-life/server/internal/logbuf"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -17,8 +18,9 @@ import (
 
 type testEnv struct {
 	*httptest.Server
-	db *store.DB
-	tm *auth.TokenManager
+	db   *store.DB
+	tm   *auth.TokenManager
+	logs *logbuf.Buffer
 }
 
 func newTestServer(t *testing.T) *testEnv {
@@ -41,9 +43,10 @@ func newTestServer(t *testing.T) *testEnv {
 	mp := media.New(t.TempDir(), tm.Secret(), 500<<20)
 	dp := notify.New(db)
 	webuiFS := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>placeholder</html>")}}
-	ts := httptest.NewServer(NewRouter(config.Config{}, db, tm, mp, dp, webuiFS, nil))
+	logs := logbuf.New(64)
+	ts := httptest.NewServer(NewRouter(config.Config{}, db, tm, mp, dp, webuiFS, nil, logs))
 	t.Cleanup(ts.Close)
-	return &testEnv{Server: ts, db: db, tm: tm}
+	return &testEnv{Server: ts, db: db, tm: tm, logs: logs}
 }
 
 func doJSON(t *testing.T, method, url, token string, body any) *http.Response {

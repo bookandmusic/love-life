@@ -10,6 +10,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/chat"
 	"github.com/bookandmusic/love-life/server/internal/config"
 	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/logbuf"
 	"github.com/bookandmusic/love-life/server/internal/mcp"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
@@ -17,7 +18,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/tools"
 )
 
-func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media.Pipeline, dp *notify.Dispatcher, webuiDist fs.FS, searchIdx tools.SearchIndex) http.Handler {
+func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media.Pipeline, dp *notify.Dispatcher, webuiDist fs.FS, searchIdx tools.SearchIndex, logs *logbuf.Buffer) http.Handler {
 	authSvc := auth.NewService(db, tm)
 
 	mux := http.NewServeMux()
@@ -101,6 +102,9 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	// 审计日志查询
 	auditAPI := &auditAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/audit", auditAPI.list)
+	// 服务日志（进程内环形缓冲，只读；见 logsAPI 注释）
+	logsAPI := &logsAPI{buf: logs}
+	adminMux.HandleFunc("GET /api/v1/admin/logs", logsAPI.list)
 	mux.Handle("/api/v1/admin/", authSvc.RequireAuth(requireAdmin(adminMux)))
 
 	// 输出风格列表（登录用户，形状同 admin 列表；AI 偏好属个人体验项）

@@ -39,14 +39,14 @@
 | 全局（admin） | 供应商（协议 / 地址 / Key）、**模型条目与两条链的顺序**（条目挂类型 `chat` / `embedding`，链序即重试顺序）、模型级参数（见下表）、全局 System Prompt 主干、输出风格库、工具启停。**没有「空间级」独立层**：单空间部署下空间即全局，入口与存储都只有这一份（PRODUCT「后台管理页面功能范围（admin）」） |
 | 用户级 | 输出风格偏好（在 APP 设置页配置，仅对该用户发起的会话生效）。**无对话保留时长**：历史不自动过期 |
 
-模型级参数面收敛为四项（`null` = 调用不传、用供应商默认）：
+模型级参数面收敛为四项（`null` = 调用不传、用供应商默认）。只有输出上限的**字段名按协议不同**，其余三项四协议同形：
 
 | 参数 | 语义 |
 |:---|:---|
-| `max_tokens` | 单次回答的输出上限。Anthropic / OpenAI-Responses 的 `max_tokens` 为必填字段，未设时用协议默认 4096 / 16384 |
+| 输出上限 | 单次回答的输出上限。**字段名按协议不同**：openai-chat 与 anthropic 是 `max_tokens`（Anthropic 必填，未设时用默认 4096），openai-responses 是 `max_output_tokens`（可省略，未设时用兜底 16384）；gemini 走 `generationConfig.maxOutputTokens`。写成同名字段会被上游拒成 400（Responses 即 `Unknown parameter: 'max_tokens'`），故三协议不共用同一注入函数 |
 | `thinking` | **思考档位** = off/low/medium/high，默认 off。**off = 该协议的最低档**，不是「不请求思考」：现役模型（Anthropic adaptive、Gemini 3.x）关不掉思考，省略参数只会让它停在自身默认档，反而违背「关」的意图——用户选「关」要的是省钱省时。开启会产生思考 token 计费（PRODUCT「后台管理页面功能范围（admin）」） |
 | `thinking_levels` | 该模型**声明支持**的档位集合（逗号分隔、恒含 off）。档位取值是**模型**属性而非协议属性（如 Gemini 3 Pro 只接受 low/high，发 medium 即 400），故放在配置面声明；adapter 只做「已选档位 → 原生参数」的映射、**不解析模型名**（别名会让名称匹配落空，退化成 400 或静默失效）。写入时归一为固定顺序并校验 `thinking` 落在集合内；OpenAI Chat 协议无统一思考参数，其声明集只允许 off |
-| `context_window` | 模型上下文窗口（token）。用于裁剪送入模型的历史：预算 = 窗口 − 输出预留（`max_tokens` 未设时预留 4096），下限 1024；不填则用兜底预算。见「上下文组装」 |
+| `context_window` | 模型上下文窗口（token）。用于裁剪送入模型的历史：预算 = 窗口 − 输出预留（输出上限未设时预留 4096），下限 1024；不填则用兜底预算。见「上下文组装」 |
 
 **不设 `temperature`**：理由见 ARCHITECTURE「明确不做与已否决项 · AI 能力」。
 
@@ -236,6 +236,7 @@ sequenceDiagram
 - 增量只走 SSE，**轮末才落一条完整消息**（落库与流式解耦，中途断连不产生半截行）
 - 并行读工具的 `tool.start` / `tool.end` 会交错，客户端靠 `call_id` 归位。**服务端侧的口径**：并行批次的事件**只由主 goroutine 发出**——先按发起顺序发完该批全部 `tool.start`，`Wait()` 之后再按完成顺序发各自的 `tool.end`；工作 goroutine 内只执行工具、不写 SSE（`http.ResponseWriter` 不可并发使用）。因此 `tool.end` 之间会乱序，客户端务必按 `call_id` 归位
 - **零带内信令**：不用 emoji 前缀、不用特殊标记在正文字符串里传状态，一切状态走事件与字段
+- `error` 事件的 `message` 是**面向用户的分类文案**，不是原始错误：按类型与上游状态码分派（超时 / 连不上 / 凭据被拒 / 参数被拒 / 限流 / 上游 5xx / 协议不支持 / 其它），`retryable` 如实反映「重试是否有意义」（连不上与参数被拒为 false）。**不得直出 `err.Error()`**——原文含上游地址与 Go 术语，既读不懂也不该出到聊天界面；原始错误写服务端日志并可经后台「服务日志」页查看（实现见 ARCHITECTURE「后台管理页面实现」服务日志）。分类只认类型与状态码，**不匹配错误字符串**（措辞一改就会静默失效）
 
 ### 3.2 接口清单
 

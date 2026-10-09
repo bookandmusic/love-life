@@ -15,7 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -453,6 +455,12 @@ func (s *Service) chatCallStream(ctx context.Context, w http.ResponseWriter, flu
 		if len(deltas) > 0 {
 			break // 已下发增量：不换模型续写（用户会看到半句话被另一个模型接下去）
 		}
+		// 链上还有下一个模型时，这次失败会被**静默跳过**（用户只看到最终答上来的那个）。
+		// 不记一笔的话，后台「服务日志」与终端都看不到「链首一直失败」——而排障时
+		// 第一个失败原因往往才是根因（末尾的 lastErr 只是最后一次）。
+		if len(chain) > 0 {
+			warnChainFallback(t, err)
+		}
 	}
 	return nil, nil, nil, lastErr
 }
@@ -466,6 +474,66 @@ func (s *Service) recordUsageStream(ctx context.Context, t *chatTarget, usage ll
 		ProviderID: t.ProviderID, Model: t.Model, LatencyMs: latencyMs, Status: status,
 		PromptTokens: usage.PromptTokens, CompletionTokens: usage.CompletionTokens, TotalTokens: usage.TotalTokens,
 	})
+}
+
+// warnChainFallback 记一次「链上某模型失败、还有下一个可试」。
+//
+// 用户只看到最终答上来的那个模型，中途失败不体现在界面上——不记一笔的话，后台
+// 「服务日志」与终端都看不到「链首一直在失败」，而排障时第一个失败原因往往才是根因。
+// （usage 行只记状态、不带原因，故不能替代这里。）流式与非流式两条链式路径共用，
+// 避免两处措辞漂移。
+func warnChainFallback(t *chatTarget, err error) {
+	if t == nil {
+		return
+	}
+	slog.Warn("模型调用失败，切换到链上下一个", "provider_id", t.ProviderID, "model", t.Model, "err", err)
+}
+
+// modelErrorText 把模型调用的原始错误翻成面向用户的文案，并给出「重试是否有意义」。
+//
+// 分类只认**类型与状态码**，不匹配错误字符串（措辞一改，字符串匹配就静默失效）。
+// 原始错误另有去向：调用处写 slog，故这里可以放心只给人话。
+func modelErrorText(err error) (text string, retryable bool) {
+	// 上游自述原因（含 HTTP 状态）：按状态码分流
+	var up *llm.UpstreamError
+	if errors.As(err, &up) {
+		switch {
+		case up.StatusCode == http.StatusUnauthorized || up.StatusCode == http.StatusForbidden:
+			return "模型服务拒绝了访问，请检查后台配置的 API Key", false
+		case up.StatusCode == http.StatusTooManyRequests:
+			return "模型服务当前限流，请稍后重试", true
+		case up.StatusCode >= 500:
+			return "模型服务暂时不可用，请稍后重试", true
+		case up.StatusCode == http.StatusBadRequest:
+			// 参数被上游拒（如档位不被该模型接受）——重试无用，得改配置
+			return "该模型不接受当前的请求参数，请在后台检查模型配置", false
+		case up.StatusCode == http.StatusRequestTimeout:
+			return "模型服务响应超时，请稍后重试", true
+		case up.StatusCode > 0:
+			// 走到这里只剩未单列的 4xx（≥500 与 429 已在上面拦掉）：重试解决不了
+			return "模型服务返回错误，请检查后台配置", false
+		default:
+			// 流式帧内的 error 事件：没有状态码可用
+			return "模型服务中断了本次回答，请重试", true
+		}
+	}
+	if errors.Is(err, llm.ErrUnsupportedAPIType) {
+		return "该供应商协议暂不支持，请在后台检查配置", false
+	}
+	// 超时与连不上：契约上是「稍后可恢复」
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "模型服务响应超时，请稍后重试", true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "模型服务响应超时，请稍后重试", true
+	}
+	// 连接层失败（域名解析不了 / 端口不通 / TLS 握手失败）都包在 *url.Error 里
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return "无法连接模型服务，请检查后台配置的服务地址", false
+	}
+	return "AI 暂时不可用，请稍后重试", true
 }
 
 func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.ChatRequest) (*llm.ChatResponse, []*chatTarget, error) {
@@ -484,6 +552,10 @@ func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.Ch
 		}
 		s.recordUsage(ctx, t, nil, elapsed, "failed")
 		lastErr = err
+		// 同上：链上还有下一个时这次失败会被静默跳过，记一笔否则无从察觉
+		if len(chain) > 0 {
+			warnChainFallback(t, err)
+		}
 	}
 	return nil, nil, lastErr
 }
@@ -820,7 +892,11 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err != nil {
-			s.sseEvent(w, flusher, "error", map[string]any{"code": "model_error", "message": err.Error(), "retryable": true})
+			// 原始错误进服务端日志（含上游地址与自述原因），面向用户只给可读分类文案——
+			// 此前直出 err.Error() 会把 `Post "http://内网地址/…": net/http: …` 显示给用户。
+			text, retryable := modelErrorText(err)
+			slog.Error("模型调用失败", "session_id", sessionID, "turn_id", turnID, "err", err, "retryable", retryable)
+			s.sseEvent(w, flusher, "error", map[string]any{"code": "model_error", "message": text, "retryable": retryable})
 			s.sseEvent(w, flusher, "turn.end", map[string]any{"stop_reason": "error"})
 			return
 		}
@@ -1376,8 +1452,11 @@ func (s *Service) ResolveProposal(w http.ResponseWriter, r *http.Request) {
 		if ferr := s.db.ResolveConfirmAction(r.Context(), id, "failed"); ferr != nil {
 			slog.Warn("proposal failed 回写失败", "action_id", id, "err", ferr)
 		}
+		// recordDecision 走审计（内部人能看原文）；回给客户端的 error 会**逐字渲染在卡片上**
+		// （APP CardActions 显示 card.result），故只给人话。工具错误原文进服务端日志。
+		slog.Error("提案执行失败", "action_id", id, "tool", action.ToolName, "err", err)
 		s.recordDecision(r.Context(), claims.UserID, action, sessionID, carrierTurn, "failed", err.Error())
-		s.writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": err.Error()})
+		s.writeJSON(w, http.StatusOK, map[string]any{"status": "failed", "error": "操作没能完成，请稍后重试"})
 		return
 	}
 	s.deps.AuditWithLatency(r.Context(), claims.UserID, action.ToolName, action.ParamsJSON, tools.AuditSuccess, latencyMs)

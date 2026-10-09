@@ -39,7 +39,7 @@ func buildOpenAIChatBody(model string, req *ChatRequest, stream bool) map[string
 		body["stream"] = true
 		body["stream_options"] = map[string]any{"include_usage": true}
 	}
-	applyModelParams(body, req)
+	applyMaxTokens(body, req)
 	return body
 }
 
@@ -78,7 +78,7 @@ func parseOpenAIChatBody(data []byte, status int) (*ChatResponse, error) {
 		return nil, fmt.Errorf("decode model response: %w", err)
 	}
 	if out.Error != nil {
-		return nil, fmt.Errorf("模型服务错误: %s", out.Error.Message)
+		return nil, upstreamMessage(status, out.Error.Message)
 	}
 	if len(out.Choices) == 0 {
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", status)

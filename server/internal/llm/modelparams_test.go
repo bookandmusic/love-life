@@ -39,7 +39,7 @@ func TestAdaptersPassModelParams(t *testing.T) {
 		}
 	})
 
-	t.Run("openai-responses 覆盖兜底", func(t *testing.T) {
+	t.Run("openai-responses 顶层平铺 max_output_tokens", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`)
 		if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}, MaxTokens: &maxTok,
@@ -47,8 +47,12 @@ func TestAdaptersPassModelParams(t *testing.T) {
 			t.Fatalf("Chat: %v", err)
 		}
 		sent := sentBody(t, bodyP)
-		if sent["max_tokens"] != float64(paramsMaxTok) {
-			t.Errorf("max_tokens = %v, want %d", sent["max_tokens"], paramsMaxTok)
+		if sent["max_output_tokens"] != float64(paramsMaxTok) {
+			t.Errorf("max_output_tokens = %v, want %d", sent["max_output_tokens"], paramsMaxTok)
+		}
+		// Responses 不认 max_tokens：带上即被上游以 Unknown parameter 拒成 400
+		if _, ok := sent["max_tokens"]; ok {
+			t.Error("responses 请求体不得出现 max_tokens（上游会 400）")
 		}
 	})
 
@@ -97,7 +101,7 @@ func TestAdaptersOmitUnsetModelParams(t *testing.T) {
 		}
 	})
 
-	t.Run("openai-responses 保留兜底", func(t *testing.T) {
+	t.Run("openai-responses 保留兜底 max_output_tokens", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`)
 		if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
@@ -105,8 +109,8 @@ func TestAdaptersOmitUnsetModelParams(t *testing.T) {
 			t.Fatalf("Chat: %v", err)
 		}
 		sent := sentBody(t, bodyP)
-		if sent["max_tokens"] != float64(16384) {
-			t.Errorf("max_tokens = %v, want 兜底 16384", sent["max_tokens"])
+		if sent["max_output_tokens"] != float64(16384) {
+			t.Errorf("max_output_tokens = %v, want 兜底 16384", sent["max_output_tokens"])
 		}
 	})
 

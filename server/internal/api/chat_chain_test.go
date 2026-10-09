@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -117,12 +118,20 @@ func TestChatFailoverToNextProvider(t *testing.T) {
 }
 
 // TestChatChainExhausted 全链失败 → SSE error + done，无 text/card。
+//
+// 同时守住「报错不直出原始错误」。触发本用例的真实事故：供应商地址连不上 / 超时，
+// 客户端 AI 模式显示
+// `Post "http://192.0.2.10:3001/v1/chat/completions": net/http: timeout awaiting response headers`
+// ——用户既读不懂，内网地址也不该出现在聊天界面里。
+//
+// 故这里刻意用**连不上的地址**（连接层失败，错误串里带地址），而不是「上游回 5xx」：
+// 后者经分类后本就只剩一句「模型服务暂时不可用」，盖不住原始串泄露这条路径。
 func TestChatChainExhausted(t *testing.T) {
 	ts, token, _ := newPostTestEnv(t)
 
-	failURL := newFailingUpstream(t).URL
-	seedNamedProvider(t, ts, "openai-chat", "head", "m1", failURL, 0)
-	seedNamedProvider(t, ts, "gemini", "tail", "gemini-1.5-pro", failURL, 1)
+	deadURL := deadUpstreamURL(t)
+	seedNamedProvider(t, ts, "openai-chat", "head", "m1", deadURL, 0)
+	seedNamedProvider(t, ts, "gemini", "tail", "gemini-1.5-pro", deadURL, 1)
 
 	res := doJSON(t, "POST", ts.URL+"/api/v1/chat/message", token, map[string]string{"content": "在吗"})
 	body := sseBody(t, res)
@@ -137,6 +146,74 @@ func TestChatChainExhausted(t *testing.T) {
 			t.Errorf("usage[%d].status = %s, want failed", i, r.Status)
 		}
 	}
+
+	// error 事件必须是可读中文，且不含原始错误串 / 上游地址 / Go 术语
+	msg := errorMessageFromSSE(t, body)
+	if msg == "" {
+		t.Fatalf("error 事件缺 message：\n%s", body)
+	}
+	// deadURL 的 host:port 正是「原文泄露」时会出现的东西
+	hostPort := strings.TrimPrefix(strings.TrimPrefix(deadURL, "http://"), "https://")
+	for _, bad := range []string{hostPort, "http://", "https://", "net/http", "Post \"", "connect:", "dial tcp"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("面向用户的报错不得包含 %q，实得：%s", bad, msg)
+		}
+	}
+	if !strings.Contains(msg, "模型服务") && !strings.Contains(msg, "AI") {
+		t.Errorf("报错应说明是模型/AI 侧问题，实得：%s", msg)
+	}
+	// 连不上属于「改了配置才能好」，不该劝用户重试
+	if retryableFromSSE(t, body) {
+		t.Errorf("连不上模型服务不应标记为可重试：%s", msg)
+	}
+}
+
+// deadUpstreamURL 返回一个**保证连不上**的 http URL：先起服务拿到端口，再关掉它。
+// 用于复现连接层错误（错误串里带地址，正是要防止泄露的那种原文）。
+func deadUpstreamURL(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := srv.URL
+	srv.Close() // 端口随即不可连
+	return url
+}
+
+// errorMessageFromSSE 取出 error 事件的 message 字段。
+func errorMessageFromSSE(t *testing.T, body string) string {
+	t.Helper()
+	msg, _ := errorFieldsFromSSE(t, body)
+	return msg
+}
+
+func retryableFromSSE(t *testing.T, body string) bool {
+	t.Helper()
+	_, retryable := errorFieldsFromSSE(t, body)
+	return retryable
+}
+
+func errorFieldsFromSSE(t *testing.T, body string) (string, bool) {
+	t.Helper()
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		if strings.TrimSpace(l) != "event: error" {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			d := strings.TrimSpace(lines[j])
+			if !strings.HasPrefix(d, "data: ") {
+				continue
+			}
+			var payload struct {
+				Message   string `json:"message"`
+				Retryable bool   `json:"retryable"`
+			}
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(d, "data: ")), &payload); err != nil {
+				t.Fatalf("解析 error 载荷失败：%v", err)
+			}
+			return payload.Message, payload.Retryable
+		}
+	}
+	return "", false
 }
 
 // TestChatSkipsProviderWithoutModels 链头有 Key 但无模型条目 → 构链时跳过，链尾服务。

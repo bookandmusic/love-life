@@ -15,6 +15,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/config"
 	"github.com/bookandmusic/love-life/server/internal/crypto"
+	"github.com/bookandmusic/love-life/server/internal/logbuf"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/search"
@@ -103,6 +104,16 @@ func runPurge(db *store.DB, mp *media.Pipeline) {
 }
 
 func main() {
+	// 服务日志缓冲：日志本就进 stdout，这里**同时**留一份给后台「服务日志」页。
+	// 先装 handler 再干别的，启动期的报错才一并纳入（否则前半段日志看不见）。
+	//
+	// 下游必须是**独立**的 stderr handler，不能写 `logbuf.NewHandler(slog.Default().Handler(), …)`
+	// 再 SetDefault：那样包的正是 Default 自己，替换后包级 slog.Info 会无限自递归（实测直接挂死，
+	// 既不报错也不监听端口）。此处行为与 Go 默认 handler 一致（文本、stderr、INFO 起）。
+	logs := logbuf.New(logbuf.DefaultCapacity)
+	downstream := slog.NewTextHandler(os.Stderr, nil)
+	slog.SetDefault(slog.New(logbuf.NewHandler(downstream, logs)))
+
 	cfg := config.Load()
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		slog.Error("create data dir failed", "dir", cfg.DataDir, "err", err)
@@ -155,7 +166,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           api.NewRouter(cfg, db, tm, mp, dp, webuiFS, searchPort),
+		Handler:           api.NewRouter(cfg, db, tm, mp, dp, webuiFS, searchPort, logs),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

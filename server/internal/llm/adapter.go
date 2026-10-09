@@ -6,6 +6,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 )
 
 // 支持的协议类型常量（与 DB CHECK / listmodels.go 同步）。
@@ -18,6 +19,35 @@ const (
 
 // ErrUnsupportedAPIType 不支持的协议类型（与 listmodels.go 同文案，避免重复字面量）。
 var ErrUnsupportedAPIType = errors.New("api_type 不支持（openai-chat / openai-responses / anthropic / gemini）")
+
+// UpstreamError 上游（模型供应商）返回的错误。
+//
+// 单独成类型是为了让调用方按 **HTTP 状态** 分类（鉴权失败 / 参数被拒 / 限流 / 上游 5xx），
+// 而不是去匹配错误字符串——措辞一改，字符串匹配就静默失效。
+// StatusCode 为 0 表示错误来自流式帧里的 error 事件（没有 HTTP 状态可用）。
+type UpstreamError struct {
+	StatusCode int
+	// Message 上游自述的原因（可能含英文与协议细节）。会被写入服务端日志；
+	// 面向用户的文案由调用方按状态码决定，不直接透出。
+	Message string
+}
+
+func (e *UpstreamError) Error() string {
+	if e.Message != "" {
+		return "模型服务错误: " + e.Message
+	}
+	return fmt.Sprintf("模型服务返回 HTTP %d", e.StatusCode)
+}
+
+// upstreamMessage 构造「上游自述原因」类错误（响应体里带 error.message 的情形）。
+func upstreamMessage(status int, msg string) error {
+	return &UpstreamError{StatusCode: status, Message: msg}
+}
+
+// upstreamStatus 构造「只有状态码」类错误（非 2xx 但响应体没给出可读原因）。
+func upstreamStatus(status int) error {
+	return &UpstreamError{StatusCode: status}
+}
 
 // adapter 把规范化的 ChatRequest 翻译为协议 native 请求、发出、把 native 响应
 // 翻译回规范化 ChatResponse。具体协议各自实现；工厂按 api_type 选用。
@@ -69,10 +99,14 @@ func selectAdapter(apiType string) (adapter, error) {
 	}
 }
 
-// applyModelParams 把模型级参数按「顶层平铺」形状注入 native 请求体
-// （openai-chat / openai-responses / anthropic 三协议字段名一致，共用此注入；
-// gemini 走 generationConfig，由其 adapter 自行组装）。nil = 未设置，不传。
-func applyModelParams(body map[string]any, req *ChatRequest) {
+// applyMaxTokens 把模型级输出上限注入请求体，字段名 `max_tokens`
+// （openai-chat 与 anthropic 同形；nil = 未设置，不传，由协议必填默认兜底）。
+//
+// **openai-responses 不要用它**：那一侧的字段是 `max_output_tokens`，写成 max_tokens 会被
+// 上游以 `Unknown parameter: 'max_tokens'` 拒成 400（该 bug 真实发生过）。
+// 正因为字段名按协议不同，这里刻意不抽成「传字段名」的通用形状——那会让
+// 「Responses 也走这个 helper」看起来是合法的。gemini 走 generationConfig，亦自行组装。
+func applyMaxTokens(body map[string]any, req *ChatRequest) {
 	if req.MaxTokens != nil {
 		body["max_tokens"] = *req.MaxTokens
 	}

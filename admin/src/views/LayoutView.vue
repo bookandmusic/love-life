@@ -14,6 +14,7 @@ const nav = [
   { to: '/integrations', label: '外部集成', icon: 'send' },
   { to: '/recycle', label: '回收站', icon: 'trash-2' },
   { to: '/audit', label: '审计日志', icon: 'file-text' },
+  { to: '/logs', label: '服务日志', icon: 'scroll-text' },
 ]
 
 const pageTitle = computed(() => (route.meta.title as string) ?? '后台管理')

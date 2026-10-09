@@ -15,25 +15,34 @@ import (
 // 响应是 output 数组（非 choices）、tool 调用以 function_call/function_call_output + call_id 关联。
 type openaiResponsesAdapter struct{}
 
-// responsesDefaultMaxTokens 模型级未配置 max_tokens 时的兜底上限。
-// Responses API 的 max_tokens 可省略，但省略后由供应商取默认值、不受我们控制，故显式兜底。
+// responsesDefaultMaxTokens 模型级未配置输出上限时的兜底值。
+// `max_output_tokens` 本可省略，但省略后由供应商取默认值、不受我们控制，故显式兜底。
 const responsesDefaultMaxTokens = 16384
 
 // buildResponsesBody 组装请求体。Chat 与 StreamChat 共用一处装配，避免两条路径各拼一份
 // 而漂移（新增参数只改一边 = 「配了不生效」）。
+//
+// 输出上限的字段是 **`max_output_tokens`**（不是 max_tokens，写成后者上游直接
+// `Unknown parameter: 'max_tokens'` 400）。模型级未配置时用协议兜底：
+// Responses 可省略该字段，但省略后由供应商取默认值、不受我们控制，故显式兜底。
 func buildResponsesBody(model string, req *ChatRequest, stream bool) map[string]any {
 	systemPrompt, inputItems := buildResponsesInput(req.Messages)
 	tools := buildResponsesTools(req.Tools)
 
 	body := map[string]any{
-		"model":      model,
-		"input":      inputItems,
-		"max_tokens": responsesDefaultMaxTokens,
+		"model": model,
+		"input": inputItems,
+	}
+	// 字段名就地写死（本协议唯一用户）：写成 max_tokens 会被上游 400，
+	// 放在调用点上让这处差异一眼可见，别再被抽进「三协议同名」的共用 helper。
+	if req.MaxTokens != nil {
+		body["max_output_tokens"] = *req.MaxTokens
+	} else {
+		body["max_output_tokens"] = responsesDefaultMaxTokens
 	}
 	if stream {
 		body["stream"] = true
 	}
-	applyModelParams(body, req)
 	applyResponsesThinking(body, req.Thinking)
 	if systemPrompt != "" {
 		body["instructions"] = systemPrompt
@@ -105,7 +114,7 @@ func parseResponsesBody(data []byte, status int) (*ChatResponse, error) {
 		return nil, fmt.Errorf("decode model response: %w", err)
 	}
 	if raw.Error != nil {
-		return nil, fmt.Errorf("模型服务错误: %s", raw.Error.Message)
+		return nil, upstreamMessage(status, raw.Error.Message)
 	}
 	if len(raw.Output) == 0 {
 		return nil, fmt.Errorf("模型返回空响应（HTTP %d）", status)
@@ -295,10 +304,10 @@ func (openaiResponsesAdapter) StreamChat(ctx context.Context, baseURL, apiKey, m
 			continue
 		}
 		if f.Error != nil {
-			return "", fmt.Errorf("模型服务错误: %s", f.Error.Message)
+			return "", upstreamMessage(0, f.Error.Message)
 		}
 		if f.Response != nil && f.Response.Error != nil {
-			return "", fmt.Errorf("模型服务错误: %s", f.Response.Error.Message)
+			return "", upstreamMessage(0, f.Response.Error.Message)
 		}
 		switch f.Type {
 		case "response.output_text.delta":

@@ -42,6 +42,7 @@ const router = createRouter({
         },
         { path: 'recycle', component: () => import('../views/RecycleBinView.vue'), meta: { title: '回收站' } },
         { path: 'audit', component: () => import('../views/AuditLogView.vue'), meta: { title: '审计日志' } },
+        { path: 'logs', component: () => import('../views/ServiceLogView.vue'), meta: { title: '服务日志' } },
         // 旧路径兜底
         { path: 'settings', redirect: '/ai/providers' },
         { path: 'settings/models', redirect: '/ai/providers' },

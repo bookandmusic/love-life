@@ -38,6 +38,7 @@ import {
   AlertCircle,
   ChevronUp,
   ChevronDown,
+  ScrollText,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{ name: string; size?: number }>(), {
@@ -82,6 +83,7 @@ const ICONS: Record<string, unknown> = {
   lock: Lock,
   'chevron-up': ChevronUp,
   'chevron-down': ChevronDown,
+  'scroll-text': ScrollText,
 }
 
 const icon = computed(() => ICONS[props.name] ?? MoreHorizontal)
