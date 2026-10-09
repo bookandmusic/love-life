@@ -18,8 +18,9 @@
 |:---|:---|
 | 多模型适配 | 按**协议**适配：OpenAI Chat Completions / OpenAI Responses / Anthropic / Gemini；兼容生态（DeepSeek/Kimi/通义千问兼容模式/GLM/vLLM/Ollama 等）走 OpenAI Chat Completions |
 | API Key 安全存储 | 加密存储在服务端，客户端永不接触 |
-| 流式传输 | 四协议各自的原生流式（openai-chat `stream:true` + `stream_options.include_usage`；openai-responses `response.*.delta` 事件；anthropic `content_block_delta`；gemini `alt=sse`），由 adapter 归一为同一增量形状后交给 Agent 层（「预算与并行」）。**流式请求不设请求总超时**：连接期用 `Transport.ResponseHeaderTimeout` 兜住，整体长度由整轮墙钟预算控制 |
+| 流式传输 | 四协议各自的原生流式（openai-chat `stream:true` + `stream_options.include_usage`；openai-responses `response.*.delta` 事件；anthropic `content_block_delta`；gemini `alt=sse`），由 adapter 归一为同一增量形状后交给 Agent 层（「预算与并行」）。**流式请求不设请求总超时**：连接期用 `Transport.ResponseHeaderTimeout` 兜住，整体长度由整轮墙钟预算控制（该预算同时约束链内逐个模型的重试；收尾那一次调用另有自己的短预算，见「预算与并行」） |
 | 故障切换 | **按类型各一条模型链**（Chat 链 / 嵌入链）：每条链由模型条目按链序组成，调用从链首开始、失败依次向下切换（排序即切换策略；单 Key，不做多 Key 轮询）。嵌入链只收 openai-chat 供应商的模型；链为空或链上全部失败即回落关键词检索（ARCHITECTURE「语义检索」）。**流式下切换窗口只到首个增量之前**——已开始下发增量后失败就直接以 `error` 事件收尾，不换模型续写（否则用户看到半句话被另一个模型接下去） |
+| 跨协议历史回放 | 链上各条可以是不同协议，而历史（含工具往返）只有一份：回放时由**目标协议的 adapter** 按各自契约重新序列化——openai-chat / anthropic / responses 靠 call-id 配对，**gemini 靠工具名配对**（本协议无 call-id）。本仓只保证「按目标协议契约正确配对」（gemini 配对有单测）。若供应商前置了**协议转换网关**，网关需自行完成两套配对的映射；它在自己的转换里报 `No function call found for …` 一类 400 属网关侧问题，本仓不改 adapter 去迁就（改了会破坏已验证正确的路径），由链式切换兜住 |
 | 用量统计 | AI 调用量与 Token 消耗统计（落 `ai_usage_logs`，报表在后台仪表盘）；usage 随流式末帧到达，归一后同一口径落库。不做用量限流（2 用户自用无滥用对象） |
 | 模型热切换 | 管理后台更换模型后实时生效，无需发版 |
 | **多模态** | **媒体文件一律不入模型**：不组装多模态 content、不做图片理解、不录入能力开关。模型只知道「本条消息附带 N 个媒体（文件名）」。需求口径见 PRODUCT「图片与「看图」边界」，服务端落地见「图片处理与存储」 |
@@ -323,9 +324,9 @@ UI 块载荷（缩略图 URL、网格结构）**永不进模型上下文**——
 | 项 | 口径 |
 |:---|:---|
 | 调度单位 | 一轮（turn）= 一次用户消息触发的完整往返，可含多次模型调用与多次工具执行；`turn_id` 贯穿事件、落库与回滚 |
-| 预算三维 | 轮次上限 8、工具调用总数上限 16、整轮墙钟 90s。**预算同时约束链内逐个模型的重试**：当一条链路有 4 条候选时，每条各自可能耗尽连接期超时（30s），若不加预算检查会线性超预算（4×30s = 120s > 90s）。故链循环在每次尝试前先判是否已过 deadline——已过期就直接放弃剩余链。预算的粒度是「两次尝试之间」，故单条在途尝试仍受自身的连接期超时（30s）约束，最后一次尝试可以略微越过预算。（初始值：无实测依据，上线后按观测调整） |
+| 预算三维 | 轮次上限 8、工具调用总数上限 16、整轮墙钟 90s。**预算同时约束链内逐个模型的重试**：链上每条各自可能耗尽连接期超时（30s），不加预算检查会线性超预算（4 条链即 4×30s）。故链循环在每次尝试前先判是否已过 `deadline`，已过即放弃剩余链。粒度是「两次尝试之间」，故单条在途尝试仍受自身连接期超时约束，最后一次尝试可略微越过预算。（初始值：无实测依据，上线后按观测调整） |
 | 读工具并行 | 同一次模型响应里的多个 tool_calls：读工具（`!IsWrite`）**并行执行**（用标准库 `sync.WaitGroup`，不为此新增第三方依赖）；写工具（提案）串行，且一旦产出提案即停止本轮（一轮只出一张卡，媒体也只归首张卡）。并行只覆盖「首个写工具之前」的那段读工具——出提案会中止其后所有 call，把提案之后的读工具也跑掉就是执行了不该执行的调用 |
-| 收尾义务 | 预算耗尽必须再补一次**不带工具**的调用，让模型基于已获得的信息作答并说明哪些没完成；该调用也失败才回退固定文案。`stop_reason=budget` |
+| 收尾义务 | 预算耗尽必须再补一次**不带工具**的调用，让模型基于已获得的信息作答并说明哪些没完成；该调用也失败才回退固定文案。`stop_reason=budget`。**该调用自有短预算、不复用已耗尽的整轮墙钟**：否则墙钟触顶时收尾会被一并跳过，这条义务永远不会发生，用户只拿到固定文案 |
 | tool_calls 增量累积 | 流式下工具参数分片到达，形状各协议不同：openai-chat `delta.tool_calls[i]` 带 index、arguments 按 index 拼字符串；openai-responses `response.function_call_arguments.delta`；anthropic `content_block_delta.input_json_delta.partial_json`（按 content_block 序号归组）；gemini `parts[].functionCall` **整块到达**（Gemini API 不分片：`args` 是 JSON object，官方标注 `partialArgs` / `willContinue` 仅 Vertex 支持，故不做分片累积）。**累积在 adapter 内部完成，Agent 层只看到完整的 tool_call**（协议差异不外泄） |
 | 分片跨帧 | arguments 的 JSON 片段可能跨 SSE 帧截断：累积器只拼字符串、不中途解析，到 `finish_reason` / `content_block_stop` 才 `json.Unmarshal` |
 | 落库时机 | 增量只走 SSE，**轮末一次落库**（`chat_messages.parts` + `chat_context`）；中途断连不产生半截行，已下发的内容按 parts 完整保留 |

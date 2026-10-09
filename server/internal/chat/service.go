@@ -41,7 +41,12 @@ const (
 	// 故执行前按剩余额度截断，而不是先执行再判断。
 	MaxToolCalls   = 16
 	maxToolCalls   = MaxToolCalls
-	turnWallBudget = 90 * time.Second // 整轮墙钟预算：触顶进入收尾	// MaxChatMediaBytes 单条消息附件的元数据体积上限：8MB（按客户端上报的 size 累加）。
+	turnWallBudget = 90 * time.Second // 整轮墙钟预算：触顶进入收尾
+	// wrapUpBudget 收尾调用自己的短预算（一个连接期超时的量级）。
+	// **不复用已耗尽的整轮 deadline**：那会让墙钟触顶时收尾被一并跳过，
+	// AI模式设计「收尾义务」要求的「再补一次」永远不会发生，用户只拿到固定文案。
+	wrapUpBudget = 30 * time.Second
+	// MaxChatMediaBytes 单条消息附件的元数据体积上限：8MB（按客户端上报的 size 累加）。
 	// 附件在「确认执行」前不离开设备，服务端只收到元数据——这里防的是「一次带上几十个大文件」
 	// 这种明显不合理的批量（PRODUCT「发布动态」的整批把关在确认阶段还有一道真实校验）。
 	MaxChatMediaBytes = 8 << 20
@@ -52,10 +57,10 @@ const (
 // MaxChatMedia 单条聊天消息媒体引用上限（与发动态同源；var 因值来自运行时解析的 JSON）。
 var MaxChatMedia = limits.MaxMediaPerChatMessage
 
-// errTurnBudgetExhausted 整轮预算在链式重试中途耗尽，剩余模型未再尝试。
+// errTurnBudgetExhausted 进链循环时预算已过 → 一个模型都没试，结果为 nil。
 //
-// 单独立一个错误是为了让调用方区分「一个都没试、结果为 nil」与「试了但都失败」：
-// 两者若都返回 nil error，调用方会拿 nil 结果去解引用（收尾路径的 `len(res.Choices)`）。
+// 必须与「试了但都失败」区分开（后者返回真实错误）：若这里也返回 nil error，
+// 调用方会把 nil 结果当成功去解引用（收尾路径的 `len(res.Choices)`）。
 var errTurnBudgetExhausted = errors.New("整轮预算已耗尽，剩余模型未再尝试")
 
 type Service struct {
@@ -430,14 +435,17 @@ type streamEvents struct {
 // 已开始下发增量后失败即以错误收尾（不换模型续写，AI模式设计「模型网关」）。
 // 返回值 rest 之外还带本轮全部增量（调用方据此重组完整响应）。
 //
-// deadline 是**整轮墙钟预算**的到期点：链上每个模型各自可能耗尽连接期超时（30s），
+// deadline 是**整轮墙钟预算**的到期点（必传，零值即「早已过期」，故调用方一律给真实时间）：
+// 链上每个模型各自可能耗尽连接期超时（30s），
 // 逐个重试会线性超预算（4 条链 = 120s，而预算是 90s）。故每试下一个之前先判到期，
 // 已到期就直接放弃剩余链——预算的语义是「整轮不超过 N 秒」，不能只管轮与轮之间。
 func (s *Service) chatCallStream(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, chain []*chatTarget, req *llm.ChatRequest, onDelta func(llm.Delta), deadline time.Time) (*llm.ChatResponse, []llm.Delta, []*chatTarget, error) {
 	var lastErr error
 	for len(chain) > 0 {
-		// 预算到期即放弃剩余链
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
+			// 预算到期：剩余链不再尝试。单独记一条——下面那条 warn 只在单个模型失败时发，
+			// 看不出「这轮是被预算叫停的」。
+			slog.Warn("整轮预算已耗尽，放弃剩余链", "remaining", len(chain), "last_err", lastErr)
 			break
 		}
 		t := chain[0]
@@ -472,14 +480,11 @@ func (s *Service) chatCallStream(ctx context.Context, w http.ResponseWriter, flu
 		// 不记一笔的话，后台「服务日志」与终端都看不到「链首一直失败」——而排障时
 		// 第一个失败原因往往才是根因（末尾的 lastErr 只是最后一次）。
 		if len(chain) > 0 {
-			abandoned := !deadline.IsZero() && time.Now().After(deadline)
-			warnChainFallback(t, err, elapsed, abandoned)
+			warnChainFallback(t, err, elapsed)
 		}
 	}
 	if lastErr == nil {
-		// 一个都没试成（进循环时预算已过）：必须给非 nil error，
-		// 否则调用方会把 nil 结果当成功去解引用
-		return nil, nil, nil, errTurnBudgetExhausted
+		return nil, nil, nil, errTurnBudgetExhausted // 一个都没试成：见该错误的说明
 	}
 	return nil, nil, nil, lastErr
 }
@@ -502,16 +507,15 @@ func (s *Service) recordUsageStream(ctx context.Context, t *chatTarget, usage ll
 // （usage 行只记状态、不带原因，故不能替代这里。）流式与非流式两条链式路径共用，
 // 避免两处措辞漂移。
 //
-// elapsedMs 是这一次尝试实际耗时（用于分辨「30s 超时」还是「上游秒回错误」）；
-// budgetAbandoned 表示整轮预算已耗尽、剩余链不会再试——有它才看得出
-// 「这轮为什么到此为止」，不必再靠临时探针。
-func warnChainFallback(t *chatTarget, err error, elapsedMs int64, budgetAbandoned bool) {
+// elapsedMs 是这一次尝试实际耗时：单看错误串分不出「耗尽 30s 连接超时」还是
+// 「上游秒回错误」，有这个字段才不用再写临时探针。预算叫停剩余链另有一条日志
+// （本函数只在「还有下一个可试」时发，看不出是被预算拦住的）。
+func warnChainFallback(t *chatTarget, err error, elapsedMs int64) {
 	if t == nil {
 		return
 	}
 	slog.Warn("模型调用失败，切换到链上下一个",
-		"provider_id", t.ProviderID, "model", t.Model, "err", err,
-		"elapsed_ms", elapsedMs, "budget_abandoned", budgetAbandoned)
+		"provider_id", t.ProviderID, "model", t.Model, "err", err, "elapsed_ms", elapsedMs)
 }
 
 // modelErrorText 把模型调用的原始错误翻成面向用户的文案，并给出「重试是否有意义」。
@@ -572,8 +576,8 @@ func modelErrorText(err error) (text string, retryable bool) {
 func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.ChatRequest, deadline time.Time) (*llm.ChatResponse, []*chatTarget, error) {
 	var lastErr error
 	for len(chain) > 0 {
-		// 与 chatCallStream 同款：整轮预算同样约束这条非流式路径（收尾调用）
-		if !deadline.IsZero() && time.Now().After(deadline) {
+		if time.Now().After(deadline) {
+			slog.Warn("整轮预算已耗尽，放弃剩余链", "remaining", len(chain), "last_err", lastErr)
 			break
 		}
 		t := chain[0]
@@ -591,13 +595,11 @@ func (s *Service) chatCall(ctx context.Context, chain []*chatTarget, req *llm.Ch
 		lastErr = err
 		// 同上：链上还有下一个时这次失败会被静默跳过，记一笔否则无从察觉
 		if len(chain) > 0 {
-			abandoned := !deadline.IsZero() && time.Now().After(deadline)
-			warnChainFallback(t, err, elapsed, abandoned)
+			warnChainFallback(t, err, elapsed)
 		}
 	}
 	if lastErr == nil {
-		// 一个都没试成（进循环时预算已过）：非 nil error，理由同 chatCallStream
-		return nil, nil, errTurnBudgetExhausted
+		return nil, nil, errTurnBudgetExhausted // 一个都没试成：见该错误的说明
 	}
 	return nil, nil, lastErr
 }
@@ -1114,7 +1116,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		msgs = append(msgs, llm.Message{Role: "user",
 			Content: "（系统提示）工具调用次数已用尽。请基于以上已获得的信息直接回答用户，并说明哪些部分没能完成，不要再调用工具。"})
 		text := "这次没能整理完，请换个说法再试一次。"
-		if res, _, cerr := s.chatCall(r.Context(), chain, &llm.ChatRequest{Messages: msgs}, deadline); cerr == nil &&
+		if res, _, cerr := s.chatCall(r.Context(), chain, &llm.ChatRequest{Messages: msgs}, time.Now().Add(wrapUpBudget)); cerr == nil &&
 			len(res.Choices) > 0 && strings.TrimSpace(res.Choices[0].Message.Content) != "" {
 			text = res.Choices[0].Message.Content
 		} else if cerr != nil {

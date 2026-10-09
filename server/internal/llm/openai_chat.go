@@ -18,7 +18,8 @@ type openaiChatAdapter struct{}
 
 // openaiHTTP 复用 HTTP 客户端。流式请求**不设请求总超时**（长回答会被 60s 砍断）：
 // 连接期用 Transport.ResponseHeaderTimeout 兜住，整体长度由整轮墙钟预算控制
-// （AI模式设计「模型网关」）。
+// （AI模式设计「模型网关」；该预算也约束链内逐个模型的重试，见「预算与并行」）。
+// 改这个 30s 时一并看那两处。
 var openaiHTTP = &http.Client{
 	Timeout: 0,
 	Transport: &http.Transport{

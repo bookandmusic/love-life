@@ -63,19 +63,16 @@ func TestChatCallHonoursTurnBudget(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	start := time.Now()
 	_, _, err := s.chatCall(ctx, chain,
 		&llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "hi"}}}, time.Now().Add(250*time.Millisecond))
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("全失败的链应返回错误")
 	}
+	// 只断请求数：它是「预算有没有拦住剩余链」的直接因果证据（去掉 deadline 检查即变 4）。
+	// 不断言耗时——4 次尝试约 400ms，掐秒表既分不开 3 与 4 次，又会在慢机器上假失败。
 	if got := atomic.LoadInt32(count); got > 3 {
 		t.Errorf("上游收到 %d 次请求，want ≤3 —— 预算未拦住链内剩余重试（链长 4，每条 100ms）", got)
-	}
-	if elapsed > 700*time.Millisecond {
-		t.Errorf("整轮耗时 %s 表明把链上 4 条都试完了", elapsed)
 	}
 }
 
@@ -87,19 +84,15 @@ func TestChatCallStreamHonoursTurnBudget(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	start := time.Now()
-	_, _, _, err := s.chatCallStream(ctx, httptest.NewRecorder(), nopFlusher{}, chain,
+	rec := httptest.NewRecorder()
+	_, _, _, err := s.chatCallStream(ctx, rec, rec, chain,
 		&llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "hi"}}}, nil, time.Now().Add(250*time.Millisecond))
-	elapsed := time.Since(start)
 
 	if err == nil {
 		t.Fatal("全失败的链应返回错误")
 	}
 	if got := atomic.LoadInt32(count); got > 3 {
 		t.Errorf("上游收到 %d 次请求，want ≤3 —— 流式路径预算未拦住链内剩余重试", got)
-	}
-	if elapsed > 700*time.Millisecond {
-		t.Errorf("流式路径整轮耗时 %s 表明把链上 4 条都试完了", elapsed)
 	}
 }
 
@@ -134,7 +127,8 @@ func TestChatCallStreamStopsAfterBudget(t *testing.T) {
 	srv, count := countingUpstream(t, time.Millisecond)
 	chain := fakeTargets(t, srv, 2)
 
-	_, _, _, err := s.chatCallStream(context.Background(), httptest.NewRecorder(), nopFlusher{}, chain,
+	rec := httptest.NewRecorder()
+	_, _, _, err := s.chatCallStream(context.Background(), rec, rec, chain,
 		&llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "hi"}}}, nil, time.Now().Add(-time.Second))
 	if err != errTurnBudgetExhausted {
 		t.Errorf("err = %v, want errTurnBudgetExhausted", err)
@@ -144,7 +138,50 @@ func TestChatCallStreamStopsAfterBudget(t *testing.T) {
 	}
 }
 
-// nopFlusher 满足 http.Flusher，使流式路径能在 httptest.ResponseRecorder 上跑。
-type nopFlusher struct{}
+// TestChatCallStreamStopsAfterStreamedDelta 已下发增量后即使预算已过，也不换模型续写。
+//
+// 这是 AI模式设计「模型网关」的硬不变式：用户绝不能看到半句话被另一个模型接下去。
+// 它与「预算到期就不再试下一个」在**同一次失败**上相遇（尝试中途预算刚过、同时已下发
+// 增量），故必须断言增量优先——否则链上后一个模型会接着写，用户看到拼接的半句话。
+func TestChatCallStreamStopsAfterStreamedDelta(t *testing.T) {
+	s, _ := newPromptTestService(t)
 
-func (nopFlusher) Flush() {}
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		// 先真下发一个增量
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"半句话\"}}]}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// 再掐断连接（不送 [DONE]）：adapter 走 sc.err() 报错，且此时已产出 deltas。
+		// 用 ErrAbortHandler 直接断连，模拟上游中途断流。
+		panic(http.ErrAbortHandler)
+	}))
+	t.Cleanup(srv.Close)
+
+	chain := fakeTargets(t, srv, 3) // 链上还有备用模型
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// 预算给足（不因预算而停），专测「已下发增量」这一条是否独立生效。
+	// 经 onDelta 计数：错误路径会把 deltas 丢弃（返回值里拿不到），
+	// 而这条不变式看的正是「是否真的下发过增量」。
+	var streamed int32
+	rec := httptest.NewRecorder()
+	_, _, _, err := s.chatCallStream(ctx, rec, rec, chain,
+		&llm.ChatRequest{Messages: []llm.Message{{Role: "user", Content: "hi"}}},
+		func(llm.Delta) { atomic.AddInt32(&streamed, 1) }, time.Now().Add(10*time.Second))
+
+	if err == nil {
+		t.Fatal("上游中途断流应返回错误")
+	}
+	if got := atomic.LoadInt32(&streamed); got == 0 {
+		t.Fatal("本用例前提是「已下发过增量」，但一个都没收到 —— 测不到那条不变式")
+	}
+	if got := atomic.LoadInt32(&hits); got != 1 {
+		t.Errorf("上游被请求 %d 次，want 1 —— 已下发增量后不得换模型续写（用户会看到拼接的半句话）", got)
+	}
+}
