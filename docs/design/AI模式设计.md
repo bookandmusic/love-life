@@ -18,7 +18,7 @@
 |:---|:---|
 | 多模型适配 | 按**协议**适配：OpenAI Chat Completions / OpenAI Responses / Anthropic / Gemini；兼容生态（DeepSeek/Kimi/通义千问兼容模式/GLM/vLLM/Ollama 等）走 OpenAI Chat Completions |
 | API Key 安全存储 | 加密存储在服务端，客户端永不接触 |
-| 流式传输 | 四协议各自的原生流式（openai-chat `stream:true` + `stream_options.include_usage`；openai-responses `response.*.delta` 事件；anthropic `content_block_delta`；gemini `alt=sse`），由 adapter 归一为同一增量形状后交给 Agent 层（「预算与并行」）。**流式请求不设请求总超时**：连接期用 `Transport.ResponseHeaderTimeout` 兜住，整体长度由整轮墙钟预算控制（该预算同时约束链内逐个模型的重试；收尾那一次调用另有自己的短预算，见「预算与并行」） |
+| 流式传输 | 四协议各自的原生流式（openai-chat `stream:true` + `stream_options.include_usage`；openai-responses `response.*.delta` 事件；anthropic `content_block_delta`；gemini `alt=sse`），由 adapter 归一为同一增量形状后交给 Agent 层（「预算与并行」）。**思考增量的来源字段/事件按协议不同**：anthropic `thinking_delta`；responses `response.reasoning_summary_text.delta`（部分网关发 `response.reasoning_text.delta`，两个都认）；openai-chat 的 delta 里**两个字段名都认**（`reasoning_content` 与 `reasoning`——实测网关用后者且逐帧真增量，只认前者会把思考整段丢弃）；gemini 的上游**不逐帧下发思考**（实测 78 帧无一 `thought` part，思考藏在内部），故该协议思考期必然无输出。**流式请求不设请求总超时**：连接期用 `Transport.ResponseHeaderTimeout` 兜住，整体长度由整轮墙钟预算控制（该预算同时约束链内逐个模型的重试；收尾那一次调用另有自己的短预算，见「预算与并行」） |
 | 故障切换 | **按类型各一条模型链**（Chat 链 / 嵌入链）：每条链由模型条目按链序组成，调用从链首开始、失败依次向下切换（排序即切换策略；单 Key，不做多 Key 轮询）。嵌入链只收 openai-chat 供应商的模型；链为空或链上全部失败即回落关键词检索（ARCHITECTURE「语义检索」）。**流式下切换窗口只到首个增量之前**——已开始下发增量后失败就直接以 `error` 事件收尾，不换模型续写（否则用户看到半句话被另一个模型接下去） |
 | 跨协议历史回放 | 链上各条可以是不同协议，而历史（含工具往返）只有一份：回放时由**目标协议的 adapter** 按各自契约重新序列化。四家的 `functionCall`/`functionResponse` 都靠 call-id 配对，其中 **gemini 的该字段由客户端填充**（模型给了就回同一个值），故本仓在缺失时**合成一个 id**，回放时与 name 一并带上。**回放保证整请求级不变式**：每个 functionCall 恰好一个同 id 的 functionResponse、且请求内 id 互不重复——库里的 id 非空且本次未用过就沿用，空 id 或本次重复则新分配。不满足它时，同一工具在不同轮各调一次就会被**协议转换网关**用工具名充当 call-id 而撞成两个同 id，上游以 `Duplicate function_call_output` 拒（实测 502）。请求里没有对应调用的孤儿回执不带 id |
 | 用量统计 | AI 调用量与 Token 消耗统计（落 `ai_usage_logs`，报表在后台仪表盘）；usage 随流式末帧到达，归一后同一口径落库。不做用量限流（2 用户自用无滥用对象） |
@@ -46,7 +46,7 @@
 |:---|:---|
 | 输出上限 | 单次回答的输出上限。**字段名按协议不同**：openai-chat 与 anthropic 是 `max_tokens`（Anthropic 必填，未设时用默认 4096），openai-responses 是 `max_output_tokens`（可省略，未设时用兜底 16384）；gemini 走 `generationConfig.maxOutputTokens`。写成同名字段会被上游拒成 400（Responses 即 `Unknown parameter: 'max_tokens'`），故三协议不共用同一注入函数 |
 | `thinking` | **思考档位** = off/low/medium/high，默认 off。**off = 该协议的最低档**，不是「不请求思考」：现役模型（Anthropic adaptive、Gemini 3.x）关不掉思考，省略参数只会让它停在自身默认档，反而违背「关」的意图——用户选「关」要的是省钱省时。开启会产生思考 token 计费（PRODUCT「后台管理页面功能范围（admin）」） |
-| `thinking_levels` | 该模型**声明支持**的档位集合（逗号分隔、恒含 off）。档位取值是**模型**属性而非协议属性（如 Gemini 3 Pro 只接受 low/high，发 medium 即 400），故放在配置面声明；adapter 只做「已选档位 → 原生参数」的映射、**不解析模型名**（别名会让名称匹配落空，退化成 400 或静默失效）。写入时归一为固定顺序并校验 `thinking` 落在集合内；OpenAI Chat 协议无统一思考参数，其声明集只允许 off |
+| `thinking_levels` | 该模型**声明支持**的档位集合（逗号分隔、恒含 off）。档位取值是**模型**属性而非协议属性（如 Gemini 3 Pro 只接受 low/high，发 medium 即 400），故放在配置面声明；adapter 只做「已选档位 → 原生参数」的映射、**不解析模型名**（别名会让名称匹配落空，退化成 400 或静默失效）。写入时归一为固定顺序并校验 `thinking` 落在集合内；OpenAI Chat 协议无统一思考参数，其声明集只允许 off。**映射到的原生字段**（现役代，实测三协议各档取值均被端点接受且确实生效——gemini 同题下 low 思考 163 token、high 371）：anthropic `thinking:{type:"adaptive"}` + `output_config.effort`；gemini `generationConfig.thinkingConfig.thinkingLevel`（小写，与 `thinkingBudget` 互斥）；responses `reasoning:{effort, summary:"auto"}`；`off` 一律映射为最低档。**前置转换网关可能不校验取值**（实测大写档位、互斥字段同传、不存在的 `effort` 值全被放行返回 200）——声明集填错不会报错、只会静默白花思考 token，故「按供应商文档填」是配置者的责任 |
 | `context_window` | 模型上下文窗口（token）。用于裁剪送入模型的历史：预算 = 窗口 − 输出预留（输出上限未设时预留 4096），下限 1024；不填则用兜底预算。见「上下文组装」 |
 
 **不设 `temperature`**：理由见 ARCHITECTURE「明确不做与已否决项 · AI 能力」。

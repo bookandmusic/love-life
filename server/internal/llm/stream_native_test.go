@@ -664,3 +664,42 @@ func TestStreamNonEventStreamFallback(t *testing.T) {
 		})
 	}
 }
+
+// TestOpenAIChatStreamReasoningAlias 思考增量的字段名有两种：`reasoning_content`（部分
+// 供应商）与 `reasoning`（实测网关用它，逐帧真增量）。只认前者会把思考**整段丢弃**——
+// 表现为思考区一直空白、首字延迟等于整段生成时间。
+//
+// 与 TestResponsesStreamReasoningTextAlias 同类：网关字段名不同，两个都要认。
+func TestOpenAIChatStreamReasoningAlias(t *testing.T) {
+	frames := []string{
+		`{"choices":[{"delta":{"reasoning":"用户"}}]}`,
+		`{"choices":[{"delta":{"reasoning":"要求"}}]}`,
+		`{"choices":[{"delta":{"content":"答"}}]}`,
+		`data: [DONE]`,
+	}
+	srv := sseServer(t, frames)
+	_, deltas := collectDeltas(t, openaiChatAdapter{}, srv.URL, &ChatRequest{})
+
+	if got := reasoningOf(deltas); got != "用户要求" {
+		t.Fatalf("思考 = %q, want %q（reasoning 字段被丢弃）", got, "用户要求")
+	}
+	if got := contentOf(deltas); got != "答" {
+		t.Fatalf("正文 = %q", got)
+	}
+}
+
+// TestOpenAIChatStreamReasoningContentStillWorks 另一个字段名不能因为加别名而失效。
+func TestOpenAIChatStreamReasoningContentStillWorks(t *testing.T) {
+	frames := []string{
+		`{"choices":[{"delta":{"reasoning_content":"原"}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"因"}}]}`,
+		`{"choices":[{"delta":{"content":"答"}}]}`,
+		`data: [DONE]`,
+	}
+	srv := sseServer(t, frames)
+	_, deltas := collectDeltas(t, openaiChatAdapter{}, srv.URL, &ChatRequest{})
+
+	if got := reasoningOf(deltas); got != "原因" {
+		t.Fatalf("思考 = %q, want %q（reasoning_content 回归了）", got, "原因")
+	}
+}

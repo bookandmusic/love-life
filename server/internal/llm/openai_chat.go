@@ -93,7 +93,11 @@ type streamDelta struct {
 		Delta struct {
 			Content          string `json:"content"`
 			ReasoningContent string `json:"reasoning_content"`
-			ToolCalls        []struct {
+			// Reasoning 是同一含义的另一个字段名：网关把上游的思考增量放在 `reasoning`
+			// （实测该网关 134 帧全带它，且逐帧真增量）。只认 `reasoning_content` 会把
+			// 思考整段丢掉——两条都认，取到哪个用哪个（同一帧不会两者都非空）。
+			Reasoning string `json:"reasoning"`
+			ToolCalls []struct {
 				Index    int    `json:"index"`
 				ID       string `json:"id"`
 				Function struct {
@@ -169,7 +173,11 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 			continue
 		}
 		c := frame.Choices[0]
-		d := Delta{Reasoning: c.Delta.ReasoningContent, Content: c.Delta.Content}
+		reasoning := c.Delta.ReasoningContent
+		if reasoning == "" {
+			reasoning = c.Delta.Reasoning
+		}
+		d := Delta{Reasoning: reasoning, Content: c.Delta.Content}
 		for _, tc := range c.Delta.ToolCalls {
 			p, ok := pending[tc.Index]
 			if !ok {
