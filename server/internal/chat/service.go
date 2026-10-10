@@ -518,6 +518,16 @@ func warnChainFallback(t *chatTarget, err error, elapsedMs int64) {
 		"provider_id", t.ProviderID, "model", t.Model, "err", err, "elapsed_ms", elapsedMs)
 }
 
+// shouldWrapUp 预算收尾调用是否该发：未作答必须收尾（不能静默 done），**出提案不收尾**
+// （提案 break 留下无回执的 tool_calls，收尾请求必被上游拒——见 AI模式设计「收尾义务」）。
+//
+// 现有可达路径上 `answered && budgetHit` 只可能是出提案（正文回答那一支不经过预算截断），
+// 故本函数等价于 `!answered`；显式留 `budgetHit`/`stopReason` 两参数是把那条规则钉在
+// 测试里，防止有人再把 `|| budgetHit` 加回来。
+func shouldWrapUp(answered, budgetHit bool, stopReason string) bool {
+	return !answered || (budgetHit && stopReason != "proposal")
+}
+
 // modelErrorText 把模型调用的原始错误翻成面向用户的文案，并给出「重试是否有意义」。
 //
 // 分类只认**类型与状态码**，不匹配错误字符串（措辞一改，字符串匹配就静默失效）。
@@ -1105,7 +1115,7 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// 预算耗尽必收尾：轮次/工具数触顶时不能静默 done——再补一次不带工具的调用。
-	if !answered || budgetHit {
+	if shouldWrapUp(answered, budgetHit, stopReason) {
 		// 到达这里时 ctx 可能已取消（断连发生在工具执行期间，循环后的断连检查在收尾之前
 		// 没有机会跑）。此时收尾调用与后续写库都会失败，必须先按断连落库再返回，
 		// 否则 turnParts 全丢且用户消息没有任何中断标记。
