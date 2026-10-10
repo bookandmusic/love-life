@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
+	"time"
 )
 
 // geminiAdapter 适配 Gemini generateContent（POST /v1beta/models/{model}:generateContent）。
 // 差异：model 在 URL 路径、systemInstruction 顶层、role 是 user/model（非 assistant）、
-// content 是 parts 数组、tool 调用以 functionCall/functionResponse + name 关联（无 call-id）。
+// content 是 parts 数组、tool 调用以 functionCall/functionResponse 承载；两者的 id 由客户端填充
+// 用于配对（模型一般不回），缺失时本仓合成——见 geminiCallID。
 type geminiAdapter struct{}
 
 // buildGeminiBody 组装请求体。Chat 与 StreamChat 共用一处装配，避免两条路径各拼一份
@@ -82,6 +85,9 @@ type geminiRaw struct {
 				// gemini 3 在工具往返时强制要求原样带回，缺失即 400。
 				ThoughtSignature string `json:"thoughtSignature"`
 				FunctionCall     struct {
+					// id 由客户端填充、随回执带回以配对（schema 原文：return the response with the
+					// matching id）。模型通常不回，缺失时合成；回了就沿用——见 geminiCallID。
+					ID   string          `json:"id"`
 					Name string          `json:"name"`
 					Args json.RawMessage `json:"args"`
 				} `json:"functionCall"`
@@ -115,7 +121,7 @@ func parseGeminiBody(data []byte, status int) (*ChatResponse, error) {
 	var choice Choice
 	c := raw.Candidates[0]
 	choice.FinishReason = c.FinishReason
-	for idx, part := range c.Content.Parts {
+	for _, part := range c.Content.Parts {
 		if part.Text != "" && part.Thought {
 			// 思考链：拼接但不与正文混流（流式路径同口径）
 			choice.Message.Reasoning += part.Text
@@ -129,8 +135,8 @@ func parseGeminiBody(data []byte, status int) (*ChatResponse, error) {
 		}
 		if part.FunctionCall.Name != "" {
 			tc := ToolCall{
-				// Gemini 无 call-id，合成一个用于规范化往返关联
-				ID:   fmt.Sprintf("gemini-%s-%d", part.FunctionCall.Name, idx),
+				// 上游回了 id 就沿用；没回则合成一个（本协议的回执靠它配对）
+				ID:   pickGeminiCallID(part.FunctionCall.ID, part.FunctionCall.Name),
 				Type: "function",
 				// 签名与 functionCall 平级，回传时必须原样带回（gemini 3 强制）
 				Signature: part.ThoughtSignature,
@@ -166,6 +172,13 @@ func parseGeminiBody(data []byte, status int) (*ChatResponse, error) {
 // tool 结果以 functionResponse part 承载（response 必须是 object）。
 // 历史中 assistant 的 tool_calls 还原为 functionCall part。
 func buildGeminiContents(msgs []Message) (system string, contents []any) {
+	// 本次请求内的 id 账本：上游要求「每个 functionCall 恰好一个同 id 的 functionResponse，
+	// 且整请求内 id 不重复」，故 id 必须**单趟统一分配**——逐条独立取用做不到「本次不重复」。
+	//   used    —— 本次已发出的 id（判重）
+	//   pending —— 库里的 id → 待配对的回放 id 队列（tool 行恒在其 assistant 行之后，前向即可对上；
+	//              空 id 也走同一条队列，键为 ""）
+	used := map[string]bool{}
+	pending := map[string][]string{}
 	for _, m := range msgs {
 		switch m.Role {
 		case "system":
@@ -184,12 +197,16 @@ func buildGeminiContents(msgs []Message) (system string, contents []any) {
 				if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 					args = map[string]any{"raw": tc.Function.Arguments}
 				}
-				part := map[string]any{
-					"functionCall": map[string]any{
-						"name": tc.Function.Name,
-						"args": args,
-					},
+				// 恒带 id（沿用库里的，空或本次重复则新分配），并登记待配对——
+				// 转换型网关拿不到 id 会退回用工具名当 id，同名工具调两次即被上游拒。
+				id := replayGeminiCallID(tc.ID, tc.Function.Name, used)
+				pending[tc.ID] = append(pending[tc.ID], id)
+				fc := map[string]any{
+					"name": tc.Function.Name,
+					"args": args,
+					"id":   id,
 				}
+				part := map[string]any{"functionCall": fc}
 				// thoughtSignature 是 part 级字段，必须与 functionCall 平级回传；
 				// gemini 3 缺失即 400。历史来自别的模型时本就没有签名，此时**不伪造**
 				// （编造的签名会被上游拒绝或导致推理状态错乱），留空让上游报错可见。
@@ -211,14 +228,20 @@ func buildGeminiContents(msgs []Message) (system string, contents []any) {
 			if name == "" {
 				name = toolNameFromCallID(m.ToolCallID)
 			}
+			fr := map[string]any{
+				"name":     name,
+				"response": responseObj,
+			}
+			// 取配对调用分配的同一个 id；只带一侧会变成「输出找不到调用」。
+			// 队列为空 = 请求里没有对应的 functionCall（孤儿 tool 行）：**不给 id**，
+			// 否则会造出一个没有调用的回执，比不带更糟。
+			if q := pending[m.ToolCallID]; len(q) > 0 {
+				fr["id"] = q[0]
+				pending[m.ToolCallID] = q[1:]
+			}
 			contents = append(contents, map[string]any{
-				"role": "user",
-				"parts": []any{map[string]any{
-					"functionResponse": map[string]any{
-						"name":     name,
-						"response": responseObj,
-					},
-				}},
+				"role":  "user",
+				"parts": []any{map[string]any{"functionResponse": fr}},
 			})
 		default: // user
 			contents = append(contents, map[string]any{
@@ -230,13 +253,13 @@ func buildGeminiContents(msgs []Message) (system string, contents []any) {
 	return system, contents
 }
 
-// toolNameFromCallID 从合成的 call-id（形如 gemini-{name}-{idx}）还原工具名；
+// toolNameFromCallID 从合成的 call-id（形如 gemini-{name}-{序号}）还原工具名；
 // 非 gemini 前缀则原样返回（兼容历史）。
 func toolNameFromCallID(id string) string {
 	const prefix = "gemini-"
 	if len(id) > len(prefix) && id[:len(prefix)] == prefix {
 		rest := id[len(prefix):]
-		// 剥尾部 -{idx}
+		// 剥尾部 -{序号}
 		for i := len(rest) - 1; i > 0; i-- {
 			if rest[i] == '-' {
 				return rest[:i]
@@ -244,6 +267,39 @@ func toolNameFromCallID(id string) string {
 		}
 		return rest
 	}
+	return id
+}
+
+// geminiCallSeq 合成 call-id 的序号：初值取进程启动纳秒再自增，故**跨轮唯一**、
+// 重启后也不与库里的旧 id 重逢（会话历史长期保留）。理由见 AI模式设计「跨协议历史回放」。
+var geminiCallSeq = time.Now().UnixNano()
+
+// newGeminiCallID 分配一个全新的合成 call-id（用于空 id 或本次已用过的情况）。
+//
+// 序号保持**单个** `-` 段，toolNameFromCallID 才能剥掉它还原工具名。
+func newGeminiCallID(name string) string {
+	return fmt.Sprintf("gemini-%s-%d", name, atomic.AddInt64(&geminiCallSeq, 1))
+}
+
+// pickGeminiCallID 解析响应时用：上游给了 id 就沿用，没给才新分配。
+// （与回放侧的 replayGeminiCallID 区别：那里还要判「本次请求内是否已用过」。）
+func pickGeminiCallID(upstreamID, name string) string {
+	if upstreamID != "" {
+		return upstreamID
+	}
+	return newGeminiCallID(name)
+}
+
+// replayGeminiCallID 取「本次请求内」给这个工具调用用的 id：
+// 库里那个 id 非空且本次还没用过就**沿用**（上游要求回同一个值，真实端点必须如此），
+// 否则新分配一个（空 id 无从配对；重复 id 会被上游以 Duplicate 拒）。
+func replayGeminiCallID(upstreamID, name string, used map[string]bool) string {
+	if upstreamID != "" && !used[upstreamID] {
+		used[upstreamID] = true
+		return upstreamID
+	}
+	id := newGeminiCallID(name)
+	used[id] = true
 	return id
 }
 
@@ -308,6 +364,7 @@ func (geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model stri
 
 	// 逐帧按 geminiRaw 解析（与 Chat 同一结构），工具调用按出现顺序收集
 	type gemCall struct {
+		id        string
 		name      string
 		signature string
 		args      json.RawMessage
@@ -339,7 +396,7 @@ func (geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model stri
 			for _, part := range c.Content.Parts {
 				switch {
 				case part.FunctionCall.Name != "":
-					calls = append(calls, &gemCall{name: part.FunctionCall.Name,
+					calls = append(calls, &gemCall{id: part.FunctionCall.ID, name: part.FunctionCall.Name,
 						signature: part.ThoughtSignature, args: part.FunctionCall.Args})
 				case part.Text != "" && part.Thought:
 					onDelta(Delta{Reasoning: part.Text})
@@ -366,14 +423,14 @@ func (geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model stri
 	if !sawFrame {
 		return "", fmt.Errorf("模型返回空响应（HTTP %d）", res.StatusCode)
 	}
-	for i, c := range calls {
+	for _, c := range calls {
 		args := "{}"
 		if len(c.args) > 0 {
 			args = string(c.args)
 		}
-		// Gemini 无 call-id，合成一个用于规范化往返关联（与 Chat 同一口径）
+		// 与 Chat 同一口径：上游回了 id 就沿用，没回则合成
 		onDelta(Delta{ToolCall: &ToolCallDelta{
-			ID:        fmt.Sprintf("gemini-%s-%d", c.name, i),
+			ID:        pickGeminiCallID(c.id, c.name),
 			Name:      c.name,
 			Arguments: args,
 			Signature: c.signature,

@@ -11,9 +11,8 @@ type Message struct {
 	Content    string     `json:"content"`
 	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
-	// ToolName 仅用于协议内关联（gemini 的 functionResponse 靠工具名而非 call-id）：
-	// 历史回放的往返 ID 形如 card-<n>，反解不出名字；不上网（json:"-"），
-	// 其余协议各自用 ID 关联、忽略本字段。
+	// ToolName 供 gemini 回放取工具名：该协议的回执虽然也带 id，但历史往返的 ID 可能形如
+	// card-<n>、反解不出名字，故优先用它。不上网（json:"-"），其余协议靠 ID 关联、忽略本字段。
 	ToolName string `json:"-"`
 }
 

@@ -1,8 +1,8 @@
 package llm
 
-// 历史回放的协议映射（2026-09-22）：确认卡重组的工具往返必须能被各协议正确表达——
-// openai-chat / responses / anthropic 靠 call-id 关联；gemini 靠工具名关联，
-// 重组 ID 形如 card-<n>、反解不出名字，必须优先用 Message.ToolName。
+// 历史回放的协议映射：确认卡重组的工具往返必须能被各协议正确表达——四家都靠 call-id 配对，
+// gemini 的该字段由客户端填充（缺失时合成）；重组 ID 形如 card-<n> 时名字反解不出来，
+// 故回执的工具名必须优先取 Message.ToolName。
 
 import (
 	"encoding/json"
