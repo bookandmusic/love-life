@@ -42,6 +42,7 @@ interface HistoryMsg {
   created_at?: string
   quoted?: QuoteRef[]
   interrupted?: boolean
+  turn_id?: string
   card?: {
     action_id: number
     intent: string
@@ -133,7 +134,8 @@ function resetTurnView() {
   cards.value = {}
   quotes.value = []
   error.value = ''
-  turnBubble = null
+  curThink = null
+  curText = null
   toolBubbles.clear()
 }
 
@@ -219,6 +221,9 @@ function pushBubble(b: Bubble): Bubble {
 
 function scrollBottom() {
   nextTick(() => streamRef.value?.scrollBottom())
+}
+function scrollBottomIfPinned() {
+  nextTick(() => streamRef.value?.scrollBottomIfPinned())
 }
 
 // 多选本地文件（不立即上传；确认执行时才经 /media/upload 换 token 落库，避免垃圾数据）
@@ -331,7 +336,12 @@ function discardAllCardTokens() {
 function applyHistory(items: HistoryMsg[]) {
   const nextBubbles: Bubble[] = []
   const nextCards: Record<number, CardItem> = {}
+  // 中断轮集合：编辑重发按轮整收（删旧轮再回填），所以该轮**所有**段气泡（思考/工具/
+  // 卡片，不只用户消息）都要带 interruptedTurnId，否则 DELETE 后这些段会残留到刷新。
+  // interrupted part 只标在用户消息上（markTurnAborted），助手段靠 turn_id 归属到这里。
+  const interruptedTurns = new Set(items.filter((m) => m.interrupted && m.turn_id).map((m) => m.turn_id as string))
   for (const m of items) {
+    const interruptedTurnId = m.turn_id && interruptedTurns.has(m.turn_id) ? m.turn_id : undefined
     // 卡片快照先登记（渲染时经 cardID 挂在对应气泡上），但**不提前 continue**——
     // 一条带卡片的助手消息同样有自己的 parts（思考链、工具步骤、正文），
     // 漏掉它们会让刷新后看不到「已思考 N 秒」与「已完成 N 步」（PRODUCT「过程呈现」）。
@@ -351,57 +361,115 @@ function applyHistory(items: HistoryMsg[]) {
       }
       cardID = m.card_id
     }
-    // parts 驱动：一条消息按 parts 顺序渲染为一个气泡序列的最小单元
-    let content = ''
-    let reasoning = ''
-    // 各 thinking part 的秒数之和（原值，不逐条抬下限，见「过程收起（客户端渲染口径）」）
-    let thinkRawSeconds = 0
+    // parts 驱动：一条消息按 parts 顺序拆成段落气泡（think / text / tool / card 各自成行）。
+    // user 消息与不带 parts 的历史 assistant 消息保持传统整泡形态（kind 为 undefined）。
     const media: import('../types/chat').ChatMedia[] = []
     // 历史回显的附件只有元数据（无本机文件），故用展示类型而非 PickedMedia
     const local: MediaView[] = []
-    const tools: Bubble[] = []
+    const quotedRefs = (m.quoted ?? []).map(quoteLabel)
     let interrupted = false
-    for (const part of m.parts ?? []) {
-      if (part.type === 'text') content += part.text
-      else if (part.type === 'thinking') {
-        // 多轮工具循环会落多条 thinking part（一轮一条）：按同一分段口径拼接，
-        // 否则刷新后只剩最后一轮思考，与流式期间看到的形态不一致。
-        reasoning = appendThink(reasoning, part.text, false)
+    if (m.interrupted) interrupted = true
+    // user 消息或无 parts 的历史消息走整泡（kind 不设）：聚合所有 text part
+    const isAssistantWithParts = m.role === 'assistant' && Array.isArray(m.parts) && m.parts.length > 0
+    if (!isAssistantWithParts) {
+      let content = ''
+      for (const part of m.parts ?? []) {
+        if (part.type === 'text') content += part.text
+        else if (part.type === 'attachment') local.push({ name: part.name, type: part.mime || '', size: part.size || 0 })
+        else if (part.type === 'interrupted') interrupted = true
+      }
+      const b: Bubble = {
+        role: m.role as Bubble['role'], content,
+        media: media.length ? media : undefined,
+        localMedia: local.length ? local : undefined,
+        quoted: quotedRefs, interrupted,
+        // 中断残局的轮次：编辑重发要按它回收残局（删旧轮再回填）
+        interruptedTurnId,
+      }
+      if (cardID !== undefined) b.cardID = cardID
+      nextBubbles.push(b)
+      continue
+    }
+    // assistant 有 parts：按 parts 顺序拆段。同种类的相邻 part 合并成一个段（思考多轮合一段、正文连续累积）。
+    const segStart = nextBubbles.length
+    let curThinkReasoning = ''
+    // 各 thinking part 的秒数之和（原值，不逐条抬下限，见「过程收起（客户端渲染口径）」）
+    let thinkRawSeconds = 0
+    const flushThink = () => {
+      if (!curThinkReasoning) return
+      nextBubbles.push({
+        role: 'assistant', kind: 'think', content: '',
+        reasoning: curThinkReasoning, thinkOpen: false,
+        // 求和后只抬一次下限，与流式侧同一算法
+        thinkSeconds: displayThinkSeconds(thinkRawSeconds),
+      })
+      curThinkReasoning = ''
+      thinkRawSeconds = 0
+    }
+    let curTextContent = ''
+    const flushText = () => {
+      if (!curTextContent) return
+      nextBubbles.push({ role: 'assistant', kind: 'text', content: curTextContent })
+      curTextContent = ''
+    }
+    for (const part of m.parts) {
+      if (part.type === 'thinking') {
+        // 相邻 thinking part 合并到当前段；若已被非思考 part 截断，则新一轮段起
+        curThinkReasoning = appendThink(curThinkReasoning, part.text, false)
         // 各轮秒数求和，与流式侧逐轮累加同一口径（「过程收起（客户端渲染口径）」）
         thinkRawSeconds += part.seconds || 0
+      } else if (part.type === 'text') {
+        flushThink()
+        curTextContent += part.text
       } else if (part.type === 'tool') {
+        flushThink()
+        flushText()
         // 步骤条文案 = 人话标签 + 结果（「搜索动态 → 找到 3 条」）：label 是注册表给的人话，
         // text 是本步结果；两者都来自 parts，刷新后与流式中看到的形态一致。
-        tools.push({
-          role: 'tool',
+        nextBubbles.push({
+          role: 'tool', kind: 'tool',
           content: [part.label, part.text].filter(Boolean).join(' → ') || '已完成',
           toolLabel: [part.label, part.text].filter(Boolean).join(' → ') || '已完成',
           toolStatus: part.status === 'failed' ? 'failed' : 'ok',
           ui: part.ui,
         })
+      } else if (part.type === 'card') {
+        flushThink()
+        flushText()
+        // 卡片挂在独立的 card 段气泡上
+        nextBubbles.push({ role: 'assistant', kind: 'card', content: '', cardID: part.action_id })
       } else if (part.type === 'attachment') {
-        // 刷新回显：只有 parts 里的元数据，本机文件与预览地址都已不存在（文档「刷新后仍能知道发过 N 个文件」）
+        // 附件挂在即将出现的 card 段或主气泡上——历史回显中附件与 card 通常同现，
+        // 此处聚合到 local，最后挂在 card 段（若有）或末尾整泡上。
         local.push({ name: part.name, type: part.mime || '', size: part.size || 0 })
-      } else if (part.type === 'quote') {
-        // 引用条回显（refresh 后仍可提示已引用条目）
       } else if (part.type === 'interrupted') {
         interrupted = true
       }
     }
-    if (m.interrupted) interrupted = true
-    const mainBubble: Bubble = {
-      role: m.role as Bubble['role'], content,
-      media: media.length ? media : undefined,
-      localMedia: local.length ? local : undefined,
-      reasoning, thinkOpen: false,
-      // 求和后只抬一次下限，与流式侧同一算法；无思考则不落该字段
-      thinkSeconds: reasoning ? displayThinkSeconds(thinkRawSeconds) : undefined,
-      quoted: (m.quoted ?? []).map(quoteLabel), interrupted,
+    flushThink()
+    flushText()
+    // 中断轮的助手段也打上轮次标记（用户消息由 interrupted part 覆盖，这里补齐思考/工具/卡片段）；
+    // 只标本条消息产生的段（segStart 起），不得波及之前轮次的气泡
+    if (interruptedTurnId) {
+      for (let k = segStart; k < nextBubbles.length; k++) {
+        const b = nextBubbles[k]!
+        if (!b.interruptedTurnId) b.interruptedTurnId = interruptedTurnId
+      }
     }
-    // 卡片挂在本条消息的主气泡上（其 parts 的思考与工具步骤照常各自成行）
-    if (cardID !== undefined) mainBubble.cardID = cardID
-    nextBubbles.push(mainBubble)
-    nextBubbles.push(...tools)
+    // 附件 / 引用 / 中断标记落到本条消息最后一个气泡上（user 消息已 continue，这里必是 assistant）。
+    // 若本条消息连一个段都没产生（极端：只有 attachment part），补一个空 text 段兜底承载。
+    if (local.length || quotedRefs.length || (cardID !== undefined && !nextBubbles.some((b) => b.cardID === cardID))) {
+      const last = nextBubbles[nextBubbles.length - 1]
+      const target: Bubble = last ?? { role: 'assistant', content: '' }
+      if (!last) nextBubbles.push(target)
+      if (local.length) target.localMedia = local
+      if (quotedRefs.length) target.quoted = quotedRefs
+      if (cardID !== undefined && !target.cardID) target.cardID = cardID
+      if (interrupted) target.interrupted = true
+    } else if (interrupted && nextBubbles.length) {
+      const last = nextBubbles[nextBubbles.length - 1]!
+      last.interrupted = true
+    }
   }
   bubbles.value = nextBubbles
   cards.value = nextCards
@@ -411,6 +479,31 @@ function applyHistory(items: HistoryMsg[]) {
 // 4.1②：chips 点击填入输入框（「点击填入输入框」，不直接发送）
 function fillChip(c: string) {
   input.value = c + '：'
+  inputBarRef.value?.focus()
+}
+
+// 断连残局的编辑重发：先回收残局（删旧轮，上方原始消息随之消失），原文回填输入框，
+// 用户改完自己发（不自动发送——原话未必还想原样发）
+async function editResend(text: string, turnId?: string) {
+  if (busy.value) {
+    showToast('请等待当前回复完成')
+    return
+  }
+  if (turnId) {
+    busy.value = true
+    try {
+      await api(`/api/v1/chat/turns/${turnId}`, { method: 'DELETE' })
+      // 本地同步摘除该轮全部气泡（applyHistory 给该轮思考/工具/卡片段都打了轮次标记），
+      // 不整会话重拉（快、不闪屏）
+      bubbles.value = bubbles.value.filter((b) => b.interruptedTurnId !== turnId)
+    } catch {
+      showToast('回收原消息失败，请重试')
+      return
+    } finally {
+      busy.value = false
+    }
+  }
+  input.value = text
   inputBarRef.value?.focus()
 }
 
@@ -553,8 +646,10 @@ watch(now, () => {
   }
 })
 
-// 本轮主气泡：思考与回答落在同一条；工具状态条按 call_id 单独成条
-let turnBubble: Bubble | null = null
+// 本轮流式进行中的「当前累积段落」：思考段与正文段各自成行，不再共用同一个 turnBubble。
+// 段落被后续事件截断（如正文到来 → 思考段停止累积）时置 null，下次同类事件再新建。
+let curThink: Bubble | null = null
+let curText: Bubble | null = null
 const toolBubbles = new Map<string, Bubble>()
 // 等待指示：streaming 且本轮尚无内容落泡（reasoning/text/card 均未到）时为 true
 const thinking = ref(false)
@@ -592,19 +687,14 @@ function closeThinkSeg(seconds?: number) {
 // （PRODUCT「消息呈现」），工具往返期间思考区保持展开（AI模式设计「过程收起」进行中口径）。
 function refreshThinkSeconds(seconds?: number) {
   closeThinkSeg(seconds)
-  if (!turnBubble || !turnBubble.reasoning) return
-  turnBubble.thinkSeconds = displayThinkSeconds(thinkSecondsSum)
+  if (!curThink || !curThink.reasoning) return
+  curThink.thinkSeconds = displayThinkSeconds(thinkSecondsSum)
 }
 
 function collapseThink() {
   refreshThinkSeconds()
-  if (!turnBubble || !turnBubble.reasoning) return
-  turnBubble.thinkOpen = false
-}
-
-function ensureTurn(): Bubble {
-  if (!turnBubble) turnBubble = pushBubble({ role: 'assistant', content: '' })
-  return turnBubble
+  if (!curThink || !curThink.reasoning) return
+  curThink.thinkOpen = false
 }
 
 async function send(text?: string) {
@@ -626,7 +716,8 @@ async function send(text?: string) {
   busy.value = true
   streaming.value = true
   error.value = ''
-  turnBubble = null
+  curThink = null
+  curText = null
   toolBubbles.clear()
   roundHasThink = false
   segOpen = false
@@ -687,36 +778,48 @@ async function send(text?: string) {
         } else if (ev === 'turn.start') {
           currentTurnId = String(data.turn_id ?? '')
         } else if (ev === 'thinking.delta') {
-          const b = ensureTurn()
           const chunk = typeof data.text === 'string' ? data.text : ''
           // 原生流式每帧只 1 字：只有**新一轮的首帧**才补空行，轮内逐帧原样累积
           // （逐帧插空行会把整段思考拆成「一字一行」）。空帧不动标记，保证「开了轮」就一定
           // 有思考文本，collapseThink 的早退不会把轮留在开着的状态。
           if (chunk) {
-            b.reasoning = appendThink(b.reasoning ?? '', chunk, roundHasThink)
+            // 没有正在累积的思考段（首轮 / 被正文或工具截断后又起思考）就新建一个 think 段气泡
+            if (!curThink) {
+              curThink = pushBubble({ role: 'assistant', kind: 'think', content: '', reasoning: '', thinkOpen: true })
+            }
+            curThink.reasoning = appendThink(curThink.reasoning ?? '', chunk, roundHasThink)
             roundHasThink = true
             // 同轮内可以有多段（正文把思考截断后又起一段），故段与轮分开记
             if (!segOpen) {
               segOpen = true
               segStartedAt = Date.now()
             }
-            b.thinkOpen = true
+            curThink.thinkOpen = true
           }
           thinking.value = false
         } else if (ev === 'thinking.end') {
-          ensureTurn()
           // 服务端给的秒数为准；收口后 collapseThink 的兜底不会再算一次。
           // 只收段不折叠：折叠时刻是「回答开始」（PRODUCT「消息呈现」）。
           refreshThinkSeconds(typeof data.seconds === 'number' ? data.seconds : undefined)
+          // 当前思考段停止累积：后续再收到 thinking.delta（工具往返后新一轮思考）会另起新段
+          curThink = null
         } else if (ev === 'answer.delta') {
           const chunk = typeof data.text === 'string' ? data.text : ''
-          if (chunk) ensureTurn().content += chunk
+          if (chunk) {
+            // 没有正在累积的正文段（首帧 / 被工具截断后又起正文）就新建一个 text 段气泡
+            if (!curText) {
+              curText = pushBubble({ role: 'assistant', kind: 'text', content: '' })
+            }
+            curText.content += chunk
+          }
           thinking.value = false
           collapseThink()
         } else if (ev === 'tool.start') {
           const id = String(data.call_id ?? '')
-          const b = pushBubble({ role: 'tool', content: String(data.label ?? '处理中'), toolLabel: String(data.label ?? '处理中'), toolStatus: 'running' })
+          const b = pushBubble({ role: 'tool', kind: 'tool', content: String(data.label ?? '处理中'), toolLabel: String(data.label ?? '处理中'), toolStatus: 'running' })
           if (id) toolBubbles.set(id, b)
+          // 正文段被工具截断：工具往返后若再有正文增量，另起新 text 段
+          curText = null
           thinking.value = false
         } else if (ev === 'tool.end') {
           const b = toolBubbles.get(String(data.call_id ?? ''))
@@ -754,8 +857,7 @@ async function send(text?: string) {
           }
           turnCardIds.push(id)
           if (sentFiles.length) pendingCardFiles.set(id, sentFiles)
-          const cardBubble = pushBubble({ role: 'assistant', content: '', localMedia: sentFiles.length ? sentFiles : undefined })
-          cardBubble.cardID = id
+          pushBubble({ role: 'assistant', kind: 'card', content: '', cardID: id, localMedia: sentFiles.length ? sentFiles : undefined })
           thinking.value = false
         } else if (ev === 'answer.end') {
           // 「回答结束」与「整轮结束」是两个语义：预算收尾时 answer.end 先于 turn.end 到达，
@@ -763,12 +865,17 @@ async function send(text?: string) {
           // **不**结束整轮、不置 streamEnded——连接仍开着，后续事件（如 turn.end）照常处理。
           thinking.value = false
           collapseThink()
+          // 正文段停止累积：后续再有正文增量另起新段（answer.end 后理论上不应再有正文，
+          // 但保险起见不假设语义）
+          curText = null
         } else if (ev === 'turn.end') {
           streamEnded = true
+          collapseThink()
+          curText = null
         } else if (ev === 'error') {
           error.value = data.message
         }
-        scrollBottom()
+        scrollBottomIfPinned()
       }
     }
     collapseThink()
@@ -781,9 +888,22 @@ async function send(text?: string) {
       error.value = errText(e, '发送失败')
     }
   } finally {
+    // 流收尾兜底：正常路径每个 tool.start 都有配对的 tool.end 收口，但断连 /
+    // error / 中止时连接直接没了——仍标 running 的步骤行永远等不到事件，统一收口，
+    // 不再「结束后还显示正在xxx」。终态用「没成功」而非「已完成」，没到收口就是没做成。
+    for (const b of toolBubbles.values()) {
+      if (b.toolStatus === 'running') {
+        b.toolStatus = 'failed'
+        b.toolLabel = `${b.content || '处理中'}（没成功）`
+        b.content = b.toolLabel
+      }
+    }
+    toolBubbles.clear()
     streaming.value = false
     thinking.value = false
     abortCtrl = null
+    curThink = null
+    curText = null
     // 本轮正常答完（含以待确认收尾）后，它就不再是可中止的那一轮
     currentTurnId = ''
     turnStartIdx = 0
@@ -978,11 +1098,13 @@ onBeforeUnmount(() => {
       :unavailable-reason="aiUnavailableReason"
       :welcome="welcomeText"
       :thinking="thinking"
+      :streaming="streaming"
       :live-from="liveFrom"
       @toggle-pick="togglePick"
       @toggle-open="toggleOpen"
       @open-media="openMedia"
       @load-more="loadMore"
+      @edit-resend="editResend"
     >
       <template #card="{ bubble }">
         <CardActions
@@ -1055,7 +1177,7 @@ onBeforeUnmount(() => {
 .menu-btn {
   border: none;
   background: none;
-  color: var(--tint);
+  color: var(--primary);
   cursor: pointer;
   padding: 4px;
   display: flex;

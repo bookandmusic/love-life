@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { Bubble, UIRecord, UiBlockEmits } from '../../types/chat'
-import { Sparkles, ChevronDown, LoaderCircle, Check, XCircle } from 'lucide-vue-next'
+import { Sparkles, ChevronDown, ChevronRight, LoaderCircle, Check, XCircle, ArrowDown, Copy, SquarePen } from 'lucide-vue-next'
 import { isImage, isVideo } from '../../utils/mediaMime'
 import { renderMarkdown } from '../../utils/markdown'
 import EmptyState from '../EmptyState.vue'
@@ -16,10 +16,18 @@ const props = defineProps<{
   openKeys: string[]
   unavailableReason?: string
   thinking?: boolean
+  // 流式进行中：用于在最新一条 text 段末尾追加呼吸光标
+  streaming?: boolean
   welcome?: string
   // 本轮流式起点（bubbles 下标）：≥ 该下标的工具气泡不聚合（进行中每步一行，PRODUCT「过程呈现」）
   liveFrom?: number
 }>()
+
+// 段落种类：Bubble.kind 已就位（types/chat.ts），直接读取
+type SegKind = Bubble['kind']
+function kindOf(b: Bubble): SegKind {
+  return b.kind
+}
 
 // 渲染行：连续的工具步骤合并为一条「已完成 N 步」可展开摘要（PRODUCT「最终形态」：
 // 界面最终只剩结果卡 + 回答正文 + 思考与步骤两条折叠条目）。单步不聚合——一行更直接。
@@ -67,24 +75,55 @@ function toolIcon(b: Bubble) {
   return Check
 }
 
-// 渲染行守卫：正文/结果卡/思考/附件/引用/工具行/中断任一成立即渲染（纯媒体用户消息正文为空）
+// 渲染行守卫：正文/结果卡/思考/附件/引用/工具行/中断/确认卡任一成立即渲染（纯媒体用户消息正文为空）
 function rowGuard(b: Bubble): boolean {
   return !!(b.content || b.ui || b.reasoning || b.media?.length || b.quoted?.length || b.toolLabel || b.interrupted || b.cardID !== undefined)
 }
 
-// 气泡壳：纯卡片载体（只有 cardID、无正文/思考/结果卡）不渲染空壳，卡片接管该行
+// 传统整泡壳（kind === undefined）：纯卡片载体不渲染空壳，卡片接管该行
 function showShell(b: Bubble): boolean {
+  if (kindOf(b) !== undefined) return false
   if (b.role === 'tool') return true
   return !!(b.content || b.reasoning || b.ui || b.media?.length || b.quoted?.length)
 }
 
 // AI 标识一轮至多一次：仅带气泡壳的助手行显示；其余助手行用等宽占位保持左对齐
 function showAvatar(b: Bubble): boolean {
-  return b.role === 'assistant' && showShell(b)
+  return b.role === 'assistant' && (showShell(b) || kindOf(b) === 'text')
 }
 
-// 与 UiBlock 共用同一事件契约（types/chat.ts「UiBlockEmits」），逐个转发给 ChatView
-const emit = defineEmits<UiBlockEmits>()
+// 与 UiBlock 共用同一事件契约（types/chat.ts「UiBlockEmits」），逐个转发给 ChatView；
+// edit-resend 本级独有：断连残局点「编辑」回收残局并回填输入框重发
+const emit = defineEmits<UiBlockEmits & { (e: 'edit-resend', text: string, turnId?: string): void }>()
+
+// 断连残局的悬浮动作：编辑 → 回填输入框（残局由父级回收）；复制 → 仅复制原文（历史消息原样保留）
+function onEditResend(b: Bubble) {
+  emit('edit-resend', b.content, b.interruptedTurnId)
+}
+async function onCopyInterrupted(b: Bubble) {
+  // navigator.clipboard 仅安全上下文可用（部署走 http://局域网地址）：失败回退 execCommand
+  try {
+    await navigator.clipboard.writeText(b.content)
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = b.content
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    try { document.execCommand('copy') } catch { /* 同样失败时静默，不打断浏览 */ }
+    ta.remove()
+  }
+}
+
+// 触屏没有 hover：点被中断的用户消息本身唤出/收起动作图标（桌面不受影响，hover 即显形）。
+// 按气泡对象记忆而非行下标——load-more 前插历史后下标位移，下标键会把展开态错挂到别的消息
+const actionsOpenSet = ref(new Set<Bubble>())
+function toggleActions(b: Bubble) {
+  const s = actionsOpenSet.value
+  if (s.has(b)) s.delete(b)
+  else s.add(b)
+}
 
 // UiBlock 的事件签名与本级 emit 相同，逐个转发给 ChatView
 function fwdPick(resultId: string, rec: UIRecord, single: boolean) {
@@ -103,12 +142,57 @@ function fwdMore(ui: Bubble['ui']) {
 // 消息流容器归本组件持有：父级只需「滚到底」这一个能力，经 expose 提供
 const streamEl = ref<HTMLElement | null>(null)
 
+// auto-scroll 守卫：距底 ≤ 100px 才自动滚；用户上翻超过该阈值时挂起自动滚并显示「跳转到最新」
+const atBottom = ref(true)
+const AT_BOTTOM_THRESHOLD = 100
+
+function isAtBottom(): boolean {
+  const el = streamEl.value
+  if (!el) return true
+  return el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_THRESHOLD
+}
+
+function onScroll() {
+  atBottom.value = isAtBottom()
+}
+
 function scrollBottom() {
   const el = streamEl.value
   if (el) el.scrollTop = el.scrollHeight
+  atBottom.value = true
 }
 
-defineExpose({ scrollBottom })
+// 父级触发 scrollBottom 时若用户已上翻，不打断阅读；仅在仍处于底部时才跟随
+function scrollBottomIfPinned() {
+  if (atBottom.value) scrollBottom()
+}
+
+function jumpToLatest() {
+  scrollBottom()
+}
+
+onMounted(() => {
+  streamEl.value?.addEventListener('scroll', onScroll, { passive: true })
+})
+onBeforeUnmount(() => {
+  streamEl.value?.removeEventListener('scroll', onScroll)
+})
+
+defineExpose({ scrollBottom, scrollBottomIfPinned })
+
+// 流式中最后一条 text 段的下标：仅它末尾追加呼吸光标（老段落不再流式）
+const lastStreamingTextIdx = computed(() => {
+  if (!props.streaming) return -1
+  for (let i = props.bubbles.length - 1; i >= 0; i--) {
+    const b = props.bubbles[i]
+    if (b && b.role === 'assistant' && kindOf(b) === 'text') return i
+  }
+  return -1
+})
+function isStreamingText(b: Bubble): boolean {
+  // 对象同一性替代 indexOf：与 lastStreamingTextIdx 取的是同一数组里的同一对象
+  return props.bubbles[lastStreamingTextIdx.value] === b
+}
 </script>
 
 <template>
@@ -117,16 +201,16 @@ defineExpose({ scrollBottom })
     <EmptyState v-else-if="bubbles.length === 0" :icon="Sparkles" title="想聊点什么" :sub="welcome || '试试问：帮我写纪念日祝福、安排周末或记录日常。'" />
     <template v-for="(row, i) in rows" :key="i">
       <!-- 多次工具调用聚合为一条可展开摘要（展开见每步人话状态，不是原始参数） -->
-      <div v-if="row.kind === 'steps'" class="row assistant">
+      <div v-if="row.kind === 'steps'" class="row assistant seg seg-tool">
         <span class="avatar-slot" aria-hidden="true" />
         <div class="content-col">
-        <div class="bubble assistant steps-bubble">
-          <button class="think-head" aria-label="展开/收起步骤" @click="stepsOpen[i] = !stepsOpen[i]">
-            <span>{{ stepSummary(row.steps) }}</span>
-            <ChevronDown :size="13" stroke-width="2" class="think-chevron" />
+        <div class="tool-block">
+          <button class="tool-head" aria-label="展开/收起步骤" @click="stepsOpen[i] = !stepsOpen[i]">
+            <span class="tool-head-label">{{ stepSummary(row.steps) }}</span>
+            <ChevronDown :size="13" stroke-width="2" class="tool-chevron" :class="{ open: stepsOpen[i] }" />
           </button>
-          <div v-show="stepsOpen[i]" class="steps-body">
-            <p v-for="(s, si) in row.steps" :key="si" class="step-line">
+          <div v-show="stepsOpen[i]" class="tool-body">
+            <p v-for="(s, si) in row.steps" :key="si" class="tool-step-line">
               <component :is="toolIcon(s)" :size="12" stroke-width="1.8" class="tool-icon" />
               <span>{{ s.toolLabel || s.content }}</span>
             </p>
@@ -149,7 +233,7 @@ defineExpose({ scrollBottom })
       <template v-else>
       <!-- 正文/结果卡片/思考/附件/引用/工具行/中断任一成立即需渲染：纯媒体用户消息正文为空，
            漏掉 media 会让它整条不可见（发图不说字的常见路径） -->
-      <div v-if="rowGuard(row.bubble)" class="row" :class="row.bubble.role">
+      <div v-if="rowGuard(row.bubble)" class="row" :class="[row.bubble.role, { seg: kindOf(row.bubble) !== undefined, [`seg-${kindOf(row.bubble)}`]: kindOf(row.bubble) !== undefined }]">
         <!-- AI 标识一轮至多一次：仅带气泡壳的助手行显示，其余助手行用等宽占位保持左对齐 -->
         <span v-if="showAvatar(row.bubble)" class="ai-avatar" title="AI 助手">
           <Sparkles :size="13" stroke-width="2" />
@@ -157,13 +241,55 @@ defineExpose({ scrollBottom })
         <span v-else-if="row.bubble.role !== 'user'" class="avatar-slot" aria-hidden="true" />
         <!-- 内容列：气泡、工具行、结果卡/确认卡同列堆叠，共享同一左边界与宽度上限 -->
         <div class="content-col">
-        <div v-if="showShell(row.bubble)" class="bubble" :class="[row.bubble.role, { 'has-ui': !!row.bubble.ui }]">
+
+        <!-- ===== 时间流分支：think 段 ===== -->
+        <div v-if="kindOf(row.bubble) === 'think'" class="think-block" :class="{ open: row.bubble.thinkOpen }">
+          <button class="think-head" aria-label="展开/收起思考过程" @click="row.bubble.thinkOpen = !row.bubble.thinkOpen">
+            <Sparkles :size="12" stroke-width="2" class="think-head-icon" />
+            <ChevronRight :size="12" stroke-width="2" class="think-head-chevron" :class="{ open: row.bubble.thinkOpen }" />
+            <span class="think-head-label">{{ row.bubble.thinkSeconds ? `思考 · 已思考 ${row.bubble.thinkSeconds} 秒` : '思考中…' }}</span>
+          </button>
+          <div v-show="row.bubble.thinkOpen" class="think-body">
+            <p class="think-text">{{ row.bubble.reasoning }}</p>
+          </div>
+        </div>
+
+        <!-- ===== 时间流分支：text 段 ===== -->
+        <div v-else-if="kindOf(row.bubble) === 'text'" class="bubble assistant">
+          <!-- eslint-disable-next-line vue/no-v-html -- renderMarkdown: markdown-it html:false + DOMPurify 白名单消毒后才入 v-html -->
+          <div class="md" :class="{ streaming: isStreamingText(row.bubble) }" v-html="renderMarkdown(row.bubble.content)" />
+        </div>
+
+        <!-- ===== 时间流分支：tool 段 ===== -->
+        <div v-else-if="kindOf(row.bubble) === 'tool'" class="tool-block" :class="{ running: row.bubble.toolStatus === 'running', failed: row.bubble.toolStatus === 'failed' }">
+          <div class="tool-head tool-head-static">
+            <component :is="toolIcon(row.bubble)" :size="13" stroke-width="1.8" class="tool-icon" />
+            <span class="tool-head-label">{{ row.bubble.toolStatus === 'running' ? `正在${row.bubble.toolLabel || row.bubble.content}…` : row.bubble.toolLabel || row.bubble.content }}</span>
+          </div>
+          <!-- 结果卡 UiBlock 渲染在工具块内容区内（不是兄弟节点） -->
+          <UiBlock
+            :ui="row.bubble.ui"
+            :picked-keys="pickedKeys"
+            :open-keys="openKeys"
+            @toggle-pick="fwdPick"
+            @toggle-open="fwdOpen"
+            @open-media="fwdMedia"
+            @load-more="fwdMore"
+          />
+        </div>
+
+        <!-- ===== 时间流分支：确认卡（独立成行，不被气泡壳包裹） ===== -->
+        <slot v-else-if="kindOf(row.bubble) === 'card'" name="card" :bubble="row.bubble" />
+
+        <!-- ===== 传统整泡（user、历史回显，kind === undefined） ===== -->
+        <template v-else>
+        <div v-if="showShell(row.bubble)" class="bubble" :class="[row.bubble.role, { 'has-ui': !!row.bubble.ui, 'actions-host': row.bubble.interrupted && row.bubble.role === 'user' }]" @click="row.bubble.interrupted && row.bubble.role === 'user' ? toggleActions(row.bubble) : undefined">
         <div v-if="row.bubble.reasoning" class="think" :class="{ open: row.bubble.thinkOpen }">
           <button class="think-head" aria-label="展开/收起思考过程" @click="row.bubble.thinkOpen = !row.bubble.thinkOpen">
             <span>{{ row.bubble.thinkSeconds ? `已思考 ${row.bubble.thinkSeconds} 秒` : '思考中…' }}</span>
             <ChevronDown :size="13" stroke-width="2" class="think-chevron" />
           </button>
-          <p v-show="row.bubble.thinkOpen" class="think-body">{{ row.bubble.reasoning }}</p>
+          <p v-show="row.bubble.thinkOpen" class="think-body-legacy">{{ row.bubble.reasoning }}</p>
         </div>
         <!-- eslint-disable-next-line vue/no-v-html -- renderMarkdown: markdown-it html:false + DOMPurify 白名单消毒后才入 v-html -->
         <div v-if="row.bubble.role === 'assistant' && row.bubble.content" class="md" v-html="renderMarkdown(row.bubble.content)" />
@@ -195,19 +321,35 @@ defineExpose({ scrollBottom })
           @load-more="fwdMore"
         />
         </div>
-        <slot name="card" :bubble="row.bubble" />
+        <!-- 传统整泡下的确认卡槽位（旧数据兼容） -->
+        <slot v-if="row.bubble.cardID !== undefined" name="card" :bubble="row.bubble" />
+        <!-- 意外断线的残局：不删用户消息、历史原样保留；气泡下方悬浮「编辑 / 复制」两个裸图标。
+             放在 .content-col 内（flex 纵排的列尾）才是真正的「下方」——放 .row 层会被横排
+             挤成气泡右侧第二列。默认完全隐藏：桌面 hover 所在行显形；触屏点气泡唤出 -->
+        <div v-if="row.bubble.interrupted && row.bubble.role === 'user'" class="msg-actions" :class="{ open: actionsOpenSet.has(row.bubble) }">
+          <button class="msg-act" aria-label="编辑重发" title="编辑重发" @click="onEditResend(row.bubble)">
+            <SquarePen :size="14" stroke-width="1.8" />
+          </button>
+          <button class="msg-act" aria-label="复制" title="复制" @click="onCopyInterrupted(row.bubble)">
+            <Copy :size="14" stroke-width="1.8" />
+          </button>
+        </div>
+        </template>
         </div>
       </div>
-      <!-- 意外断线的残局不删用户消息，但得说明这里不会再有下文（否则界面看着像在等回复） -->
-      <p v-if="row.bubble.interrupted" class="interrupted">回复已中断，可重新发送这一句。</p>
       </template>
     </template>
-    <!-- 等待指示：流式进行且本轮还没有任何内容落泡 -->
+    <!-- 等待指示：流式进行且本轮还没有任何内容落泡（脉冲光晕式，不转圈） -->
     <div v-if="thinking" class="row assistant">
       <span class="avatar-slot" aria-hidden="true" />
-      <div class="bubble assistant thinking-bubble"><span class="think-dot" /><span class="think-dot" /><span class="think-dot" /> 思考中…</div>
+      <div class="queued-line"><span class="pulse-dot" />正在连接…</div>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
+    <!-- 上翻时浮出「跳转到最新」按钮（absolute 定位于 stream 容器内） -->
+    <button v-if="!atBottom" class="jump-latest" aria-label="跳转到最新" @click="jumpToLatest">
+      <ArrowDown :size="14" stroke-width="2" />
+      <span>跳转到最新</span>
+    </button>
   </div>
 </template>
 
@@ -218,6 +360,7 @@ defineExpose({ scrollBottom })
   padding: 0.75rem 1rem;
   background: var(--ai-bg, var(--bg));
   min-height: 50vh;
+  position: relative;
   /* 助手/用户内容列宽度上限：卡片行铺满此宽，文字气泡随内容收缩 */
   --chat-col-max: 520px;
 }
@@ -232,13 +375,18 @@ defineExpose({ scrollBottom })
   justify-content: flex-end;
 }
 
-/* 间距分级：回合内紧凑、回合间（自用户消息起）明显留白，让眼睛把一段回复圈成一组 */
+/* 间距分级：段落内（同一时间流内）紧凑、回合间（自用户消息起）明显留白 */
 .row + .row {
   margin-top: 0.375rem;
+}
+/* 时间流段落之间：0.5rem */
+.row.seg + .row.seg {
+  margin-top: 0.5rem;
 }
 .row.user {
   margin-top: 1.25rem;
 }
+
 /* AI 标识：柔和单色（不再粉紫强渐变），一轮至多一次，克制不抢视觉焦点 */
 .ai-avatar {
   width: 26px;
@@ -261,7 +409,7 @@ defineExpose({ scrollBottom })
 }
 
 /* 内容列：气泡、工具行、结果卡/确认卡同列堆叠，共享同一左边界与宽度上限；
-   列本身设上限，卡片行铺满列宽（见下 .bubble.has-ui / .bubble.tool / .steps-bubble），
+   列本身设上限，卡片行铺满列宽（见下 .bubble.has-ui / .bubble.tool / .tool-block），
    文字气泡仍随内容收缩，不再出现「左齐右乱、卡片窄成一栏」 */
 .content-col {
   flex: 1;
@@ -287,7 +435,9 @@ defineExpose({ scrollBottom })
   font-size: 0.75rem;
   background: rgba(255, 255, 255, 0.18);
   border-radius: 999px;
-  padding: 0.1rem 0.45rem;
+  padding: 0.1rem 0.45rem 0.1rem 0.55rem;
+  /* 引用感：左侧 2px 主色竖条 */
+  border-left: 2px solid var(--primary);
 }
 
 /* 无本机预览时的附件占位（刷新回显：只剩文件名） */
@@ -300,27 +450,11 @@ defineExpose({ scrollBottom })
   font-size: 0.75rem;
 }
 
-/* 步骤聚合摘要（多步调用折叠为一条，展开见每步人话）；结果卡渲染已抽至 UiBlock.vue */
-.steps-bubble {
-  padding: 0.4rem 0.7rem;
-}
-.steps-body {
-  margin-top: 0.3rem;
-}
-.step-line {
-  display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  margin: 0.15rem 0;
-  font-size: 0.8125rem;
-  color: var(--muted-ink);
-}
-
 .bubble {
   /* 宽度由内容决定、上限为内容列宽（卡片行另铺满，见下） */
   max-width: 100%;
   padding: 0.6rem 0.9rem;
-  border-radius: 18px;
+  border-radius: 16px;
   font-size: 0.9375rem;
   white-space: pre-wrap;
   word-break: break-word;
@@ -330,7 +464,7 @@ defineExpose({ scrollBottom })
    border-box：无全局 border-box 时 width:100% 会把 padding/border 溢出列宽 */
 .bubble.has-ui,
 .bubble.tool,
-.steps-bubble {
+.tool-block {
   width: 100%;
   box-sizing: border-box;
 }
@@ -357,13 +491,15 @@ defineExpose({ scrollBottom })
   border-bottom-right-radius: 6px;
 }
 
+/* 断连残局不再改样式：历史原样保留，操作走旁边悬浮的两个图标 */
+
 .bubble.assistant {
   background: var(--surface);
   color: var(--ink);
-  border: 1px solid var(--rule);
   border-bottom-left-radius: 6px;
 }
 
+/* 传统 tool 行（kind === undefined 的旧数据） */
 .bubble.tool {
   background: transparent;
   color: var(--muted-ink);
@@ -397,9 +533,10 @@ defineExpose({ scrollBottom })
   margin-top: 4px;
 }
 
-/* 思考区（助手气泡顶部）：去框——安静一行灰字 + 箭头，不再框套框 */
-.think {
-  margin-bottom: 0.35rem;
+/* ===== 时间流：思考块（独立成行，无框，左侧 2px 竖线 + 标题行可点） ===== */
+.think-block {
+  width: 100%;
+  padding: 0.15rem 0;
 }
 .think-head {
   display: inline-flex;
@@ -407,10 +544,42 @@ defineExpose({ scrollBottom })
   gap: 4px;
   border: none;
   background: none;
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   color: var(--muted-ink);
   padding: 0;
   cursor: pointer;
+}
+.think-head-icon {
+  color: var(--muted-ink);
+}
+.think-head-chevron {
+  color: var(--muted-ink);
+  transition: transform 0.2s ease;
+}
+.think-head-chevron.open {
+  transform: rotate(90deg);
+}
+.think-head-label {
+  color: var(--muted-ink);
+}
+.think-body {
+  margin-top: 0.3rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--rule);
+}
+.think-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--muted-ink);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+/* 传统 think（气泡内嵌）保留旧样式 */
+.think {
+  margin-bottom: 0.35rem;
 }
 .think-chevron {
   transition: transform 0.2s ease;
@@ -418,7 +587,7 @@ defineExpose({ scrollBottom })
 .think.open .think-chevron {
   transform: rotate(180deg);
 }
-.think-body {
+.think-body-legacy {
   margin: 0;
   padding: 0.1rem 0 0.35rem;
   font-size: 0.75rem;
@@ -427,6 +596,75 @@ defineExpose({ scrollBottom })
   word-break: break-word;
   max-height: 180px;
   overflow-y: auto;
+}
+
+/* ===== 时间流：工具块（--sk 浅底圆角 12） ===== */
+.tool-block {
+  background: var(--sk);
+  border-radius: 12px;
+  padding: 0.5rem 0.7rem;
+  color: var(--ink);
+  font-size: 0.8125rem;
+}
+/* 进行中：光晕式脉冲（对齐「3.1.5 慢、柔、稳」），非旋转 */
+.tool-block.running {
+  animation: tool-pulse 2s ease-in-out infinite;
+}
+@keyframes tool-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 0%, transparent);
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 12%, transparent);
+  }
+}
+.tool-block.running .tool-icon {
+  animation: think-bounce 1.2s infinite;
+}
+.tool-block.failed .tool-icon {
+  color: var(--danger);
+}
+.tool-head {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 0.8125rem;
+  color: var(--ink);
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.tool-head-static {
+  cursor: default;
+}
+.tool-head-label {
+  flex: 1;
+  min-width: 0;
+}
+.tool-chevron {
+  color: var(--muted-ink);
+  transition: transform 0.2s ease;
+  flex-shrink: 0;
+}
+.tool-chevron.open {
+  transform: rotate(180deg);
+}
+.tool-body {
+  margin-top: 0.4rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--rule);
+}
+.tool-step-line {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.15rem 0;
+  font-size: 0.8125rem;
+  color: var(--muted-ink);
 }
 
 /* markdown 气泡内样式：接管排版（关闭 .bubble 的 pre-wrap），元素紧凑贴近聊天 */
@@ -482,7 +720,7 @@ defineExpose({ scrollBottom })
   font-weight: 600;
 }
 .bubble .md :deep(a) {
-  color: var(--tint);
+  color: var(--primary);
   word-break: break-all;
 }
 .bubble .md :deep(table) {
@@ -501,14 +739,124 @@ defineExpose({ scrollBottom })
   margin: 0.5em 0;
 }
 
-/* 等待指示「思考中…」 */
-.thinking-bubble {
+/* 流式呼吸光标：跟随最后一个 p 末尾（流式期间才挂载） */
+.md.streaming :deep(p:last-of-type)::after {
+  content: '▍';
+  margin-left: 1px;
+  color: var(--primary);
+  animation: caret-breathe 1.4s ease-in-out infinite;
+}
+@keyframes caret-breathe {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
+/* ===== queued 占位行：脉冲光晕式（发送后首帧前） ===== */
+.queued-line {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: 16px;
+  background: var(--surface);
   color: var(--muted-ink);
   font-size: 0.8125rem;
 }
+.pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--primary);
+  animation: pulse-glow 1.6s ease-in-out infinite;
+}
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 40%, transparent);
+    opacity: 0.7;
+  }
+  50% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--primary) 0%, transparent);
+    opacity: 1;
+  }
+}
+
+/* ===== 「跳转到最新」浮动按钮 ===== */
+.jump-latest {
+  position: sticky;
+  bottom: 0.6rem;
+  margin-left: auto;
+  margin-right: 0.2rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--glass-edge);
+  border-radius: 999px;
+  background: var(--glass-from);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  color: var(--ink);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  z-index: 2;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .jump-latest {
+    background: var(--surface);
+  }
+}
+
+.error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+  text-align: center;
+}
+
+/* 断连残局的悬浮动作：默认完全隐藏（透明、不吃点击），hover 该行才显形；
+   裸图标无边框无底色，列排在气泡正下方（content-col 纵排列尾，非气泡同行右侧）。
+   触屏没有 hover：点气泡唤出（.open），再点收起 */
+.msg-actions {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: flex-end;
+  margin: -0.2rem 0.2rem 0.35rem;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+/* 行内 hover 才亮起：容器与图标一体显隐，图标本身不做 hover 态 */
+.row:hover .msg-actions,
+.msg-actions:focus-within,
+.msg-actions.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+.msg-act {
+  border: none;
+  background: none;
+  padding: 2px;
+  color: var(--muted-ink);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.msg-act:active {
+  color: var(--primary-deep);
+}
+/* 触屏的唤出载体：被中断的用户气泡可点（平时桌面看不出差异，cursor 不标） */
+.bubble.actions-host {
+  cursor: pointer;
+}
+
+/* 传统思考条样式（气泡内嵌）保留 */
 .think-dot {
   width: 5px;
   height: 5px;
@@ -530,19 +878,5 @@ defineExpose({ scrollBottom })
   50% {
     opacity: 1;
   }
-}
-
-.error {
-  color: var(--danger);
-  font-size: 0.8125rem;
-  text-align: center;
-}
-
-/* 中断提示：弱化置灰，不用红色——这不是错误，只是没答完 */
-.interrupted {
-  margin: -0.35rem 0 0.6rem;
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-  text-align: right;
 }
 </style>

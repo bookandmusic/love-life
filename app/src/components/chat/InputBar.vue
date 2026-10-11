@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, nextTick } from 'vue'
 import type { PickedMedia, QuoteRef } from '../../types/chat'
 import { ImagePlus, Music, Plus, Send, Square, X } from 'lucide-vue-next'
 import { isImage, isVideo } from '../../utils/mediaMime'
@@ -43,45 +43,60 @@ const cmdMatches = computed(() => COMMANDS)
 function togglePlus() {
   panelMode.value = panelMode.value === 'plus' ? null : 'plus'
   cmdIndex.value = 0
-  if (panelMode.value) inputRef.value?.focus()
+  if (panelMode.value) textareaRef.value?.focus()
 }
 function applyCommand(tpl: string) {
   emit('update:input', tpl)
   panelMode.value = null
-  inputRef.value?.focus()
+  nextTick(() => adjustRows())
+  textareaRef.value?.focus()
 }
-// 面板内键盘 Enter 选中命令后，紧随的 keyup.enter 不得把模板直接发出去（面板键盘操作的防误发护栏）
+// 面板内键盘 Enter 选中命令后，紧随的 keydown Enter 不得把模板直接发出去（面板键盘操作的防误发护栏）
 let suppressEnter = false
-function onCmdKey(e: KeyboardEvent) {
-  if (panelMode.value === null || cmdMatches.value.length === 0) return
-  if (e.key === 'ArrowDown') {
+function onKeyDown(e: KeyboardEvent) {
+  if (panelMode.value !== null && cmdMatches.value.length > 0) {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      cmdIndex.value = (cmdIndex.value + 1) % cmdMatches.value.length
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      cmdIndex.value = (cmdIndex.value + cmdMatches.value.length - 1) % cmdMatches.value.length
+    } else if (e.key === 'Enter') {
+      e.preventDefault()
+      suppressEnter = true
+      applyCommand(cmdMatches.value[cmdIndex.value]!.tpl)
+    } else if (e.key === 'Escape') {
+      panelMode.value = null
+    }
+    return
+  }
+  if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault()
-    cmdIndex.value = (cmdIndex.value + 1) % cmdMatches.value.length
-  } else if (e.key === 'ArrowUp') {
-    e.preventDefault()
-    cmdIndex.value = (cmdIndex.value + cmdMatches.value.length - 1) % cmdMatches.value.length
-  } else if (e.key === 'Enter') {
-    e.preventDefault()
-    suppressEnter = true
-    applyCommand(cmdMatches.value[cmdIndex.value]!.tpl)
+    if (suppressEnter) {
+      suppressEnter = false
+      return
+    }
+    onSend()
   } else if (e.key === 'Escape') {
     panelMode.value = null
   }
 }
-function onEnter() {
-  if (suppressEnter) {
-    suppressEnter = false
-    return
-  }
-  onSend()
-}
 function onSend() {
   panelMode.value = null
   emit('send')
+  nextTick(() => adjustRows())
 }
 
-const inputRef = ref<HTMLInputElement | null>(null)
+const textareaRef = ref<HTMLTextAreaElement | null>(null)
 const mediaInput = ref<HTMLInputElement | null>(null)
+
+// textarea 随内容长高，上限 5 行
+function adjustRows() {
+  const ta = textareaRef.value
+  if (!ta) return
+  const lines = (ta.value.match(/\n/g)?.length ?? 0) + 1
+  ta.rows = Math.min(5, Math.max(1, lines))
+}
 
 // 点选附件走模板内的直接调用（script setup 的函数在模板可用）
 function openMediaPicker() {
@@ -91,11 +106,13 @@ function openMediaPicker() {
 
 // 父级需要「聚焦输入框」，经 expose 提供，避免父级直接摸 DOM
 defineExpose({
-  focus: () => inputRef.value?.focus(),
+  focus: () => textareaRef.value?.focus(),
 })
 
 function onInput(e: Event) {
-  emit('update:input', (e.target as HTMLInputElement).value)
+  const target = e.target as HTMLTextAreaElement
+  emit('update:input', target.value)
+  adjustRows()
   // 打字即收起面板；面板只由「+」唤起
   if (panelMode.value) {
     panelMode.value = null
@@ -147,12 +164,20 @@ function onInput(e: Event) {
         <Plus :size="22" stroke-width="2" />
       </button>
       <input ref="mediaInput" class="file-input" type="file" accept="image/*,video/*,audio/*" multiple @change="emit('pick', $event)" />
-      <input ref="inputRef" :value="input" placeholder="说点什么…" :disabled="locked" @input="onInput" @keydown="onCmdKey" @keyup.enter="onEnter" />
+      <textarea
+        ref="textareaRef"
+        :value="input"
+        placeholder="说点什么…"
+        rows="1"
+        :disabled="locked"
+        @input="onInput"
+        @keydown="onKeyDown"
+      />
       <button v-if="streaming" class="send stop" aria-label="停止生成" @click="emit('stop')">
         <Square :size="14" stroke-width="2" fill="currentColor" />
       </button>
       <button v-else-if="busy" class="send running" aria-label="进行中" disabled>
-        <span class="dot" />进行中
+        <span class="dot" />
       </button>
       <button v-else class="send" :disabled="!!unavailableReason || (!input.trim() && pickedMedia.length === 0 && quotes.length === 0)" @click="onSend">
         <Send :size="16" stroke-width="1.8" />
@@ -194,7 +219,7 @@ function onInput(e: Event) {
 }
 .action-item.hl,
 .action-item:active {
-  background: var(--tint-wash);
+  background: var(--primary-wash);
 }
 .panel-label {
   margin: 0.25rem 0.9rem 0;
@@ -223,7 +248,7 @@ function onInput(e: Event) {
   gap: 0.25rem;
   font-size: 0.75rem;
   color: var(--ink);
-  background: var(--tint-wash);
+  background: var(--primary-wash);
   border-radius: 999px;
   padding: 0.15rem 0.35rem 0.15rem 0.55rem;
 }
@@ -292,14 +317,26 @@ function onInput(e: Event) {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.6rem 0.8rem;
+  /* 毛玻璃容器化 */
+  background: linear-gradient(180deg, var(--glass-from), var(--glass-to));
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-radius: 16px;
+  border: 1px solid var(--glass-edge);
+  padding: 0.4rem 0.6rem;
+  margin: 0.4rem 0.8rem;
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .compose {
+    background: var(--surface);
+  }
 }
 
 /* 「+」动作入口（iMessage 同位）：tint 圆形，锁定态置灰 */
 .plus-btn {
   border: none;
   background: none;
-  color: var(--tint);
+  color: var(--primary);
   padding: 4px;
   display: flex;
   flex: 0 0 auto;
@@ -314,16 +351,21 @@ function onInput(e: Event) {
   display: none;
 }
 
-.compose > input[type='text'],
-.input-bar input:not(.file-input) {
+.compose > textarea {
   flex: 1;
   min-width: 0;
-  border: 1px solid var(--rule);
-  border-radius: 999px;
-  padding: 0.55rem 1rem;
+  /* 容器只有 .compose 一层：textarea 裸排（无边框无底色），去掉「卡里套框」的嵌套感 */
+  border: none;
+  background: transparent;
+  padding: 0.55rem 0.25rem;
   font-size: 0.9375rem;
-  background: var(--ai-bg, var(--bg));
   color: var(--ink);
+  /* 聚焦黑框是浏览器默认 focus ring（computed: rgb(16,16,16) auto 1px），不是边框设计：
+     去掉后聚焦态只剩光标与既有毛玻璃容器（「输入框激活之后黑色太明显」根因） */
+  outline: none;
+  resize: none;
+  font-family: inherit;
+  line-height: 1.4;
 }
 .media-pick img,
 .media-pick video {
@@ -333,24 +375,24 @@ function onInput(e: Event) {
 }
 
 .send {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   background: var(--primary);
   color: #fff;
   border: none;
-  border-radius: 999px;
-  padding: 0 1.2rem;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
 }
 .send.stop {
   background: var(--danger);
-  padding: 0 0.9rem;
 }
 .send.running {
   background: color-mix(in srgb, var(--primary) 55%, transparent);
-  padding: 0 0.9rem;
-  font-size: 0.75rem;
-  gap: 0.3rem;
   cursor: default;
 }
 .send.running .dot {

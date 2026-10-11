@@ -70,6 +70,7 @@ onUnmounted(() => {
   --muted-ink: #6c6c70; /* iOS secondaryLabel 等效：白底 5.23:1（AA），原 #8e8e93 仅 3.26:1 */
   --primary: #ff8fab;
   --primary-deep: #f06292;
+  --primary-wash: rgba(255, 143, 171, 0.1); /* 主色选中/按下底衬（跟随主题，勿写字面量） */
  /* 操作色：文字/图标型可点控件的 tint（导航栏按钮、保存/发布、文字动作）。
      与 --primary 分工——暖粉只管着色点/FAB/选中（填充型按钮），操作类用系统蓝保证白底对比度 4.0:1 */
   --tint: #007aff;
@@ -101,6 +102,7 @@ onUnmounted(() => {
   --muted-ink: #98989f;
   --primary: #ff8fab;
   --primary-deep: #ffb4c2;
+  --primary-wash: rgba(255, 143, 171, 0.16);
   --tint: #0a84ff;
   --tint-wash: rgba(10, 132, 255, 0.16);
   --danger: #ff453a;

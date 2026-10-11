@@ -39,7 +39,7 @@ onMounted(() => {
   height: 34px;
   border: none;
   background: none;
-  color: var(--tint);
+  color: var(--primary);
   cursor: pointer;
   position: relative;
   display: flex;
@@ -48,7 +48,7 @@ onMounted(() => {
   border-radius: 50%;
 }
 .nav-btn:active {
-  background: var(--tint-wash);
+  background: var(--primary-wash);
 }
 .badge {
   position: absolute;

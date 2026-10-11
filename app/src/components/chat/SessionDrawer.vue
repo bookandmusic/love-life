@@ -4,7 +4,7 @@
 // 定位：由父页 overlay 插槽承载（PageLayout .page 内 absolute）——锚定会话窗口框架，
 // 桌面档落在浮动卡片内并随卡片圆角裁切，不再是全浏览器视口弹窗。
 import { ref } from 'vue'
-import { Check, Plus, Trash2 } from 'lucide-vue-next'
+import { Plus, Trash2 } from 'lucide-vue-next'
 import type { ChatSession } from '../../types/chat'
 
 defineProps<{
@@ -57,7 +57,6 @@ function askRemove(id: number) {
             @click="confirmId = null; emit('select', s.id)"
             @keydown.enter="confirmId = null; emit('select', s.id)"
           >
-            <Check v-if="s.id === currentId" class="sess-check" :size="16" stroke-width="2.2" />
             <span class="sess-title">{{ s.title }}</span>
             <span
               v-if="confirmId === s.id"
@@ -94,11 +93,18 @@ function askRemove(id: number) {
   left: 0;
   bottom: 0;
   width: min(78%, 300px);
-  background: var(--surface);
+  background: linear-gradient(180deg, var(--glass-from), var(--glass-to));
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   display: flex;
   flex-direction: column;
   box-shadow: var(--shadow);
   padding-top: env(safe-area-inset-top);
+}
+@supports not (backdrop-filter: blur(1px)) {
+  .drawer {
+    background: var(--surface);
+  }
 }
 .drawer-head {
   display: flex;
@@ -119,7 +125,7 @@ function askRemove(id: number) {
   gap: 2px;
   border: none;
   background: none;
-  color: var(--tint);
+  color: var(--primary);
   padding: 6px 8px;
   font-size: 0.9375rem;
   cursor: pointer;
@@ -158,11 +164,7 @@ function askRemove(id: number) {
   background: var(--sk);
 }
 .sess.active {
-  background: var(--tint-wash);
-}
-.sess-check {
-  color: var(--tint);
-  flex-shrink: 0;
+  background: var(--primary-wash);
 }
 .sess-title {
   flex: 1;
@@ -184,7 +186,7 @@ function askRemove(id: number) {
 .sess-del.confirming {
   font-size: 0.75rem;
   font-weight: 600;
-  background: var(--danger);
+  background: var(--primary);
   color: #fff;
   border-radius: 999px;
   padding: 3px 9px;

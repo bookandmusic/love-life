@@ -96,7 +96,7 @@ onActivated(() => {
 .nav-btn {
   border: none;
   background: none;
-  color: var(--tint);
+  color: var(--primary);
   cursor: pointer;
   padding: 4px;
   display: flex;
