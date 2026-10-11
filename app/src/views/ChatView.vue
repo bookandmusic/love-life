@@ -746,7 +746,8 @@ async function send(text?: string) {
       throw new Error((msg as { error?: string }).error ?? '发送失败')
     }
 
-    pushBubble({ role: 'user', content, media: echoMedia, quoted: echoQuotes })
+    // 本轮用户气泡：error 收尾时当场标中断（服务端同时落库打标，两侧口径一致）
+    const userBubble = pushBubble({ role: 'user', content, media: echoMedia, quoted: echoQuotes })
     scrollBottom()
 
     const reader = res.body.getReader()
@@ -874,6 +875,12 @@ async function send(text?: string) {
           curText = null
         } else if (ev === 'error') {
           error.value = data.message
+          // 失败轮的用户消息当场标中断：不等刷新就能悬停/点按唤出「编辑重发 / 复制」
+          // （服务端此刻也已给落库的用户消息补 interrupted part，刷新后同形态）
+          if (userBubble) {
+            userBubble.interrupted = true
+            userBubble.interruptedTurnId = currentTurnId || undefined
+          }
         }
         scrollBottomIfPinned()
       }

@@ -955,6 +955,9 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 			// 此前直出 err.Error() 会把 `Post "http://内网地址/…": net/http: …` 显示给用户。
 			text, retryable := modelErrorText(err)
 			slog.Error("模型调用失败", "session_id", sessionID, "turn_id", turnID, "err", err, "retryable", retryable)
+			// 用户消息标中断（与断连同口径）：否则刷新后它成孤儿，没有「编辑重发」入口
+			// 可回收这条无人回答的残局（AI模式设计「停止与断连」）
+			s.markTurnAborted(claims.UserID, sessionID, turnID)
 			s.sseEvent(w, flusher, "error", map[string]any{"code": "model_error", "message": text, "retryable": retryable})
 			s.sseEvent(w, flusher, "turn.end", map[string]any{"stop_reason": "error"})
 			return
