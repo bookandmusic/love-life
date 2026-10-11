@@ -143,6 +143,8 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	chatMux.HandleFunc("POST /api/v1/chat/proposals/{id}/resolve", chatSvc.ResolveProposal)
 	// 显式中止本轮（整轮回滚）——取代 withdraw-last：撤回只由用户意图触发，不由连接状态触发
 	chatMux.HandleFunc("POST /api/v1/chat/turns/{turn_id}/abort", chatSvc.Abort)
+	// 回收已中断残局（编辑重发前删旧轮；与 abort 同一套整轮回滚，但 turn 已结束、不登记中止意图）
+	chatMux.HandleFunc("DELETE /api/v1/chat/turns/{turn_id}", chatSvc.DeleteTurn)
 	chatMux.HandleFunc("GET /api/v1/chat/sessions", chatSvc.ListSessions)
 	chatMux.HandleFunc("DELETE /api/v1/chat/sessions/{id}", chatSvc.DeleteSession)
 	chatMux.HandleFunc("GET /api/v1/chat/history", chatSvc.History)

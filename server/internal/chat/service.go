@@ -1072,11 +1072,22 @@ func (s *Service) Message(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if out.Proposal != nil {
+				// 该 call 的步骤也进 parts（展示口径：刷新后与流式中看到的形态一致——
+				// 步骤行收口为「待确认」，确认卡跟在同一行）
+				turnParts = append(turnParts, map[string]any{
+					"type": "tool", "call_id": call.ID, "label": label, "status": "ok", "text": "待确认",
+				})
 				proposal := s.proposalEvent(r.Context(), out.Proposal, mediaRefs)
 				actionID, perr := s.createProposal(r.Context(), claims.UserID, sessionID, turnID, out.Proposal, mediaRefs, turnParts)
 				if perr != nil {
 					return
 				}
+				// 提案即该 call 的终态：先补 tool.end 再发 proposal——客户端步骤条
+				// 按 call_id 配对收口，缺了它「正在…」会永远挂着（AI模式设计「时序与事件」）。
+				// text 不带 out.UserText（「准备新建纪念日…请确认」与标签重复），收口为
+				// 「<label> → 待确认」，与提案卡交给用户的状态一致。
+				s.sseEvent(w, flusher, "tool.end", map[string]any{"call_id": call.ID, "status": "ok",
+					"text": "待确认"})
 				proposal["id"] = actionID
 				s.sseEvent(w, flusher, "proposal", map[string]any{"proposal": proposal})
 				// 提案往返进上下文：模型据此知道「已出卡待确认」，不会重复出卡
@@ -1687,6 +1698,24 @@ func (s *Service) Abort(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"aborted": ok})
 }
 
+// DeleteTurn DELETE /api/v1/chat/turns/{turn_id}：回收「已中断」残局（编辑重发前调用）。
+// 与 Abort 同一套整轮回滚（AbortTurn：删本轮消息与模型上下文、pending 卡置 cancelled），
+// 区别仅在用途——turn 已结束，无需登记中止意图（登记了反而会让迟到的断连落库分支误判）。
+func (s *Service) DeleteTurn(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	turnID := r.PathValue("turn_id")
+	if turnID == "" {
+		http.Error(w, `{"error":"缺少 turn_id"}`, http.StatusBadRequest)
+		return
+	}
+	ok, err := s.db.AbortTurn(r.Context(), claims.UserID, turnID)
+	if err != nil {
+		http.Error(w, `{"error":"服务器错误"}`, http.StatusInternalServerError)
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"deleted": ok})
+}
+
 // sessionTitleFrom 会话自动命名：前 20 字 + 超长省略号；纯媒体空文本回退默认名。
 func sessionTitleFrom(content string) string {
 	t := strings.TrimSpace(content)
@@ -1767,6 +1796,8 @@ type histItem struct {
 	Card      *proposalSnapshot `json:"card,omitempty"`
 	CreatedAt string            `json:"created_at"`
 	Quoted    json.RawMessage   `json:"quoted,omitempty"`
+	// 归属轮次：客户端「编辑重发」据它回收中断残局（DeleteTurn）后再回填输入框。
+	TurnID string `json:"turn_id,omitempty"`
 	// 本轮未答完即中断（意外断线、未发 abort）：消息不删，但客户端要知道这里不会再来下文。
 	Interrupted bool `json:"interrupted,omitempty"`
 }
@@ -1841,7 +1872,7 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		items = append(items, histItem{ID: m.ID, Role: m.Role, Parts: json.RawMessage(m.Parts),
-			CardID: cardID, Card: card, CreatedAt: m.CreatedAt, Quoted: quoted})
+			CardID: cardID, Card: card, CreatedAt: m.CreatedAt, Quoted: quoted, TurnID: m.TurnID})
 	}
 	// 中断标记：断连时已在 parts 里追加 interrupted part（markTurnAborted），这里只读取。
 	// 逐条独立判定（不只认尾条）：后面又有新消息时，早先被中断的那轮仍要显示「已中断」。

@@ -46,7 +46,7 @@ func (d *DB) SaveChatMessage(ctx context.Context, m *ChatMessage) (int64, error)
 }
 
 func (d *DB) ListChatMessages(ctx context.Context, userID, sessionID, limit int64) ([]*ChatMessage, error) {
-	rows, err := d.QueryContext(ctx, `SELECT id, user_id, role, parts, card_id, created_at, quoted
+	rows, err := d.QueryContext(ctx, `SELECT id, user_id, role, parts, card_id, created_at, quoted, turn_id
 		FROM chat_messages WHERE user_id = ? AND session_id = ? ORDER BY id DESC LIMIT ?`, userID, sessionID, limit)
 	if err != nil {
 		return nil, err
@@ -55,7 +55,7 @@ func (d *DB) ListChatMessages(ctx context.Context, userID, sessionID, limit int6
 	var list []*ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.UserID, &m.Role, &m.Parts, &m.CardID, &m.CreatedAt, &m.Quoted); err != nil {
+		if err := rows.Scan(&m.ID, &m.UserID, &m.Role, &m.Parts, &m.CardID, &m.CreatedAt, &m.Quoted, &m.TurnID); err != nil {
 			return nil, err
 		}
 		list = append(list, &m)
