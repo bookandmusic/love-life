@@ -42,7 +42,7 @@ func buildGeminiBody(req *ChatRequest) map[string]any {
 	return body
 }
 
-func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+func (geminiAdapter) Chat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
 	body := buildGeminiBody(req)
 
 	bodyBytes, err := json.Marshal(body)
@@ -57,7 +57,7 @@ func (geminiAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, re
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", apiKey)
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +333,7 @@ func buildGeminiTools(tools []Tool) []any {
 // 故这里不做分片累积：args 出现在哪一帧就取哪一帧的完整对象，流结束后统一下发。
 //
 // 思考链与正文可能同帧出现（Gemini 交替下发），故逐 part 判断而不是「一帧一类」。
-func (geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+func (geminiAdapter) StreamChat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
 	body := buildGeminiBody(req)
 
 	bodyBytes, err := json.Marshal(body)
@@ -348,7 +348,7 @@ func (geminiAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model stri
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-goog-api-key", apiKey)
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return "", err
 	}

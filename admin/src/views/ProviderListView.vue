@@ -28,6 +28,7 @@ const showForm = ref(false)
 const fApiType = ref<ApiProtocol>('openai-chat')
 const fName = ref('')
 const fBaseUrl = ref('')
+const fHeaderTimeout = ref('') // 空串 = 默认 30s
 const fKey = ref('')
 
 const protocolHint = computed(
@@ -48,6 +49,7 @@ function openCreate() {
   fApiType.value = 'openai-chat'
   fName.value = ''
   fBaseUrl.value = ''
+  fHeaderTimeout.value = ''
   fKey.value = ''
   showForm.value = true
 }
@@ -57,6 +59,7 @@ function openEdit(p: AiProvider) {
   fApiType.value = p.api_type
   fName.value = p.name
   fBaseUrl.value = p.base_url
+  fHeaderTimeout.value = p.header_timeout_sec == null ? '' : String(p.header_timeout_sec)
   fKey.value = ''
   showForm.value = true
 }
@@ -71,10 +74,15 @@ async function submitForm() {
     return
   }
   try {
+    // v-model 对 type=number 会把值转成数字（looseToNumber），这里统一走 Number 归一。
+    // 永远显式传该字段（0 = 默认 30s，服务端归一 NULL）：update 侧「字段缺失 = 不修改」，
+    // 不传的话「清空超时」这个操作永远不会生效。
+    const timeoutSec = Number(fHeaderTimeout.value)
     const payload = {
       api_type: fApiType.value,
       name: fName.value.trim() || undefined,
       base_url: fBaseUrl.value.trim(),
+      header_timeout_sec: Number.isFinite(timeoutSec) && timeoutSec > 0 ? timeoutSec : 0,
     }
     if (editingId.value === null) {
       await providersApi.createProvider({ ...payload, api_key: fKey.value.trim() })
@@ -161,6 +169,11 @@ async function runRemoveProvider(p: AiProvider) {
         <div class="form-group" style="margin: 0">
           <label class="form-label">服务地址</label>
           <input v-model="fBaseUrl" class="form-input" :placeholder="baseUrlPlaceholder" required />
+        </div>
+        <div class="form-group" style="margin: 0">
+          <label class="form-label">响应头超时（秒，可选）</label>
+          <input v-model="fHeaderTimeout" class="form-input" type="number" min="1" max="3600" placeholder="默认 30" />
+          <p class="form-hint">等待模型服务返回首包的上限；上游挂起时按它快速判死并切链上下一个供应商。</p>
         </div>
         <div class="form-group" style="margin: 0">
           <label class="form-label">API Key{{ editingId === null ? '' : '（留空 = 不修改）' }}</label>

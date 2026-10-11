@@ -13,7 +13,7 @@ func TestUsageOpenAIChat(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t,
 		`{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}],
 		  "usage":{"prompt_tokens":120,"completion_tokens":30,"total_tokens":150}}`)
-	out, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+	out, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestUsageOpenAIChat(t *testing.T) {
 // 上游不返回 usage 时为零值，且不报错（统计侧如实记 0）。
 func TestUsageMissingIsZeroNotError(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t, `{"choices":[{"message":{"content":"hi"},"finish_reason":"stop"}]}`)
-	out, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+	out, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestUsageOpenAIResponses(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t,
 		`{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],
 		  "usage":{"input_tokens":200,"output_tokens":50,"total_tokens":250}}`)
-	out, err := openaiResponsesAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+	out, err := openaiResponsesAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +52,7 @@ func TestUsageOpenAIResponsesDerivesTotal(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t,
 		`{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}],
 		  "usage":{"input_tokens":7,"output_tokens":3}}`)
-	out, err := openaiResponsesAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+	out, err := openaiResponsesAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestUsageAnthropic(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t,
 		`{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn",
 		  "usage":{"input_tokens":88,"output_tokens":12}}`)
-	out, err := anthropicAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+	out, err := anthropicAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestUsageGemini(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t,
 		`{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}],
 		  "usageMetadata":{"promptTokenCount":64,"candidatesTokenCount":16,"totalTokenCount":80}}`)
-	out, err := geminiAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+	out, err := geminiAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}

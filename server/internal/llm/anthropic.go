@@ -46,7 +46,7 @@ func buildAnthropicBody(model string, req *ChatRequest, stream bool) map[string]
 	return body
 }
 
-func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+func (anthropicAdapter) Chat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
 	body := buildAnthropicBody(model, req, false)
 
 	bodyBytes, err := json.Marshal(body)
@@ -61,7 +61,7 @@ func (anthropicAdapter) Chat(ctx context.Context, baseURL, apiKey, model string,
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -256,7 +256,7 @@ type anthropicStreamFrame struct {
 // 「累积器只拼字符串、不中途解析」）。
 //
 // signature_delta 是思考块完整性凭据，本仓不消费（思考链不进上下文），按规范忽略。
-func (anthropicAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+func (anthropicAdapter) StreamChat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
 	body := buildAnthropicBody(model, req, true)
 
 	bodyBytes, err := json.Marshal(body)
@@ -271,7 +271,7 @@ func (anthropicAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model s
 	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return "", err
 	}

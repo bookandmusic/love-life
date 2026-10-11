@@ -394,7 +394,12 @@ func (s *Service) chatTargets(ctx context.Context) ([]*chatTarget, error) {
 			continue
 		}
 		model := e.Model.ModelID
-		client, cerr := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType)
+		// 响应头超时按供应商配置（后台可调，NULL = 默认 30s）：上游挂起时按它快速判死切链
+		var headerTimeout time.Duration
+		if p.HeaderTimeoutSec.Valid && p.HeaderTimeoutSec.Int64 > 0 {
+			headerTimeout = time.Duration(p.HeaderTimeoutSec.Int64) * time.Second
+		}
+		client, cerr := llm.NewForProtocol(p.BaseURL, apiKey, model, p.APIType, headerTimeout)
 		if cerr != nil {
 			return nil, fmt.Errorf("不支持的服务协议: %w", cerr)
 		}

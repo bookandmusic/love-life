@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 )
 
 // 支持的协议类型常量（与 DB CHECK / listmodels.go 同步）。
@@ -52,10 +53,12 @@ func upstreamStatus(status int) error {
 // adapter 把规范化的 ChatRequest 翻译为协议 native 请求、发出、把 native 响应
 // 翻译回规范化 ChatResponse。具体协议各自实现；工厂按 api_type 选用。
 type adapter interface {
-	Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error)
+	// hc 携带响应头超时（按供应商配置，httpClientFor 按值共享）：适配器自身无状态，
+	// 连接期行为全部由客户端决定。
+	Chat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error)
 	// StreamChat 流式：回调收到归一化增量（AI模式设计「模型网关」：真增量逐字下发）；
 	// usage 在末帧到达；返回 finish_reason。
-	StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error)
+	StreamChat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error)
 }
 
 // Delta 归一化流式增量（四协议 adapter 归一后统一形状，chat 层零感知协议差异）。

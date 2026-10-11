@@ -10,7 +10,8 @@
 --   provider_models.kind + chain_order 模型按类型分链、chat_context 上下文事实源（2026-09-26）；
 --   provider_models.thinking 按模型的思考档位（off/low/medium/high，默认 off）；
 --   provider_models 参数面收敛为 max_tokens / thinking / thinking_levels / context_window
---   （删 temperature，加支持的思考档位与上下文窗口）（2026-10-08）。
+--   （删 temperature，加支持的思考档位与上下文窗口）（2026-10-08）；
+--   model_providers.header_timeout_sec 供应商响应头超时可配（NULL=默认 30s）（2026-10-11）。
 -- 本文件一次性建出最新库：新部署空库直接应用，无历史升级路径。
 
 -- ============ 账号与配置（ARCHITECTURE「数据模型」） ============
@@ -349,6 +350,8 @@ CREATE TABLE model_providers (
     name        TEXT    NOT NULL,
     base_url    TEXT    NOT NULL,
     api_key_enc TEXT    NOT NULL DEFAULT '',
+    -- 等待上游响应头（首包）的超时秒数；NULL = 默认 30s。上游推理层挂起时按它快速判死切链。
+    header_timeout_sec INTEGER,
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 

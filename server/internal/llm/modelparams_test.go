@@ -28,7 +28,7 @@ func TestAdaptersPassModelParams(t *testing.T) {
 
 	t.Run("openai-chat 顶层平铺", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"choices":[{"message":{"content":"hi"}}]}`)
-		if _, err := (openaiChatAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (openaiChatAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}, MaxTokens: &maxTok,
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -41,7 +41,7 @@ func TestAdaptersPassModelParams(t *testing.T) {
 
 	t.Run("openai-responses 顶层平铺 max_output_tokens", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`)
-		if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}, MaxTokens: &maxTok,
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -58,7 +58,7 @@ func TestAdaptersPassModelParams(t *testing.T) {
 
 	t.Run("anthropic 覆盖必填默认", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`)
-		if _, err := (anthropicAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (anthropicAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}, MaxTokens: &maxTok,
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -71,7 +71,7 @@ func TestAdaptersPassModelParams(t *testing.T) {
 
 	t.Run("gemini generationConfig", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`)
-		if _, err := (geminiAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (geminiAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}, MaxTokens: &maxTok,
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -90,7 +90,7 @@ func TestAdaptersPassModelParams(t *testing.T) {
 func TestAdaptersOmitUnsetModelParams(t *testing.T) {
 	t.Run("openai-chat 不出现 max_tokens", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"choices":[{"message":{"content":"hi"}}]}`)
-		if _, err := (openaiChatAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (openaiChatAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -103,7 +103,7 @@ func TestAdaptersOmitUnsetModelParams(t *testing.T) {
 
 	t.Run("openai-responses 保留兜底 max_output_tokens", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`)
-		if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -116,7 +116,7 @@ func TestAdaptersOmitUnsetModelParams(t *testing.T) {
 
 	t.Run("anthropic 保留必填默认", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`)
-		if _, err := (anthropicAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (anthropicAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -129,7 +129,7 @@ func TestAdaptersOmitUnsetModelParams(t *testing.T) {
 
 	t.Run("gemini 不出现 generationConfig", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`)
-		if _, err := (geminiAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (geminiAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)
@@ -149,21 +149,21 @@ func TestAdaptersNeverSendTemperature(t *testing.T) {
 	}{
 		{"openai-chat", func(t *testing.T, req *ChatRequest) map[string]any {
 			srv, _, bodyP := fakeChatUpstream(t, `{"choices":[{"message":{"content":"hi"}}]}`)
-			if _, err := (openaiChatAdapter{}).Chat(context.Background(), srv.URL, "k", "m", req); err != nil {
+			if _, err := (openaiChatAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", req); err != nil {
 				t.Fatalf("Chat: %v", err)
 			}
 			return sentBody(t, bodyP)
 		}},
 		{"openai-responses", func(t *testing.T, req *ChatRequest) map[string]any {
 			srv, _, bodyP := fakeChatUpstream(t, `{"output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]}`)
-			if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), srv.URL, "k", "m", req); err != nil {
+			if _, err := (openaiResponsesAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", req); err != nil {
 				t.Fatalf("Chat: %v", err)
 			}
 			return sentBody(t, bodyP)
 		}},
 		{"anthropic", func(t *testing.T, req *ChatRequest) map[string]any {
 			srv, _, bodyP := fakeChatUpstream(t, `{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`)
-			if _, err := (anthropicAdapter{}).Chat(context.Background(), srv.URL, "k", "m", req); err != nil {
+			if _, err := (anthropicAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", req); err != nil {
 				t.Fatalf("Chat: %v", err)
 			}
 			return sentBody(t, bodyP)
@@ -179,7 +179,7 @@ func TestAdaptersNeverSendTemperature(t *testing.T) {
 	}
 	t.Run("gemini", func(t *testing.T) {
 		srv, _, bodyP := fakeChatUpstream(t, `{"candidates":[{"content":{"parts":[{"text":"hi"}]},"finishReason":"STOP"}]}`)
-		if _, err := (geminiAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		if _, err := (geminiAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}, Thinking: "medium",
 		}); err != nil {
 			t.Fatalf("Chat: %v", err)

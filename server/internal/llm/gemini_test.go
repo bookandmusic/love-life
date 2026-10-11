@@ -23,7 +23,7 @@ func TestGeminiAdapter_RequestShape(t *testing.T) {
 			Name: "get_weather", Description: "d", Parameters: map[string]any{"type": "object"},
 		}}},
 	}
-	resp, err := adp.Chat(context.Background(), srv.URL, "g-key", "gemini-1.5-pro", req)
+	resp, err := adp.Chat(context.Background(), httpClientFor(0), srv.URL, "g-key", "gemini-1.5-pro", req)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -83,7 +83,7 @@ func TestGeminiAdapter_FunctionCallResponse(t *testing.T) {
 			`{"functionCall":{"name":"search_posts","args":{"query":"海边"}}}`+
 			`]},"finishReason":"STOP"}]}`)
 
-	resp, err := geminiAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	resp, err := geminiAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{{Role: "user", Content: "海边"}},
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func TestGeminiAdapter_FunctionResponseEcho(t *testing.T) {
 		`{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)
 
 	// tool 消息的 ToolCallID 用合成的 gemini- 格式，验证 toolNameFromCallID 还原
-	_, err := geminiAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	_, err := geminiAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{
 			{Role: "user", Content: "记一条"},
 			{Role: "assistant", ToolCalls: []ToolCall{newToolCall("gemini-create_post-0", "create_post", `{"content":"hi"}`)}},
@@ -185,7 +185,7 @@ func TestToolNameFromCallID(t *testing.T) {
 func TestGeminiAdapter_Errors(t *testing.T) {
 	t.Run("error 字段", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"candidates":[],"error":{"message":"bad"}}`)
-		_, err := geminiAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := geminiAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}})
 		if err == nil || !strings.Contains(err.Error(), "bad") {
 			t.Fatalf("err = %v", err)
@@ -193,7 +193,7 @@ func TestGeminiAdapter_Errors(t *testing.T) {
 	})
 	t.Run("空 candidates", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"candidates":[]}`)
-		_, err := geminiAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := geminiAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}})
 		if err == nil || !strings.Contains(err.Error(), "模型返回空响应") {
 			t.Fatalf("err = %v", err)
@@ -366,7 +366,7 @@ func TestGeminiAdapter_KeepsUpstreamCallID(t *testing.T) {
 			`{"functionCall":{"id":"`+upstreamID+`","name":"get_record","args":{"id":1}}}`+
 			`]},"finishReason":"STOP"}]}`)
 
-	resp, err := geminiAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	resp, err := geminiAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{{Role: "user", Content: "看看记录"}},
 	})
 	if err != nil {

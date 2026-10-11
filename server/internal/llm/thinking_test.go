@@ -16,7 +16,7 @@ import (
 func chatBody(t *testing.T, adp adapter, model string, req *ChatRequest) map[string]any {
 	t.Helper()
 	srv, _, bodyP := fakeChatUpstream(t, `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usage":{}}`)
-	if _, err := adp.Chat(context.Background(), srv.URL, "key-x", model, req); err != nil {
+	if _, err := adp.Chat(context.Background(), httpClientFor(0), srv.URL, "key-x", model, req); err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
 	var body map[string]any

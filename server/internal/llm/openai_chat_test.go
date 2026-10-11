@@ -43,7 +43,7 @@ func TestOpenAIChatAdapter_RequestShape(t *testing.T) {
 			Name: "get_weather", Description: "d", Parameters: map[string]any{"type": "object"},
 		}}},
 	}
-	resp, err := adp.Chat(context.Background(), srv.URL, "sk-test", "gpt-4o", req)
+	resp, err := adp.Chat(context.Background(), httpClientFor(0), srv.URL, "sk-test", "gpt-4o", req)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestOpenAIChatAdapter_ToolCallMapping(t *testing.T) {
 		`]},"finish_reason":"tool_calls"}]}`
 	srv, _, _ := fakeChatUpstream(t, body)
 
-	resp, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	resp, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{{Role: "user", Content: "记一条"}},
 	})
 	if err != nil {
@@ -121,7 +121,7 @@ func TestOpenAIChatAdapter_ToolCallMapping(t *testing.T) {
 func TestOpenAIChatAdapter_Errors(t *testing.T) {
 	t.Run("上游 out.Error 非空", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"choices":[{"message":{"content":"x"}}],"error":{"message":"invalid api key"}}`)
-		_, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		})
 		if err == nil || !strings.Contains(err.Error(), "模型服务错误") || !strings.Contains(err.Error(), "invalid api key") {
@@ -131,7 +131,7 @@ func TestOpenAIChatAdapter_Errors(t *testing.T) {
 
 	t.Run("choices 为空", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"choices":[]}`)
-		_, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		})
 		if err == nil || !strings.Contains(err.Error(), "模型返回空响应") {
@@ -141,7 +141,7 @@ func TestOpenAIChatAdapter_Errors(t *testing.T) {
 
 	t.Run("响应体非 JSON", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `not-json`)
-		_, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		})
 		if err == nil || !strings.Contains(err.Error(), "decode model response") {
@@ -153,7 +153,7 @@ func TestOpenAIChatAdapter_Errors(t *testing.T) {
 		// 起一个立刻关闭的服务器模拟连接错误
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		srv.Close()
-		_, err := openaiChatAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := openaiChatAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}},
 		})
 		if err == nil {
@@ -165,7 +165,7 @@ func TestOpenAIChatAdapter_Errors(t *testing.T) {
 // TestClientChatDelegates 验证 Client.Chat 正确委托给 adapter（端到端走薄壳）。
 func TestClientChatDelegates(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t, `{"choices":[{"message":{"content":"ok"}}]}`)
-	c, err := NewForProtocol(srv.URL, "k", "m", APITypeOpenAIChat)
+	c, err := NewForProtocol(srv.URL, "k", "m", APITypeOpenAIChat, 0)
 	if err != nil {
 		t.Fatalf("NewForProtocol: %v", err)
 	}

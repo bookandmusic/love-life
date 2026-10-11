@@ -35,12 +35,14 @@ type modelOut struct {
 }
 
 type providerOut struct {
-	ID      int64      `json:"id"`
-	APIType string     `json:"api_type"`
-	Name    string     `json:"name"`
-	BaseURL string     `json:"base_url"`
-	HasKey  bool       `json:"has_key"`
-	Models  []modelOut `json:"models"`
+	ID      int64  `json:"id"`
+	APIType string `json:"api_type"`
+	Name    string `json:"name"`
+	BaseURL string `json:"base_url"`
+	// HeaderTimeoutSec 等待上游响应头（首包）的超时秒数；null = 默认 30s。
+	HeaderTimeoutSec *int64     `json:"header_timeout_sec"`
+	HasKey           bool       `json:"has_key"`
+	Models           []modelOut `json:"models"`
 }
 
 func toModelOut(m store.ProviderModel) modelOut {
@@ -62,10 +64,26 @@ func toProviderOut(p *store.ModelProvider) providerOut {
 	for _, m := range p.Models {
 		models = append(models, toModelOut(m))
 	}
+	var headerTimeout *int64
+	if p.HeaderTimeoutSec.Valid {
+		h := p.HeaderTimeoutSec.Int64
+		headerTimeout = &h
+	}
 	return providerOut{
 		ID: p.ID, APIType: p.APIType, Name: p.Name, BaseURL: p.BaseURL,
-		HasKey: p.APIKeyEnc != "", Models: models,
+		HeaderTimeoutSec: headerTimeout, HasKey: p.APIKeyEnc != "", Models: models,
 	}
+}
+
+// normalizeHeaderTimeout 归一响应头超时：nil/0 → NULL（默认 30s）；负数拒绝。
+func normalizeHeaderTimeout(sec *int64) (sql.NullInt64, string) {
+	if sec == nil || *sec <= 0 {
+		return sql.NullInt64{}, ""
+	}
+	if *sec > 3600 {
+		return sql.NullInt64{}, "响应头超时上限 3600 秒"
+	}
+	return sql.NullInt64{Int64: *sec, Valid: true}, ""
 }
 
 // modelRowOut 模型条目行（链视图）：链序 = 数组顺序（chain_order, id）。
@@ -249,17 +267,18 @@ func normalizeModels(raw []modelIn) ([]store.ProviderModel, string) {
 
 func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		APIType string    `json:"api_type"`
-		Name    string    `json:"name"`
-		BaseURL string    `json:"base_url"`
-		APIKey  string    `json:"api_key"`
-		Models  []modelIn `json:"models"`
+		APIType          string    `json:"api_type"`
+		Name             string    `json:"name"`
+		BaseURL          string    `json:"base_url"`
+		HeaderTimeoutSec *int64    `json:"header_timeout_sec"`
+		APIKey           string    `json:"api_key"`
+		Models           []modelIn `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
-	if _, err := llm.NewForProtocol("", "", "", req.APIType); err != nil {
+	if _, err := llm.NewForProtocol("", "", "", req.APIType, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "api_type 不支持（openai-chat / openai-responses / anthropic / gemini）")
 		return
 	}
@@ -289,9 +308,14 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
+	headerTimeout, terr := normalizeHeaderTimeout(req.HeaderTimeoutSec)
+	if terr != "" {
+		writeError(w, http.StatusBadRequest, terr)
+		return
+	}
 	p := &store.ModelProvider{
 		APIType: req.APIType, Name: strings.TrimSpace(req.Name), BaseURL: req.BaseURL,
-		APIKeyEnc: enc,
+		APIKeyEnc: enc, HeaderTimeoutSec: headerTimeout,
 	}
 	if p.Name == "" {
 		p.Name = req.APIType
@@ -325,17 +349,18 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		APIType *string    `json:"api_type"`
-		Name    *string    `json:"name"`
-		BaseURL *string    `json:"base_url"`
-		Models  *[]modelIn `json:"models"`
+		APIType          *string    `json:"api_type"`
+		Name             *string    `json:"name"`
+		BaseURL          *string    `json:"base_url"`
+		HeaderTimeoutSec *int64     `json:"header_timeout_sec"`
+		Models           *[]modelIn `json:"models"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
 	if req.APIType != nil {
-		if _, err := llm.NewForProtocol("", "", "", *req.APIType); err != nil {
+		if _, err := llm.NewForProtocol("", "", "", *req.APIType, 0); err != nil {
 			writeError(w, http.StatusBadRequest, "api_type 不支持（openai-chat / openai-responses / anthropic / gemini）")
 			return
 		}
@@ -352,6 +377,14 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		p.BaseURL = *req.BaseURL
+	}
+	if req.HeaderTimeoutSec != nil {
+		headerTimeout, terr := normalizeHeaderTimeout(req.HeaderTimeoutSec)
+		if terr != "" {
+			writeError(w, http.StatusBadRequest, terr)
+			return
+		}
+		p.HeaderTimeoutSec = headerTimeout
 	}
 	// 协议改离 openai-chat 时，该供应商名下不得还有嵌入条目（嵌入只允许 openai-chat）
 	if req.APIType != nil && p.APIType != llm.APITypeOpenAIChat {
@@ -384,7 +417,7 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, eerr)
 		return
 	}
-	if err := a.db.UpdateProvider(r.Context(), id, p.APIType, p.Name, p.BaseURL, models, replaceModels); err != nil {
+	if err := a.db.UpdateProvider(r.Context(), id, p.APIType, p.Name, p.BaseURL, p.HeaderTimeoutSec, models, replaceModels); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
@@ -693,7 +726,7 @@ func (a *providersAPI) fetchModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errBadRequest)
 		return
 	}
-	if _, err := llm.NewForProtocol("", "", "", req.APIType); err != nil {
+	if _, err := llm.NewForProtocol("", "", "", req.APIType, 0); err != nil {
 		writeError(w, http.StatusBadRequest, "api_type 不支持（openai-chat / openai-responses / anthropic / gemini）")
 		return
 	}

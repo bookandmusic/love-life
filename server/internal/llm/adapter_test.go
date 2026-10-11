@@ -40,7 +40,7 @@ func TestSelectAdapter(t *testing.T) {
 
 func TestNewForProtocol(t *testing.T) {
 	t.Run("openai-chat 成功", func(t *testing.T) {
-		c, err := NewForProtocol("https://x", "k", "m", APITypeOpenAIChat)
+		c, err := NewForProtocol("https://x", "k", "m", APITypeOpenAIChat, 0)
 		if err != nil || c == nil {
 			t.Fatalf("NewForProtocol: c=%v err=%v", c, err)
 		}
@@ -50,14 +50,14 @@ func TestNewForProtocol(t *testing.T) {
 	})
 
 	t.Run("未实现协议返回错误", func(t *testing.T) {
-		if _, err := NewForProtocol("https://x", "k", "m", "bogus"); !errors.Is(err, ErrUnsupportedAPIType) {
+		if _, err := NewForProtocol("https://x", "k", "m", "bogus", 0); !errors.Is(err, ErrUnsupportedAPIType) {
 			t.Fatalf("err = %v, want ErrUnsupportedAPIType", err)
 		}
 	})
 
 	t.Run("四协议全部可构造", func(t *testing.T) {
 		for _, apiType := range []string{APITypeOpenAIChat, APITypeOpenAIResponses, APITypeAnthropic, APITypeGemini} {
-			c, err := NewForProtocol("https://x", "k", "m", apiType)
+			c, err := NewForProtocol("https://x", "k", "m", apiType, 0)
 			if err != nil || c == nil || c.adp == nil {
 				t.Errorf("NewForProtocol(%q): c=%v err=%v", apiType, c, err)
 			}

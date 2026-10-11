@@ -35,7 +35,7 @@ func sseServer(t *testing.T, frames []string) *httptest.Server {
 func collectDeltas(t *testing.T, adp adapter, url string, req *ChatRequest) (string, []Delta) {
 	t.Helper()
 	var got []Delta
-	finish, err := adp.StreamChat(context.Background(), url, "k", "m", req, func(d Delta) {
+	finish, err := adp.StreamChat(context.Background(), httpClientFor(0), url, "k", "m", req, func(d Delta) {
 		got = append(got, d)
 	})
 	if err != nil {
@@ -346,7 +346,7 @@ func TestResponsesStreamFailureEventResponses(t *testing.T) {
 		`{"type":"response.failed","response":{"error":{"message":"boom"}}}`,
 	} {
 		srv := sseServer(t, []string{frame})
-		_, err := (openaiResponsesAdapter{}).StreamChat(context.Background(), srv.URL, "k", "m", &ChatRequest{}, func(Delta) {})
+		_, err := (openaiResponsesAdapter{}).StreamChat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{}, func(Delta) {})
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("frame=%s err=%v", frame, err)
 		}
@@ -477,7 +477,7 @@ func TestNonStreamingThinkingParsed(t *testing.T) {
 				_, _ = w.Write([]byte(c.body))
 			}))
 			defer srv.Close()
-			out, err := c.adp.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{})
+			out, err := c.adp.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -511,7 +511,7 @@ func TestOpenAIChatStripsGeminiSignature(t *testing.T) {
 	tc := ToolCall{ID: "c1", Type: "function", Signature: "sig-gemini"}
 	tc.Function.Name = "find_posts"
 	tc.Function.Arguments = `{}`
-	_, err := (openaiChatAdapter{}).Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	_, err := (openaiChatAdapter{}).Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{{Role: "assistant", ToolCalls: []ToolCall{tc}}},
 	})
 	if err != nil {
@@ -590,7 +590,7 @@ func TestStreamStatusErrorAllProtocols(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			_, err := c.adp.StreamChat(context.Background(), srv.URL, "k", "m", &ChatRequest{},
+			_, err := c.adp.StreamChat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{},
 				func(Delta) {})
 			if err == nil || !strings.Contains(err.Error(), "模型服务错误") ||
 				!strings.Contains(err.Error(), "invalid api key") {
@@ -620,7 +620,7 @@ func TestStreamChatSetsStreamFlag(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			srv, reqP, bodyP := fakeChatUpstream(t, c.body)
-			if _, err := c.adp.StreamChat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+			if _, err := c.adp.StreamChat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 				Messages: []Message{{Role: "user", Content: "hi"}},
 			}, func(Delta) {}); err != nil {
 				t.Fatalf("StreamChat: %v", err)

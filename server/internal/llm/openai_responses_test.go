@@ -23,7 +23,7 @@ func TestOpenAIResponsesAdapter_RequestShape(t *testing.T) {
 			Name: "get_weather", Description: "d", Parameters: map[string]any{"type": "object"},
 		}}},
 	}
-	resp, err := adp.Chat(context.Background(), srv.URL, "sk-test", "gpt-5", req)
+	resp, err := adp.Chat(context.Background(), httpClientFor(0), srv.URL, "sk-test", "gpt-5", req)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestOpenAIResponsesAdapter_ToolRoundtrip(t *testing.T) {
 	srv, _, _ := fakeChatUpstream(t,
 		`{"output":[{"type":"function_call","call_id":"call_1","name":"create_post","arguments":"{\"content\":\"hi\"}"}]}`)
 
-	resp, err := openaiResponsesAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	resp, err := openaiResponsesAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{{Role: "user", Content: "记一条"}},
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestOpenAIResponsesAdapter_ToolResultEcho(t *testing.T) {
 	srv, _, bodyP := fakeChatUpstream(t,
 		`{"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}`)
 
-	_, err := openaiResponsesAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	_, err := openaiResponsesAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{
 			{Role: "user", Content: "记一条"},
 			{Role: "assistant", ToolCalls: []ToolCall{newToolCall("call_1", "create_post", `{"content":"hi"}`)}},
@@ -126,7 +126,7 @@ func TestOpenAIResponsesAdapter_ToolResultEcho(t *testing.T) {
 func TestOpenAIResponsesAdapter_Errors(t *testing.T) {
 	t.Run("error 字段", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"output":[],"error":{"message":"bad key"}}`)
-		_, err := openaiResponsesAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := openaiResponsesAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}})
 		if err == nil || !strings.Contains(err.Error(), "模型服务错误") || !strings.Contains(err.Error(), "bad key") {
 			t.Fatalf("err = %v", err)
@@ -134,7 +134,7 @@ func TestOpenAIResponsesAdapter_Errors(t *testing.T) {
 	})
 	t.Run("空 output", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"output":[]}`)
-		_, err := openaiResponsesAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := openaiResponsesAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}})
 		if err == nil || !strings.Contains(err.Error(), "模型返回空响应") {
 			t.Fatalf("err = %v", err)

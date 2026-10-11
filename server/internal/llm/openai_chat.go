@@ -8,24 +8,12 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // openaiChatAdapter 适配 OpenAI Chat Completions 协议（兼容生态：OpenAI / DeepSeek /
 // 通义兼容模式 / GLM / vLLM / Ollama 等）。流式：stream:true + include_usage，
 // SSE 增量归一为 Delta 回调（AI模式设计「模型网关」）。
 type openaiChatAdapter struct{}
-
-// openaiHTTP 复用 HTTP 客户端。流式请求**不设请求总超时**（长回答会被 60s 砍断）：
-// 连接期用 Transport.ResponseHeaderTimeout 兜住，整体长度由整轮墙钟预算控制
-// （AI模式设计「模型网关」；该预算也约束链内逐个模型的重试，见「预算与并行」）。
-// 改这个 30s 时一并看那两处。
-var openaiHTTP = &http.Client{
-	Timeout: 0,
-	Transport: &http.Transport{
-		ResponseHeaderTimeout: 30 * time.Second,
-	},
-}
 
 // buildOpenAIChatBody 组装请求体。Chat 与 StreamChat 共用一处装配，避免两条路径各拼一份
 // 而漂移（新增参数只改一边 = 「配了不生效」）。
@@ -44,7 +32,7 @@ func buildOpenAIChatBody(model string, req *ChatRequest, stream bool) map[string
 	return body
 }
 
-func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+func (openaiChatAdapter) Chat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
 	body := buildOpenAIChatBody(model, req, false)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
@@ -57,7 +45,7 @@ func (openaiChatAdapter) Chat(ctx context.Context, baseURL, apiKey, model string
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +101,7 @@ type streamDelta struct {
 
 // StreamChat 流式实现：SSE 逐帧解析 data: 行；[DONE] 结束。
 // tool_calls 分片按 index 累积——adapter 内部完成归组，Agent 层只见完整 tool_call。
-func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+func (openaiChatAdapter) StreamChat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
 	body := buildOpenAIChatBody(model, req, true)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
@@ -126,7 +114,7 @@ func (openaiChatAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model 
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return "", err
 	}

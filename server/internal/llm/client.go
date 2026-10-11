@@ -4,6 +4,9 @@ package llm
 
 import (
 	"context"
+	"net/http"
+	"sync"
+	"time"
 )
 
 type Message struct {
@@ -42,28 +45,57 @@ type ToolFunction struct {
 	Parameters  map[string]any `json:"parameters"`
 }
 
+// headerTimeoutDefault 等待上游响应头（首包）的默认超时。上游推理层挂起时据此快速判死切链
+// （AI模式设计「预算与并行」：链重试受整轮墙钟约束）；供应商可在后台按条目覆盖。
+const headerTimeoutDefault = 30 * time.Second
+
+// httpClients 按响应头超时值缓存 HTTP 客户端：同一超时值的供应商共享连接池，
+// 不为每个供应商各建一份 Transport。键只可能是后台配置出现的少数几个值。
+var httpClients sync.Map // time.Duration → *http.Client
+
+// httpClientFor 取响应头超时为 headerTimeout 的共享客户端。流式请求**不设请求总超时**
+// （长回答会被砍断），整体长度由 chat 层的整轮墙钟预算控制。
+func httpClientFor(headerTimeout time.Duration) *http.Client {
+	if headerTimeout <= 0 {
+		headerTimeout = headerTimeoutDefault
+	}
+	if c, ok := httpClients.Load(headerTimeout); ok {
+		return c.(*http.Client)
+	}
+	c := &http.Client{
+		Timeout: 0,
+		Transport: &http.Transport{
+			ResponseHeaderTimeout: headerTimeout,
+		},
+	}
+	actual, _ := httpClients.LoadOrStore(headerTimeout, c)
+	return actual.(*http.Client)
+}
+
 // Client 模型客户端薄壳：按 api_type 持有 adapter，对外只暴露 Chat。
 type Client struct {
 	BaseURL string
 	APIKey  string
 	Model   string
 	apiType string
+	http    *http.Client
 	adp     adapter
 }
 
 // New 默认 openai-chat 协议（保持向后兼容）。
 func New(baseURL, apiKey, model string) *Client {
-	c, _ := NewForProtocol(baseURL, apiKey, model, APITypeOpenAIChat)
+	c, _ := NewForProtocol(baseURL, apiKey, model, APITypeOpenAIChat, 0)
 	return c
 }
 
 // NewForProtocol 按协议构造客户端；不支持的协议返回错误（调用方应处理，不静默）。
-func NewForProtocol(baseURL, apiKey, model, apiType string) (*Client, error) {
+// headerTimeout 为等待上游响应头（首包）的超时，0 = 默认 30s；供应商可在后台按条目配置。
+func NewForProtocol(baseURL, apiKey, model, apiType string, headerTimeout time.Duration) (*Client, error) {
 	adp, err := selectAdapter(apiType)
 	if err != nil {
 		return nil, err
 	}
-	return &Client{BaseURL: baseURL, APIKey: apiKey, Model: model, apiType: apiType, adp: adp}, nil
+	return &Client{BaseURL: baseURL, APIKey: apiKey, Model: model, apiType: apiType, http: httpClientFor(headerTimeout), adp: adp}, nil
 }
 
 type ChatRequest struct {
@@ -155,11 +187,11 @@ func stripSignatures(msgs []Message) []Message {
 
 // Chat 委托给当前协议的 adapter（规范化 ↔ native 由 adapter 负责）。
 func (c *Client) Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error) {
-	return c.adp.Chat(ctx, c.BaseURL, c.APIKey, c.Model, req)
+	return c.adp.Chat(ctx, c.http, c.BaseURL, c.APIKey, c.Model, req)
 }
 
 // StreamChat 流式：协议差异封进 adapter（分片归组/usage 末帧/finish_reason），
 // 调用方只消费归一化 Delta（AI模式设计「模型网关」）。
 func (c *Client) StreamChat(ctx context.Context, req *ChatRequest, onDelta func(Delta)) (string, error) {
-	return c.adp.StreamChat(ctx, c.BaseURL, c.APIKey, c.Model, req, onDelta)
+	return c.adp.StreamChat(ctx, c.http, c.BaseURL, c.APIKey, c.Model, req, onDelta)
 }

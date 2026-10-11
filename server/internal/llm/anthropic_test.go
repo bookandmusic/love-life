@@ -22,7 +22,7 @@ func TestAnthropicAdapter_RequestShape(t *testing.T) {
 			Name: "get_weather", Description: "d", Parameters: map[string]any{"type": "object"},
 		}}},
 	}
-	resp, err := adp.Chat(context.Background(), srv.URL, "key-x", "claude-3", req)
+	resp, err := adp.Chat(context.Background(), httpClientFor(0), srv.URL, "key-x", "claude-3", req)
 	if err != nil {
 		t.Fatalf("Chat: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestAnthropicAdapter_ToolUseResponse(t *testing.T) {
 			`{"type":"tool_use","id":"toolu_1","name":"search_posts","input":{"query":"海边"}}`+
 			`],"stop_reason":"tool_use"}`)
 
-	resp, err := anthropicAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	resp, err := anthropicAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{{Role: "user", Content: "海边"}},
 	})
 	if err != nil {
@@ -110,7 +110,7 @@ func TestAnthropicAdapter_ToolResultEcho(t *testing.T) {
 	srv, _, bodyP := fakeChatUpstream(t,
 		`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`)
 
-	_, err := anthropicAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+	_, err := anthropicAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 		Messages: []Message{
 			{Role: "user", Content: "记一条"},
 			{Role: "assistant", ToolCalls: []ToolCall{newToolCall("toolu_1", "create_post", `{"content":"hi"}`)}},
@@ -159,7 +159,7 @@ func TestAnthropicAdapter_ToolResultEcho(t *testing.T) {
 func TestAnthropicAdapter_Errors(t *testing.T) {
 	t.Run("error 字段", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"content":[],"error":{"message":"invalid"}}`)
-		_, err := anthropicAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := anthropicAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}})
 		if err == nil || !strings.Contains(err.Error(), "invalid") {
 			t.Fatalf("err = %v", err)
@@ -167,7 +167,7 @@ func TestAnthropicAdapter_Errors(t *testing.T) {
 	})
 	t.Run("空 content", func(t *testing.T) {
 		srv, _, _ := fakeChatUpstream(t, `{"content":[]}`)
-		_, err := anthropicAdapter{}.Chat(context.Background(), srv.URL, "k", "m", &ChatRequest{
+		_, err := anthropicAdapter{}.Chat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{
 			Messages: []Message{{Role: "user", Content: "hi"}}})
 		if err == nil || !strings.Contains(err.Error(), "模型返回空响应") {
 			t.Fatalf("err = %v", err)

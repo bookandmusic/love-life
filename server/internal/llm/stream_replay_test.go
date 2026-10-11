@@ -15,7 +15,7 @@ func TestOpenAIChatStreamReplayNonSSE(t *testing.T) {
 	}))
 	defer srv.Close()
 	var got []Delta
-	finish, err := (openaiChatAdapter{}).StreamChat(context.Background(), srv.URL, "k", "m", &ChatRequest{}, func(d Delta) {
+	finish, err := (openaiChatAdapter{}).StreamChat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{}, func(d Delta) {
 		got = append(got, d)
 	})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestOpenAIChatStreamAccumulatesToolCallFragments(t *testing.T) {
 	defer srv.Close()
 
 	var got []Delta
-	finish, err := (openaiChatAdapter{}).StreamChat(context.Background(), srv.URL, "k", "m", &ChatRequest{}, func(d Delta) {
+	finish, err := (openaiChatAdapter{}).StreamChat(context.Background(), httpClientFor(0), srv.URL, "k", "m", &ChatRequest{}, func(d Delta) {
 		got = append(got, d)
 	})
 	if err != nil {

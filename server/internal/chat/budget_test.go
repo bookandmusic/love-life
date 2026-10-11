@@ -43,7 +43,7 @@ func fakeTargets(t *testing.T, srv *httptest.Server, n int) []*chatTarget {
 	t.Helper()
 	out := make([]*chatTarget, 0, n)
 	for i := 0; i < n; i++ {
-		c, err := llm.NewForProtocol(srv.URL, "sk-test", "m", llm.APITypeOpenAIChat)
+		c, err := llm.NewForProtocol(srv.URL, "sk-test", "m", llm.APITypeOpenAIChat, 0)
 		if err != nil {
 			t.Fatalf("new client: %v", err)
 		}

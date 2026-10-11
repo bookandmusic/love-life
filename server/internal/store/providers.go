@@ -36,14 +36,17 @@ type ModelProvider struct {
 	Name      string
 	BaseURL   string
 	APIKeyEnc string
-	Models    []ProviderModel
+	// HeaderTimeoutSec 等待上游响应头（首包）的超时秒数；NULL = 默认 30s。
+	// 等响应头卡住（上游推理层挂起）是 2026-10-11 实际故障面，链上重试按它快速判死切链。
+	HeaderTimeoutSec sql.NullInt64
+	Models           []ProviderModel
 }
 
-const providerColumns = `id, api_type, name, base_url, api_key_enc`
+const providerColumns = `id, api_type, name, base_url, api_key_enc, header_timeout_sec`
 
 func scanProvider(row interface{ Scan(...any) error }) (*ModelProvider, error) {
 	var p ModelProvider
-	if err := row.Scan(&p.ID, &p.APIType, &p.Name, &p.BaseURL, &p.APIKeyEnc); err != nil {
+	if err := row.Scan(&p.ID, &p.APIType, &p.Name, &p.BaseURL, &p.APIKeyEnc, &p.HeaderTimeoutSec); err != nil {
 		return nil, err
 	}
 	return &p, nil
@@ -132,7 +135,7 @@ func (d *DB) ListModels(ctx context.Context, kind string) ([]ChainEntry, error) 
 	}
 	rows, err := d.QueryContext(ctx,
 		`SELECT pm.id, pm.provider_id, pm.kind, pm.model_id, pm.max_tokens, pm.thinking, pm.thinking_levels, pm.context_window, pm.chain_order,
-			p.id, p.api_type, p.name, p.base_url, p.api_key_enc
+			p.id, p.api_type, p.name, p.base_url, p.api_key_enc, p.header_timeout_sec
 		 FROM provider_models pm JOIN model_providers p ON p.id = pm.provider_id`+where+`
 		 ORDER BY pm.chain_order, pm.id`, kind)
 	if err != nil {
@@ -144,7 +147,7 @@ func (d *DB) ListModels(ctx context.Context, kind string) ([]ChainEntry, error) 
 		var m ProviderModel
 		p := &ModelProvider{}
 		if err := rows.Scan(&m.ID, &m.ProviderID, &m.Kind, &m.ModelID, &m.MaxTokens, &m.Thinking, &m.ThinkingLevels, &m.ContextWindow, &m.ChainOrder,
-			&p.ID, &p.APIType, &p.Name, &p.BaseURL, &p.APIKeyEnc); err != nil {
+			&p.ID, &p.APIType, &p.Name, &p.BaseURL, &p.APIKeyEnc, &p.HeaderTimeoutSec); err != nil {
 			return nil, err
 		}
 		m.ProviderID = p.ID
@@ -215,8 +218,12 @@ func (d *DB) CreateProvider(ctx context.Context, p *ModelProvider, models []Prov
 		return 0, err
 	}
 	defer tx.Rollback()
-	res, err := tx.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc) VALUES (?, ?, ?, ?)`,
-		p.APIType, p.Name, p.BaseURL, p.APIKeyEnc)
+	var headerTimeout any
+	if p.HeaderTimeoutSec.Valid {
+		headerTimeout = p.HeaderTimeoutSec.Int64
+	}
+	res, err := tx.Exec(`INSERT INTO model_providers (api_type, name, base_url, api_key_enc, header_timeout_sec) VALUES (?, ?, ?, ?, ?)`,
+		p.APIType, p.Name, p.BaseURL, p.APIKeyEnc, headerTimeout)
 	if err != nil {
 		return 0, err
 	}
@@ -246,8 +253,8 @@ func (d *DB) GetProvider(ctx context.Context, id int64) (*ModelProvider, error) 
 	return p, nil
 }
 
-// UpdateProvider 事务更新供应商字段（四字段传最终值）并可选整表替换模型条目。
-func (d *DB) UpdateProvider(ctx context.Context, id int64, apiType, name, baseURL string, models []ProviderModel, replaceModels bool) error {
+// UpdateProvider 事务更新供应商字段（五字段传最终值）并可选整表替换模型条目。
+func (d *DB) UpdateProvider(ctx context.Context, id int64, apiType, name, baseURL string, headerTimeoutSec sql.NullInt64, models []ProviderModel, replaceModels bool) error {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -260,7 +267,11 @@ func (d *DB) UpdateProvider(ctx context.Context, id int64, apiType, name, baseUR
 	if n == 0 {
 		return ErrNotFound
 	}
-	if _, err := tx.Exec(`UPDATE model_providers SET api_type = ?, name = ?, base_url = ? WHERE id = ?`, apiType, name, baseURL, id); err != nil {
+	var headerTimeout any
+	if headerTimeoutSec.Valid {
+		headerTimeout = headerTimeoutSec.Int64
+	}
+	if _, err := tx.Exec(`UPDATE model_providers SET api_type = ?, name = ?, base_url = ?, header_timeout_sec = ? WHERE id = ?`, apiType, name, baseURL, headerTimeout, id); err != nil {
 		return err
 	}
 	if replaceModels {

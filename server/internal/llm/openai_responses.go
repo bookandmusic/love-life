@@ -53,7 +53,7 @@ func buildResponsesBody(model string, req *ChatRequest, stream bool) map[string]
 	return body
 }
 
-func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
+func (openaiResponsesAdapter) Chat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest) (*ChatResponse, error) {
 	body := buildResponsesBody(model, req, false)
 
 	bodyBytes, err := json.Marshal(body)
@@ -67,7 +67,7 @@ func (openaiResponsesAdapter) Chat(ctx context.Context, baseURL, apiKey, model s
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -231,7 +231,7 @@ func buildResponsesTools(tools []Tool) []any {
 //
 // 参数分片按 item_id 分桶累积；output_item.done 到达时以它的完整串为准
 // （同一 item 只下发一次），因为增量只是「过程中的碎片」，done 才是权威结果。
-func (openaiResponsesAdapter) StreamChat(ctx context.Context, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
+func (openaiResponsesAdapter) StreamChat(ctx context.Context, hc *http.Client, baseURL, apiKey, model string, req *ChatRequest, onDelta func(Delta)) (string, error) {
 	body := buildResponsesBody(model, req, true)
 
 	bodyBytes, err := json.Marshal(body)
@@ -245,7 +245,7 @@ func (openaiResponsesAdapter) StreamChat(ctx context.Context, baseURL, apiKey, m
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 
-	res, err := openaiHTTP.Do(httpReq)
+	res, err := hc.Do(httpReq)
 	if err != nil {
 		return "", err
 	}

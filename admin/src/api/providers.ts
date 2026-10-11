@@ -58,6 +58,8 @@ export interface AiProvider {
   api_type: ApiProtocol
   name: string
   base_url: string
+  /** 等待上游响应头（首包）的超时秒数；null = 默认 30s。 */
+  header_timeout_sec: number | null
   has_key: boolean
   models: ModelEntry[]
 }
@@ -66,6 +68,8 @@ export interface ProviderPayload {
   api_type: ApiProtocol
   name?: string
   base_url: string
+  /** 秒；不传 = 默认 30s。 */
+  header_timeout_sec?: number
   models?: ModelEntry[]
 }
 

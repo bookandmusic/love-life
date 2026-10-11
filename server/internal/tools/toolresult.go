@@ -51,15 +51,15 @@ const (
 // 可勾选引用：Selectable 时客户端渲染选择框，勾选结果随下一条消息提交；
 // SinglePick 单选语义（地点候选「选哪一个」），缺省多选。
 type UIBlock struct {
-	Kind       string     `json:"kind"` // record_list | media_grid | place_candidates | media_groups | record_detail | stats
-	Title      string     `json:"title"`
-	Records    []UIRecord `json:"records"`
-	More       int        `json:"more,omitempty"` // 未展示条数（「还有 7 条」）
-	ResultID   string     `json:"result_id,omitempty"`
-	Selectable bool       `json:"selectable,omitempty"`
-	SinglePick bool       `json:"single_pick,omitempty"`
-	Total      int        `json:"total,omitempty"`    // 命中总数真值（0/未知省略）
-	Semantic   bool       `json:"semantic,omitempty"` // 语义检索结果：无稳定总数，客户端标注「按相关性截取，非全部命中」
+	Kind       string      `json:"kind"` // record_list | media_grid | place_candidates | media_groups | record_detail | stats
+	Title      string      `json:"title"`
+	Records    []UIRecord  `json:"records"`
+	More       int         `json:"more,omitempty"` // 未展示条数（「还有 7 条」）
+	ResultID   string      `json:"result_id,omitempty"`
+	Selectable bool        `json:"selectable,omitempty"`
+	SinglePick bool        `json:"single_pick,omitempty"`
+	Total      int         `json:"total,omitempty"`     // 命中总数真值（0/未知省略）
+	Semantic   bool        `json:"semantic,omitempty"`  // 语义检索结果：无稳定总数，客户端标注「按相关性截取，非全部命中」
 	Stats      []UIStat    `json:"stats,omitempty"`     // 统计概览卡：数字网格
 	Series     []UISeries  `json:"series,omitempty"`    // 统计概览卡：分布列表（最多两组）
 	Summaries  []UISummary `json:"summaries,omitempty"` // 统计概览卡：分布摘要（一行一条）
