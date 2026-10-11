@@ -110,7 +110,7 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
   border: 1px solid var(--rule);
   border-radius: 10px;
   padding: 0.35rem 0.45rem;
-  background: var(--bg);
+  background: var(--surface);
   cursor: pointer;
   min-width: 0;
 }
@@ -128,7 +128,7 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
   border: 1px solid var(--rule);
   border-radius: 10px;
   padding: 0.35rem 0.45rem;
-  background: var(--bg);
+  background: var(--surface);
 }
 .ui-stat-label {
   font-size: 0.75rem;
@@ -160,7 +160,6 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
 .ui-series-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 0.5rem;
   padding: 0.2rem 0;
   border-bottom: 1px solid var(--rule);

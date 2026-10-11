@@ -141,8 +141,11 @@ function retryMedia() {
   border: 1px solid var(--rule);
   border-radius: 10px; /* 卡片圆角下限（PRODUCT「字体与排版」；与全站卡片主流的 10px 一致） */
   padding: 0.75rem;
-  margin-bottom: 0.8rem;
-  max-width: 90%;
+  /* 铺满内容列：与气泡、工具行共享同一左/右边界（列宽上限由 MessageList「content-col」定）。
+     border-box：无全局 border-box 时 width:100% 会把 padding/border 溢出列宽 */
+  width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .card.executed {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { Bubble, UIRecord, UiBlockEmits } from '../../types/chat'
-import { Sparkles, Search, ChevronDown } from 'lucide-vue-next'
+import { Sparkles, ChevronDown, LoaderCircle, Check, XCircle } from 'lucide-vue-next'
 import { isImage, isVideo } from '../../utils/mediaMime'
 import { renderMarkdown } from '../../utils/markdown'
 import EmptyState from '../EmptyState.vue'
@@ -59,6 +59,30 @@ function stepSummary(steps: Bubble[]): string {
   return `已完成 ${steps.length} 步`
 }
 
+// 工具步骤图标按状态分档：运行中转圈、完成打勾、失败打叉——不再一律放大镜
+// （tool.start 只下发 call_id + 人话 label，不含工具名，故按状态而非类型分档）。
+function toolIcon(b: Bubble) {
+  if (b.toolStatus === 'running') return LoaderCircle
+  if (b.toolStatus === 'failed') return XCircle
+  return Check
+}
+
+// 渲染行守卫：正文/结果卡/思考/附件/引用/工具行/中断任一成立即渲染（纯媒体用户消息正文为空）
+function rowGuard(b: Bubble): boolean {
+  return !!(b.content || b.ui || b.reasoning || b.media?.length || b.quoted?.length || b.toolLabel || b.interrupted || b.cardID !== undefined)
+}
+
+// 气泡壳：纯卡片载体（只有 cardID、无正文/思考/结果卡）不渲染空壳，卡片接管该行
+function showShell(b: Bubble): boolean {
+  if (b.role === 'tool') return true
+  return !!(b.content || b.reasoning || b.ui || b.media?.length || b.quoted?.length)
+}
+
+// AI 标识一轮至多一次：仅带气泡壳的助手行显示；其余助手行用等宽占位保持左对齐
+function showAvatar(b: Bubble): boolean {
+  return b.role === 'assistant' && showShell(b)
+}
+
 // 与 UiBlock 共用同一事件契约（types/chat.ts「UiBlockEmits」），逐个转发给 ChatView
 const emit = defineEmits<UiBlockEmits>()
 
@@ -94,7 +118,8 @@ defineExpose({ scrollBottom })
     <template v-for="(row, i) in rows" :key="i">
       <!-- 多次工具调用聚合为一条可展开摘要（展开见每步人话状态，不是原始参数） -->
       <div v-if="row.kind === 'steps'" class="row assistant">
-        <span class="ai-avatar" title="AI 助手"><Sparkles :size="14" stroke-width="2" /></span>
+        <span class="avatar-slot" aria-hidden="true" />
+        <div class="content-col">
         <div class="bubble assistant steps-bubble">
           <button class="think-head" aria-label="展开/收起步骤" @click="stepsOpen[i] = !stepsOpen[i]">
             <span>{{ stepSummary(row.steps) }}</span>
@@ -102,7 +127,7 @@ defineExpose({ scrollBottom })
           </button>
           <div v-show="stepsOpen[i]" class="steps-body">
             <p v-for="(s, si) in row.steps" :key="si" class="step-line">
-              <Search :size="12" stroke-width="1.8" class="tool-icon" />
+              <component :is="toolIcon(s)" :size="12" stroke-width="1.8" class="tool-icon" />
               <span>{{ s.toolLabel || s.content }}</span>
             </p>
           </div>
@@ -119,15 +144,20 @@ defineExpose({ scrollBottom })
             @load-more="fwdMore"
           />
         </div>
+        </div>
       </div>
       <template v-else>
-      <!-- 正文/结果卡片/思考/附件/中断标记任一成立即需渲染：纯媒体用户消息正文为空，
+      <!-- 正文/结果卡片/思考/附件/引用/工具行/中断任一成立即需渲染：纯媒体用户消息正文为空，
            漏掉 media 会让它整条不可见（发图不说字的常见路径） -->
-      <div v-if="row.bubble.content || row.bubble.ui || row.bubble.reasoning || row.bubble.media?.length || row.bubble.quoted?.length || row.bubble.toolLabel || row.bubble.interrupted || row.bubble.cardID !== undefined" class="row" :class="row.bubble.role">
-        <span v-if="row.bubble.role === 'assistant'" class="ai-avatar" title="AI 助手">
-          <Sparkles :size="14" stroke-width="2" />
+      <div v-if="rowGuard(row.bubble)" class="row" :class="row.bubble.role">
+        <!-- AI 标识一轮至多一次：仅带气泡壳的助手行显示，其余助手行用等宽占位保持左对齐 -->
+        <span v-if="showAvatar(row.bubble)" class="ai-avatar" title="AI 助手">
+          <Sparkles :size="13" stroke-width="2" />
         </span>
-        <div class="bubble" :class="row.bubble.role">
+        <span v-else-if="row.bubble.role !== 'user'" class="avatar-slot" aria-hidden="true" />
+        <!-- 内容列：气泡、工具行、结果卡/确认卡同列堆叠，共享同一左边界与宽度上限 -->
+        <div class="content-col">
+        <div v-if="showShell(row.bubble)" class="bubble" :class="[row.bubble.role, { 'has-ui': !!row.bubble.ui }]">
         <div v-if="row.bubble.reasoning" class="think" :class="{ open: row.bubble.thinkOpen }">
           <button class="think-head" aria-label="展开/收起思考过程" @click="row.bubble.thinkOpen = !row.bubble.thinkOpen">
             <span>{{ row.bubble.thinkSeconds ? `已思考 ${row.bubble.thinkSeconds} 秒` : '思考中…' }}</span>
@@ -139,7 +169,7 @@ defineExpose({ scrollBottom })
         <div v-if="row.bubble.role === 'assistant' && row.bubble.content" class="md" v-html="renderMarkdown(row.bubble.content)" />
         <!-- 工具状态条：一行人话，不可展开（审计归后台）；进行中「正在…」（PRODUCT「过程呈现」） -->
         <p v-else-if="row.bubble.role === 'tool'" class="tool-line" :class="{ running: row.bubble.toolStatus === 'running' }">
-          <Search :size="13" stroke-width="1.8" class="tool-icon" />
+          <component :is="toolIcon(row.bubble)" :size="13" stroke-width="1.8" class="tool-icon" />
           <span>{{ row.bubble.toolStatus === 'running' ? `正在${row.bubble.toolLabel || row.bubble.content}…` : row.bubble.toolLabel || row.bubble.content }}</span>
         </p>
         <template v-else>{{ row.bubble.content }}</template>
@@ -165,15 +195,16 @@ defineExpose({ scrollBottom })
           @load-more="fwdMore"
         />
         </div>
+        <slot name="card" :bubble="row.bubble" />
+        </div>
       </div>
       <!-- 意外断线的残局不删用户消息，但得说明这里不会再有下文（否则界面看着像在等回复） -->
       <p v-if="row.bubble.interrupted" class="interrupted">回复已中断，可重新发送这一句。</p>
-      <slot name="card" :bubble="row.bubble" />
       </template>
     </template>
     <!-- 等待指示：流式进行且本轮还没有任何内容落泡 -->
     <div v-if="thinking" class="row assistant">
-      <span class="ai-avatar" title="AI 助手"><Sparkles :size="14" stroke-width="2" /></span>
+      <span class="avatar-slot" aria-hidden="true" />
       <div class="bubble assistant thinking-bubble"><span class="think-dot" /><span class="think-dot" /><span class="think-dot" /> 思考中…</div>
     </div>
     <p v-if="error" class="error">{{ error }}</p>
@@ -187,11 +218,13 @@ defineExpose({ scrollBottom })
   padding: 0.75rem 1rem;
   background: var(--ai-bg, var(--bg));
   min-height: 50vh;
+  /* 助手/用户内容列宽度上限：卡片行铺满此宽，文字气泡随内容收缩 */
+  --chat-col-max: 520px;
 }
 
 .row {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 0.4rem;
 }
 
@@ -199,17 +232,49 @@ defineExpose({ scrollBottom })
   justify-content: flex-end;
 }
 
+/* 间距分级：回合内紧凑、回合间（自用户消息起）明显留白，让眼睛把一段回复圈成一组 */
+.row + .row {
+  margin-top: 0.375rem;
+}
+.row.user {
+  margin-top: 1.25rem;
+}
+/* AI 标识：柔和单色（不再粉紫强渐变），一轮至多一次，克制不抢视觉焦点 */
 .ai-avatar {
   width: 26px;
   height: 26px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary), var(--sem-purple));
-  color: #fff;
+  background: color-mix(in srgb, var(--primary) 16%, transparent);
+  color: var(--primary-deep);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  margin-bottom: 0.6rem;
+  /* 顶对齐：与回合首行光学对齐，不再贴气泡下沿 */
+  margin-top: 0.25rem;
+}
+
+/* 无标识的助手行占位：与头像等宽，保证各助手行左边界对齐 */
+.avatar-slot {
+  width: 26px;
+  flex-shrink: 0;
+}
+
+/* 内容列：气泡、工具行、结果卡/确认卡同列堆叠，共享同一左边界与宽度上限；
+   列本身设上限，卡片行铺满列宽（见下 .bubble.has-ui / .bubble.tool / .steps-bubble），
+   文字气泡仍随内容收缩，不再出现「左齐右乱、卡片窄成一栏」 */
+.content-col {
+  flex: 1;
+  min-width: 0;
+  max-width: min(100%, var(--chat-col-max, 520px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+/* 用户行：气泡靠右，与 AI 侧镜像 */
+.row.user .content-col {
+  align-items: flex-end;
 }
 
 .quote-echo {
@@ -252,13 +317,22 @@ defineExpose({ scrollBottom })
 }
 
 .bubble {
-  max-width: 80%;
-  margin-bottom: 0.6rem;
+  /* 宽度由内容决定、上限为内容列宽（卡片行另铺满，见下） */
+  max-width: 100%;
   padding: 0.6rem 0.9rem;
   border-radius: 18px;
   font-size: 0.9375rem;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 卡片行铺满内容列：结果卡/统计卡/确认卡与工具行随列宽对齐，右边缘不再参差。
+   border-box：无全局 border-box 时 width:100% 会把 padding/border 溢出列宽 */
+.bubble.has-ui,
+.bubble.tool,
+.steps-bubble {
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .bubble-media {
@@ -323,24 +397,19 @@ defineExpose({ scrollBottom })
   margin-top: 4px;
 }
 
-/* 思考区（助手气泡顶部）：默认收起，点标题展开 */
+/* 思考区（助手气泡顶部）：去框——安静一行灰字 + 箭头，不再框套框 */
 .think {
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  background: var(--ai-bg, var(--bg));
-  margin-bottom: 0.4rem;
-  overflow: hidden;
+  margin-bottom: 0.35rem;
 }
 .think-head {
-  width: 100%;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 4px;
   border: none;
   background: none;
   font-size: 0.75rem;
   color: var(--muted-ink);
-  padding: 0.35rem 0.6rem;
+  padding: 0;
   cursor: pointer;
 }
 .think-chevron {
@@ -351,7 +420,7 @@ defineExpose({ scrollBottom })
 }
 .think-body {
   margin: 0;
-  padding: 0.1rem 0.6rem 0.55rem;
+  padding: 0.1rem 0 0.35rem;
   font-size: 0.75rem;
   color: var(--muted-ink);
   white-space: pre-wrap;
