@@ -64,6 +64,14 @@ export interface UIBlock {
   series?: UISeries[] // 统计概览卡：分布列表（按年 + 城市 Top 10）
 }
 
+/** 结果卡组件的事件契约：UiBlock 发出、MessageList 原样转发、ChatView 接收，三处共用一份。 */
+export interface UiBlockEmits {
+  (e: 'toggle-pick', resultId: string, rec: UIRecord, single: boolean): void
+  (e: 'toggle-open', key: string): void
+  (e: 'open-media', rec: UIRecord): void
+  (e: 'load-more', ui: UIBlock | undefined): void
+}
+
 // 随消息提交的引用（仅当前会话）。结果集引用带 result_id；单条引用带 kind+id。
 export interface QuoteRef {
   result_id?: string

@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { Bubble, UIRecord } from '../../types/chat'
+import type { Bubble, UIRecord, UiBlockEmits } from '../../types/chat'
 import { Sparkles, Search, ChevronDown } from 'lucide-vue-next'
-import { mediaSrc } from '../../types'
 import { isImage, isVideo } from '../../utils/mediaMime'
 import { renderMarkdown } from '../../utils/markdown'
 import EmptyState from '../EmptyState.vue'
+import UiBlock from './UiBlock.vue'
 
 const props = defineProps<{
   bubbles: Bubble[]
@@ -17,6 +17,8 @@ const props = defineProps<{
   unavailableReason?: string
   thinking?: boolean
   welcome?: string
+  // 本轮流式起点（bubbles 下标）：≥ 该下标的工具气泡不聚合（进行中每步一行，PRODUCT「过程呈现」）
+  liveFrom?: number
 }>()
 
 // 渲染行：连续的工具步骤合并为一条「已完成 N 步」可展开摘要（PRODUCT「最终形态」：
@@ -27,6 +29,7 @@ type RenderRow =
 
 const rows = computed<RenderRow[]>(() => {
   const list = props.bubbles
+  const live = props.liveFrom ?? -1
   const out: RenderRow[] = []
   let i = 0
   while (i < list.length) {
@@ -35,13 +38,16 @@ const rows = computed<RenderRow[]>(() => {
       i++
       continue
     }
+    const start = i
     const run: Bubble[] = []
     while (i < list.length && list[i].role === 'tool') {
       run.push(list[i])
       i++
     }
-    if (run.length === 1) out.push({ kind: 'bubble', bubble: run[0] })
-    else out.push({ kind: 'steps', steps: run })
+    // 流式进行中的本轮不聚合：每步一行、结果卡立即可见（PRODUCT「过程呈现」进行中口径）
+    if (run.length === 1 || (live >= 0 && start >= live)) {
+      for (const b of run) out.push({ kind: 'bubble', bubble: b })
+    } else out.push({ kind: 'steps', steps: run })
   }
   return out
 })
@@ -53,25 +59,21 @@ function stepSummary(steps: Bubble[]): string {
   return `已完成 ${steps.length} 步`
 }
 
-const emit = defineEmits<{
-  (e: 'toggle-pick', resultId: string, rec: UIRecord, single: boolean): void
-  (e: 'toggle-open', key: string): void
-  (e: 'open-media', rec: UIRecord): void
-  (e: 'load-more', ui: Bubble['ui']): void
-}>()
+// 与 UiBlock 共用同一事件契约（types/chat.ts「UiBlockEmits」），逐个转发给 ChatView
+const emit = defineEmits<UiBlockEmits>()
 
-function recKey(resultId: string, rec: UIRecord): string {
-  if (rec.group_key) return `${resultId}:group:${rec.group_key}`
-  return `${resultId}:${rec.id}`
+// UiBlock 的事件签名与本级 emit 相同，逐个转发给 ChatView
+function fwdPick(resultId: string, rec: UIRecord, single: boolean) {
+  emit('toggle-pick', resultId, rec, single)
 }
-
-function onRec(ui: Bubble['ui'], rec: UIRecord) {
-  if (!ui) return
-  if (rec.thumb_url && (ui.kind === 'media_grid' || rec.kind === 'media')) {
-    emit('open-media', rec)
-    return
-  }
-  emit('toggle-open', recKey(ui.result_id || '', rec))
+function fwdOpen(key: string) {
+  emit('toggle-open', key)
+}
+function fwdMedia(rec: UIRecord) {
+  emit('open-media', rec)
+}
+function fwdMore(ui: Bubble['ui']) {
+  emit('load-more', ui)
 }
 
 // 消息流容器归本组件持有：父级只需「滚到底」这一个能力，经 expose 提供
@@ -104,6 +106,18 @@ defineExpose({ scrollBottom })
               <span>{{ s.toolLabel || s.content }}</span>
             </p>
           </div>
+          <!-- 步骤摘要行常显结果卡（PRODUCT「过程呈现」最终形态：卡片不随聚合消失） -->
+          <UiBlock
+            v-for="(s, si) in row.steps"
+            :key="`u${si}`"
+            :ui="s.ui"
+            :picked-keys="pickedKeys"
+            :open-keys="openKeys"
+            @toggle-pick="fwdPick"
+            @toggle-open="fwdOpen"
+            @open-media="fwdMedia"
+            @load-more="fwdMore"
+          />
         </div>
       </div>
       <template v-else>
@@ -116,17 +130,17 @@ defineExpose({ scrollBottom })
         <div class="bubble" :class="row.bubble.role">
         <div v-if="row.bubble.reasoning" class="think" :class="{ open: row.bubble.thinkOpen }">
           <button class="think-head" aria-label="展开/收起思考过程" @click="row.bubble.thinkOpen = !row.bubble.thinkOpen">
-            <span>已思考 {{ row.bubble.thinkSeconds ? `${row.bubble.thinkSeconds} 秒` : '' }}</span>
+            <span>{{ row.bubble.thinkSeconds ? `已思考 ${row.bubble.thinkSeconds} 秒` : '思考中…' }}</span>
             <ChevronDown :size="13" stroke-width="2" class="think-chevron" />
           </button>
           <p v-show="row.bubble.thinkOpen" class="think-body">{{ row.bubble.reasoning }}</p>
         </div>
         <!-- eslint-disable-next-line vue/no-v-html -- renderMarkdown: markdown-it html:false + DOMPurify 白名单消毒后才入 v-html -->
         <div v-if="row.bubble.role === 'assistant' && row.bubble.content" class="md" v-html="renderMarkdown(row.bubble.content)" />
-        <!-- 工具状态条：一行人话，不可展开（审计归后台） -->
-        <p v-else-if="row.bubble.role === 'tool'" class="tool-line">
+        <!-- 工具状态条：一行人话，不可展开（审计归后台）；进行中「正在…」（PRODUCT「过程呈现」） -->
+        <p v-else-if="row.bubble.role === 'tool'" class="tool-line" :class="{ running: row.bubble.toolStatus === 'running' }">
           <Search :size="13" stroke-width="1.8" class="tool-icon" />
-          <span>{{ row.bubble.toolLabel || row.bubble.content }}</span>
+          <span>{{ row.bubble.toolStatus === 'running' ? `正在${row.bubble.toolLabel || row.bubble.content}…` : row.bubble.toolLabel || row.bubble.content }}</span>
         </p>
         <template v-else>{{ row.bubble.content }}</template>
         <p v-if="row.bubble.quoted?.length" class="quote-echo">
@@ -141,72 +155,15 @@ defineExpose({ scrollBottom })
             <span v-else class="media-file">{{ m.name }}</span>
           </template>
         </div>
-        <div v-if="row.bubble.ui" class="ui-block" :class="row.bubble.ui.kind">
-          <p class="ui-title">{{ row.bubble.ui.title }}</p>
-          <!-- 统计概览卡：数字网格 + 两组分布列表；不做图表、不可勾选（PRODUCT「卡片体系」统计概览卡） -->
-          <template v-if="row.bubble.ui.kind === 'stats'">
-            <div v-if="row.bubble.ui.stats?.length" class="ui-stats">
-              <div v-for="(st, si) in row.bubble.ui.stats" :key="si" class="ui-stat">
-                <span class="ui-stat-label">{{ st.label }}</span>
-                <b class="ui-stat-value">{{ st.value }}</b>
-                <span v-if="st.hint" class="ui-stat-hint">{{ st.hint }}</span>
-              </div>
-            </div>
-            <div v-for="(se, si) in row.bubble.ui.series ?? []" :key="si" class="ui-series">
-              <p class="ui-series-title">{{ se.title }}</p>
-              <p v-if="!se.points.length" class="ui-empty">没有内容</p>
-              <ul v-else class="ui-series-list">
-                <li v-for="(pt, pi) in se.points" :key="pi" class="ui-series-row">
-                  <span class="ui-series-label">{{ pt.label }}</span>
-                  <span class="ui-series-count">{{ pt.count }}</span>
-                </li>
-              </ul>
-            </div>
-          </template>
-          <!-- records 可能是服务端下发的 null（统计卡 Records 为 nil → "records":null），取值统一走 ?? []，
-               否则对 null 取 .length 直接抛 TypeError 让整条消息流渲染失败 -->
-          <template v-else-if="(row.bubble.ui.records ?? []).length">
-            <div
-              v-for="(rec, ri) in (row.bubble.ui.records ?? [])"
-              :key="ri"
-              class="ui-rec"
-              @click="onRec(row.bubble.ui, rec)"
-            >
-              <input
-                v-if="row.bubble.ui.selectable && row.bubble.ui.result_id"
-                class="pick"
-                type="checkbox"
-                :checked="pickedKeys.includes(recKey(row.bubble.ui.result_id, rec))"
-                @click.stop="emit('toggle-pick', row.bubble.ui.result_id, rec, !!row.bubble.ui.single_pick)"
-              />
-              <img
-                v-if="rec.thumb_url"
-                class="thumb"
-                :src="mediaSrc({ thumb_url: rec.thumb_url }, 'thumb')"
-                alt=""
-                loading="lazy"
-                @click.stop="emit('open-media', rec)"
-              />
-              <span class="ui-text" :class="{ open: openKeys.includes(recKey(row.bubble.ui.result_id || '', rec)) }">{{ rec.text || '（无文字）' }}</span>
-              <span v-if="rec.date" class="ui-meta">{{ rec.date }}</span>
-              <span v-if="rec.badge" class="ui-badge">{{ rec.badge }}</span>
-            </div>
-          </template>
-          <p v-else class="ui-empty">没有内容</p>
-          <!-- 列表卡计数与翻页：真实总数 + 真实余量（语义检索无稳定总数时不显示假数） -->
-          <p v-if="row.bubble.ui.more" class="ui-more">
-            <template v-if="row.bubble.ui.total">共 {{ row.bubble.ui.total }} 条 · 还有 {{ row.bubble.ui.more }} 条</template>
-            <template v-else>还有 {{ row.bubble.ui.more }} 条</template>
-          </p>
-          <!-- 语义检索无稳定总数：标注口径而非给假数（PRODUCT「卡片体系」） -->
-          <p v-if="row.bubble.ui.semantic" class="ui-more">按相关性截取，非全部命中</p>
-          <button
-            v-if="row.bubble.ui.more && row.bubble.ui.result_id && row.bubble.ui.selectable"
-            class="ui-more-btn"
-            type="button"
-            @click="emit('load-more', row.bubble.ui)"
-          >再看几条</button>
-        </div>
+        <UiBlock
+          :ui="row.bubble.ui"
+          :picked-keys="pickedKeys"
+          :open-keys="openKeys"
+          @toggle-pick="fwdPick"
+          @toggle-open="fwdOpen"
+          @open-media="fwdMedia"
+          @load-more="fwdMore"
+        />
         </div>
       </div>
       <!-- 意外断线的残局不删用户消息，但得说明这里不会再有下文（否则界面看着像在等回复） -->
@@ -268,153 +225,6 @@ defineExpose({ scrollBottom })
   padding: 0.1rem 0.45rem;
 }
 
-.ui-block {
-  margin-top: 0.45rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-.ui-title {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-}
-.ui-rec {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  padding: 0.35rem 0.45rem;
-  background: var(--bg);
-  cursor: pointer;
-  min-width: 0;
-}
-/* 统计概览卡：数字网格 + 分布列表，沿用聊天区既有卡片风格（--surface / --rule / 圆角 10px） */
-.ui-stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.35rem;
-}
-.ui-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-  min-width: 0;
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  padding: 0.35rem 0.45rem;
-  background: var(--bg);
-}
-.ui-stat-label {
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-}
-.ui-stat-value {
-  font-size: 0.9375rem;
-  color: var(--ink);
-}
-.ui-stat-hint {
-  font-size: 0.6875rem;
-  color: var(--muted-ink);
-}
-.ui-series {
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-}
-.ui-series-title {
-  margin: 0;
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-}
-.ui-series-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.ui-series-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
-  padding: 0.2rem 0;
-  border-bottom: 1px solid var(--rule);
-  font-size: 0.8125rem;
-}
-.ui-series-row:last-child {
-  border-bottom: none;
-}
-.ui-series-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink);
-}
-.ui-series-count {
-  flex-shrink: 0;
-  color: var(--muted-ink);
-}
-.ui-block.media_grid {
-  flex-direction: row;
-  flex-wrap: wrap;
-}
-.ui-block.media_grid .ui-rec {
-  width: 108px;
-  flex-direction: column;
-  align-items: stretch;
-  position: relative;
-  padding: 0;
-  overflow: hidden;
-}
-.pick {
-  flex-shrink: 0;
-}
-.ui-block.media_grid .pick {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  z-index: 1;
-}
-.thumb {
-  width: 42px;
-  height: 42px;
-  border-radius: 8px;
-  object-fit: cover;
-  flex-shrink: 0;
-}
-.ui-block.media_grid .thumb {
-  width: 108px;
-  height: 108px;
-  border-radius: 0;
-}
-.ui-text {
-  font-size: 0.8125rem;
-  color: var(--ink);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  min-width: 0;
-}
-.ui-text.open {
-  display: block;
-  -webkit-line-clamp: unset;
-  white-space: pre-wrap;
-}
-.ui-meta,
-.ui-badge,
-.ui-more,
-.ui-empty {
-  font-size: 0.75rem;
-  color: var(--muted-ink);
-  flex-shrink: 0;
-}
-.ui-more,
-.ui-empty {
-  margin: 0;
-}
 /* 无本机预览时的附件占位（刷新回显：只剩文件名） */
 .media-file {
   display: inline-block;
@@ -424,22 +234,8 @@ defineExpose({ scrollBottom })
   color: var(--muted-ink);
   font-size: 0.75rem;
 }
-.ui-more-btn {
-  align-self: flex-start;
-  margin-top: 0.35rem;
-  padding: 0.25rem 0.7rem;
-  border: 1px solid var(--line, rgba(0, 0, 0, 0.12));
-  border-radius: 999px;
-  background: transparent;
-  color: var(--muted-ink);
-  font-size: 0.75rem;
-  cursor: pointer;
-}
-.ui-more-btn:hover {
-  color: var(--ink);
-  border-color: currentColor;
-}
-/* 步骤聚合摘要（多步调用折叠为一条，展开见每步人话） */
+
+/* 步骤聚合摘要（多步调用折叠为一条，展开见每步人话）；结果卡渲染已抽至 UiBlock.vue */
 .steps-bubble {
   padding: 0.4rem 0.7rem;
 }
@@ -508,6 +304,11 @@ defineExpose({ scrollBottom })
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+}
+
+/* 进行中步骤：与运行态图标同步呼吸（PRODUCT「过程呈现」正在…） */
+.tool-line.running .tool-icon {
+  animation: think-bounce 1.2s infinite;
 }
 
 .tool-icon {

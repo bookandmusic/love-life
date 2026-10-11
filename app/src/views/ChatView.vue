@@ -78,6 +78,9 @@ let turnStartIdx = 0
 let turnCardIds: number[] = []
 const chips = ref<string[]>([])
 let abortCtrl: AbortController | null = null
+// 本轮流式起点（bubbles 下标）：进行中的本轮工具气泡不聚合（PRODUCT「过程呈现」进行中口径），
+// 流式结束即清——结束后照常聚合成「已完成 N 步」。独立于 turnStartIdx（它归中止回滚逻辑管）。
+const liveFrom = ref(-1)
 
 // ---------- 多会话 ----------
 // currentSessionId=0 为「草稿态」：抽屉点新会话后、首条消息送达前，本地无会话；
@@ -585,11 +588,18 @@ function closeThinkSeg(seconds?: number) {
   segStartedAt = 0
 }
 
+// 收掉当前思考段并刷新秒数，但**不折叠**：思考段的可见期到「回答开始」为止
+// （PRODUCT「消息呈现」），工具往返期间思考区保持展开（AI模式设计「过程收起」进行中口径）。
+function refreshThinkSeconds(seconds?: number) {
+  closeThinkSeg(seconds)
+  if (!turnBubble || !turnBubble.reasoning) return
+  turnBubble.thinkSeconds = displayThinkSeconds(thinkSecondsSum)
+}
+
 function collapseThink() {
-  closeThinkSeg()
+  refreshThinkSeconds()
   if (!turnBubble || !turnBubble.reasoning) return
   turnBubble.thinkOpen = false
-  turnBubble.thinkSeconds = displayThinkSeconds(thinkSecondsSum)
 }
 
 function ensureTurn(): Bubble {
@@ -626,6 +636,7 @@ async function send(text?: string) {
   currentTurnId = ''
   turnCardIds = []
   turnStartIdx = bubbles.value.length
+  liveFrom.value = turnStartIdx
 
   // 4.3：支持中止请求
   abortCtrl = new AbortController()
@@ -694,9 +705,9 @@ async function send(text?: string) {
           thinking.value = false
         } else if (ev === 'thinking.end') {
           ensureTurn()
-          // 服务端给的秒数为准；收口后 collapseThink 的兜底不会再算一次
-          closeThinkSeg(typeof data.seconds === 'number' ? data.seconds : undefined)
-          collapseThink()
+          // 服务端给的秒数为准；收口后 collapseThink 的兜底不会再算一次。
+          // 只收段不折叠：折叠时刻是「回答开始」（PRODUCT「消息呈现」）。
+          refreshThinkSeconds(typeof data.seconds === 'number' ? data.seconds : undefined)
         } else if (ev === 'answer.delta') {
           const chunk = typeof data.text === 'string' ? data.text : ''
           if (chunk) ensureTurn().content += chunk
@@ -728,8 +739,8 @@ async function send(text?: string) {
             if (data.ui) b.ui = data.ui
           }
           thinking.value = false
-          collapseThink()
-          // 工具往返 = 轮界：下一段思考属于新一轮，落库时也会是与本条分开的另一条 part
+          // 工具往返不是折叠时刻：思考区保持展开，下一轮思考接着逐字出现。
+          // 只推进轮界标记（分段口径见「过程收起（客户端渲染口径）」）。
           roundHasThink = false
         } else if (ev === 'proposal') {
           collapseThink()
@@ -762,9 +773,10 @@ async function send(text?: string) {
     }
     collapseThink()
   } catch (e) {
+    // 中止与非中止异常都收口：思考区不得永远停在展开态（表头空秒数）
+    collapseThink()
     if (e instanceof Error && e.name === 'AbortError') {
       // 用户主动停止：不算错误
-      collapseThink()
     } else {
       error.value = errText(e, '发送失败')
     }
@@ -775,6 +787,7 @@ async function send(text?: string) {
     // 本轮正常答完（含以待确认收尾）后，它就不再是可中止的那一轮
     currentTurnId = ''
     turnStartIdx = 0
+    liveFrom.value = -1
     busy.value = false
   }
 }
@@ -965,6 +978,7 @@ onBeforeUnmount(() => {
       :unavailable-reason="aiUnavailableReason"
       :welcome="welcomeText"
       :thinking="thinking"
+      :live-from="liveFrom"
       @toggle-pick="togglePick"
       @toggle-open="toggleOpen"
       @open-media="openMedia"
