@@ -2464,7 +2464,42 @@ func getSpaceStatsTool() *Tool {
 			}
 			series = append(series, UISeries{Title: "城市 Top", Points: cityPoints})
 
-			ui := &UIBlock{Kind: "stats", Title: "我们的空间", Stats: stats, Series: series}
+			// 分布摘要（一行一条，label + text）。数据源与 series 相同（byYear 4 位年份全集、cities Top 10）；
+			// 0 条时不下发该条。
+			var summaries []UISummary
+			fullYears := make([]UISeriesPoint, 0, len(byYear))
+			for _, pc := range byYear {
+				if len(pc.Period) == 4 {
+					fullYears = append(fullYears, UISeriesPoint{Label: pc.Period, Count: int(pc.Count)})
+				}
+			}
+			if len(fullYears) > 0 {
+				total := 0
+				for _, p := range fullYears {
+					total += p.Count
+				}
+				first := fullYears[0].Label
+				last := fullYears[len(fullYears)-1].Label
+				var text string
+				if len(fullYears) == 1 {
+					text = fmt.Sprintf("%s · 共 %d 条", first, total)
+				} else {
+					text = fmt.Sprintf("%s–%s · %d 年共 %d 条", first, last, len(fullYears), total)
+				}
+				summaries = append(summaries, UISummary{Label: "按年", Text: text})
+			}
+			if len(cities) > 0 {
+				top := cities[0]
+				var text string
+				if len(cities) == 1 {
+					text = fmt.Sprintf("1 城 · %s（%d）", top.City, top.Count)
+				} else {
+					text = fmt.Sprintf("走过 %d 城 · %s最多（%d）", len(cities), top.City, top.Count)
+				}
+				summaries = append(summaries, UISummary{Label: "城市", Text: text})
+			}
+
+			ui := &UIBlock{Kind: "stats", Title: "我们的空间", Stats: stats, Series: series, Summaries: summaries}
 			// ModelText 只给增量数字（常驻事实四项不重复）；近 12 个月分布只进这里
 			// （卡上 series 只放按年 + 城市 Top 10，三组列表全上卡会顶满对话流）。
 			mt := fmt.Sprintf("空间概览：动态 %d 条（今年 %d，本月 %d）；媒体 %d 个（照片 %d / 视频 %d / 录音 %d，未归档 %d）；手动相册 %d 册（已归档 %d 张）；"+

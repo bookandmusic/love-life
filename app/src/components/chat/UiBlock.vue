@@ -30,25 +30,33 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
 <template>
   <div v-if="ui" class="ui-block" :class="ui.kind">
     <p class="ui-title">{{ ui.title }}</p>
-    <!-- 统计概览卡：数字网格 + 两组分布列表；不做图表、不可勾选（PRODUCT「卡片体系」统计概览卡） -->
+    <!-- 统计概览卡：数字先行（数字大粗在上、label 小在下）+ 两组分布列表；不做图表、不可勾选（PRODUCT「卡片体系」统计概览卡） -->
     <template v-if="ui.kind === 'stats'">
       <div v-if="ui.stats?.length" class="ui-stats">
         <div v-for="(st, si) in ui.stats" :key="si" class="ui-stat">
-          <span class="ui-stat-label">{{ st.label }}</span>
           <b class="ui-stat-value">{{ st.value }}</b>
+          <span class="ui-stat-label">{{ st.label }}</span>
           <span v-if="st.hint" class="ui-stat-hint">{{ st.hint }}</span>
         </div>
       </div>
-      <div v-for="(se, si) in ui.series ?? []" :key="si" class="ui-series">
-        <p class="ui-series-title">{{ se.title }}</p>
-        <p v-if="!se.points.length" class="ui-empty">没有内容</p>
-        <ul v-else class="ui-series-list">
-          <li v-for="(pt, pi) in se.points" :key="pi" class="ui-series-row">
-            <span class="ui-series-label">{{ pt.label }}</span>
-            <span class="ui-series-count">{{ pt.count }}</span>
-          </li>
-        </ul>
+      <div v-if="ui.summaries?.length" class="ui-summaries">
+        <p v-for="(s, si) in ui.summaries" :key="si" class="ui-summary">
+          <span class="ui-summary-label">{{ s.label }}</span>
+          <span class="ui-summary-text">{{ s.text }}</span>
+        </p>
       </div>
+      <template v-else-if="ui.series">
+        <div v-for="(se, si) in ui.series ?? []" :key="si" class="ui-series">
+          <p class="ui-series-title">{{ se.title }}</p>
+          <p v-if="!se.points.length" class="ui-empty">没有内容</p>
+          <ul v-else class="ui-series-list">
+            <li v-for="(pt, pi) in se.points" :key="pi" class="ui-series-row">
+              <span class="ui-series-label">{{ pt.label }}</span>
+              <span class="ui-series-count">{{ pt.count }}</span>
+            </li>
+          </ul>
+        </div>
+      </template>
     </template>
     <!-- records 可能是服务端下发的 null（统计卡 Records 为 nil → "records":null），取值统一走 ?? []，
          否则对 null 取 .length 直接抛 TypeError 让整条消息流渲染失败 -->
@@ -127,20 +135,45 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
   min-width: 0;
   border: 1px solid var(--rule);
   border-radius: 10px;
-  padding: 0.35rem 0.45rem;
+  padding: 0.5rem 0.6rem;
   background: var(--surface);
+}
+/* 数字先行：大粗在上，label 小字在下 */
+.ui-stat-value {
+  font-size: 1.25rem;
+  font-weight: 600;
+  color: var(--ink);
+  line-height: 1.2;
 }
 .ui-stat-label {
   font-size: 0.75rem;
   color: var(--muted-ink);
 }
-.ui-stat-value {
-  font-size: 0.9375rem;
-  color: var(--ink);
-}
 .ui-stat-hint {
   font-size: 0.6875rem;
   color: var(--muted-ink);
+}
+/* 统计概览卡分布摘要：一行一条，label 小字 muted + text 主字 ink；比 series 更安静（无底色无描边） */
+.ui-summaries {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+.ui-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.2rem 0;
+  font-size: 0.8125rem;
+}
+.ui-summary-label {
+  font-size: 0.75rem;
+  color: var(--muted-ink);
+  flex-shrink: 0;
+}
+.ui-summary-text {
+  color: var(--ink);
 }
 .ui-series {
   display: flex;
@@ -159,16 +192,21 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
 }
 .ui-series-row {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 0.5rem;
   padding: 0.2rem 0;
-  border-bottom: 1px solid var(--rule);
   font-size: 0.8125rem;
 }
-.ui-series-row:last-child {
-  border-bottom: none;
+/* label 与 count 之间点线连接：flex-grow 虚线 */
+.ui-series-row::after {
+  content: '';
+  order: 2;
+  flex: 1;
+  border-bottom: 1px dotted var(--rule);
+  transform: translateY(-2px);
 }
 .ui-series-label {
+  order: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -176,6 +214,7 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
   color: var(--ink);
 }
 .ui-series-count {
+  order: 3;
   flex-shrink: 0;
   color: var(--muted-ink);
 }

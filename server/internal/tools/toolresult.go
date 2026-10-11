@@ -60,13 +60,14 @@ type UIBlock struct {
 	SinglePick bool       `json:"single_pick,omitempty"`
 	Total      int        `json:"total,omitempty"`    // 命中总数真值（0/未知省略）
 	Semantic   bool       `json:"semantic,omitempty"` // 语义检索结果：无稳定总数，客户端标注「按相关性截取，非全部命中」
-	Stats      []UIStat   `json:"stats,omitempty"`    // 统计概览卡：数字网格
-	Series     []UISeries `json:"series,omitempty"`   // 统计概览卡：分布列表（最多两组）
+	Stats      []UIStat    `json:"stats,omitempty"`     // 统计概览卡：数字网格
+	Series     []UISeries  `json:"series,omitempty"`    // 统计概览卡：分布列表（最多两组）
+	Summaries  []UISummary `json:"summaries,omitempty"` // 统计概览卡：分布摘要（一行一条）
 }
 
-// UIStat / UISeries 统计概览卡载荷（get_space_stats 专用）：数字网格 + 分布列表。
-// value 由服务端拼好单位，客户端不做运算；卡上只放两组 series（按年 + 城市 Top 10），
-// 近 12 个月分布只进 ModelText（PRODUCT「卡片体系」统计概览卡）。
+// UIStat / UISeries / UISummary 统计概览卡载荷（get_space_stats 专用）：数字网格 + 分布列表 + 分布摘要。
+// value 由服务端拼好单位，客户端不做运算；卡上正文放分布摘要（Summaries，一行一条），
+// series 仅作旧数据回显兼容（PRODUCT「卡片体系」统计概览卡）。
 type UIStat struct {
 	Label string `json:"label"`
 	Value string `json:"value"` // 服务端拼好单位（如「320 条」「12 城」）
@@ -81,6 +82,12 @@ type UISeries struct {
 type UISeriesPoint struct {
 	Label string `json:"label"`
 	Count int    `json:"count"`
+}
+
+// UISummary 分布摘要的一行（label + text），如 {Label: "按年", Text: "2024–2026 · 3 年共 498 条"}。
+type UISummary struct {
+	Label string `json:"label"`
+	Text  string `json:"text"`
 }
 
 // UIRecord 统一条目形状。GroupKey 仅 media_groups 用：勾选分组时引用条携带它

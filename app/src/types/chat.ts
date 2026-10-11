@@ -62,6 +62,7 @@ export interface UIBlock {
   single_pick?: boolean
   stats?: UIStat[] // 统计概览卡：数字网格
   series?: UISeries[] // 统计概览卡：分布列表（按年 + 城市 Top 10）
+  summaries?: { label: string; text: string }[] // 统计概览卡：分布摘要（一行一条，label + text）
 }
 
 /** 结果卡组件的事件契约：UiBlock 发出、MessageList 原样转发、ChatView 接收，三处共用一份。 */
@@ -84,6 +85,10 @@ export interface QuoteRef {
 
 export interface Bubble {
   role: 'user' | 'assistant' | 'tool'
+  // 段落种类：think=思考段（reasoning 累积，可折叠）、text=正文段（content 累积）、
+  // tool=工具步骤行（role:'tool' 补 kind 标记）、card=确认卡载体（cardID 挂在其上）。
+  // undefined = 历史回显的整泡消息（兼容现行形态）。
+  kind?: 'think' | 'text' | 'tool' | 'card'
   content: string
   cardID?: number
   // 气泡内渲染的媒体：本机选中的带 previewUrl（blob URL）；历史回显只有元数据（previewUrl 空）
@@ -98,6 +103,8 @@ export interface Bubble {
   localMedia?: MediaView[]
   quoted?: QuoteRef[]
   interrupted?: boolean
+  // 中断残局所属轮次（历史回显带出）：「编辑重发」据它调 DELETE /chat/turns/{id} 回收残局
+  interruptedTurnId?: string
 }
 
 export interface AttachmentRef {
