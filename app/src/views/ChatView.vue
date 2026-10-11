@@ -693,8 +693,12 @@ function refreshThinkSeconds(seconds?: number) {
 
 function collapseThink() {
   refreshThinkSeconds()
-  if (!curThink || !curThink.reasoning) return
-  curThink.thinkOpen = false
+  // 折叠**所有**打开的思考段：thinking.end 已把 curThink 收空（只收段不折叠），
+  // 回答开始时只扫 curThink 会早退成空操作，已收口的段永远折不上
+  // （AI模式设计「过程收起」：回答开始即折叠）
+  for (const b of bubbles.value) {
+    if (b.kind === 'think' && b.thinkOpen) b.thinkOpen = false
+  }
 }
 
 async function send(text?: string) {
