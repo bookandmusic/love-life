@@ -412,7 +412,7 @@ onMounted(loadAll)
 
     <AppModal v-if="avatarTarget" :title="`上传头像 — ${avatarTarget.username}`" @close="avatarTarget = null">
       <div class="flex" style="flex-direction: column; gap: 14px">
-        <p class="form-hint">支持 jpg/png/webp，建议正方形；最大 5 MiB。此入口仅后台使用，头像独立存储，不占用动态媒体配额。</p>
+        <p class="form-hint">支持 jpg/png/webp，建议正方形。此入口仅后台使用，头像独立存储，不占用动态媒体配额。</p>
         <div class="avatar-preview-row">
           <img v-if="avatarTarget.avatar" :src="avatarTarget.avatar" :alt="avatarTarget.username" class="avatar-thumb" />
           <span v-else class="avatar-empty">当前无头像</span>

@@ -263,9 +263,10 @@ func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "无效的用户 ID")
 		return
 	}
-	// 5 MiB 上限（头像无需原图大文件）
+	// 5 MiB 是**内存阈值**（超出部分溢写系统临时目录），不是文件大小上限；
+	// 头像通道无大小限制，传多大都接受。
 	if err := r.ParseMultipartForm(5 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, "上传解析失败（最大 5 MiB）")
+		writeError(w, http.StatusBadRequest, "上传解析失败")
 		return
 	}
 	file, header, err := r.FormFile("avatar")
