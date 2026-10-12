@@ -32,7 +32,8 @@ func genJPEG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-func uploadMedia(t *testing.T, baseURL, token, filename string, content []byte) (string, int) {
+// uploadRaw 上传并返回原始响应（需读状态码与错误文案时用）。
+func uploadRaw(t *testing.T, baseURL, token, filename string, content []byte) *http.Response {
 	t.Helper()
 	var body bytes.Buffer
 	mw := multipart.NewWriter(&body)
@@ -46,6 +47,12 @@ func uploadMedia(t *testing.T, baseURL, token, filename string, content []byte) 
 	if err != nil {
 		t.Fatalf("upload: %v", err)
 	}
+	return res
+}
+
+func uploadMedia(t *testing.T, baseURL, token, filename string, content []byte) (string, int) {
+	t.Helper()
+	res := uploadRaw(t, baseURL, token, filename, content)
 	defer res.Body.Close()
 	var out struct {
 		MediaToken string `json:"media_token"`

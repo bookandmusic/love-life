@@ -18,12 +18,21 @@ import (
 
 type testEnv struct {
 	*httptest.Server
-	db   *store.DB
-	tm   *auth.TokenManager
-	logs *logbuf.Buffer
+	db      *store.DB
+	tm      *auth.TokenManager
+	logs    *logbuf.Buffer
+	dataDir string // 临时区落盘断言用（如「超限不写盘」）
 }
 
 func newTestServer(t *testing.T) *testEnv {
+	t.Helper()
+	// 默认上限 500MB（与生产默认一致）；需要小上限的用例走 newTestServerWithLimit
+	return newTestServerWithLimit(t, 500<<20)
+}
+
+// newTestServerWithLimit 指定单文件上限的测试服务端（超限用例据此用小上限，
+// 否则「断言 413」就得真造 500MB 请求体）。
+func newTestServerWithLimit(t *testing.T, mediaMaxBytes int64) *testEnv {
 	t.Helper()
 	db, err := store.Open(t.TempDir())
 	if err != nil {
@@ -40,13 +49,14 @@ func newTestServer(t *testing.T) *testEnv {
 	if err != nil {
 		t.Fatalf("secret: %v", err)
 	}
-	mp := media.New(t.TempDir(), tm.Secret(), 500<<20)
+	dataDir := t.TempDir()
+	mp := media.New(dataDir, tm.Secret(), mediaMaxBytes)
 	dp := notify.New(db)
 	webuiFS := fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html>placeholder</html>")}}
 	logs := logbuf.New(64)
 	ts := httptest.NewServer(NewRouter(config.Config{}, db, tm, mp, dp, webuiFS, nil, logs))
 	t.Cleanup(ts.Close)
-	return &testEnv{Server: ts, db: db, tm: tm, logs: logs}
+	return &testEnv{Server: ts, db: db, tm: tm, logs: logs, dataDir: dataDir}
 }
 
 func doJSON(t *testing.T, method, url, token string, body any) *http.Response {

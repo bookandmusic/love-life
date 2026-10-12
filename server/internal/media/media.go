@@ -33,6 +33,20 @@ const thumbMaxEdge = 1080
 
 var ErrUnsupportedFormat = errors.New("不支持的媒体格式（照片 jpg/png/webp，视频 mp4/mov/webm，音频 mp3/m4a/wav；HEIC 首版不支持）")
 
+// ErrTooLarge 单文件超过大小上限（可被 errors.Is 识别）。
+var ErrTooLarge = errors.New("文件超过大小上限")
+
+// errTooLarge 超限错误：文案在此唯一拼装，HTTP 层的 413 响应经 TooLargeMessage 复用同一句。
+func errTooLarge(maxBytes int64) error {
+	return fmt.Errorf("%w（%d MB）", ErrTooLarge, maxBytes/(1<<20))
+}
+
+// TooLargeMessage 超限响应文案；与 errTooLarge 同一句话，
+// 使「HTTP 层截断」与「SaveTemp 判限」两个来源对外说法一致。
+func TooLargeMessage(maxBytes int64) string {
+	return errTooLarge(maxBytes).Error()
+}
+
 type Pipeline struct {
 	dataDir  string
 	secret   []byte // 与 JWT 共用密钥材料的 HMAC（仅用于签名 URL，用途域分隔）
@@ -42,6 +56,9 @@ type Pipeline struct {
 func New(dataDir string, secret []byte, maxBytes int64) *Pipeline {
 	return &Pipeline{dataDir: dataDir, secret: secret, maxBytes: maxBytes}
 }
+
+// MaxBytes 单文件大小上限（HTTP 层据此设置请求体上限）。
+func (p *Pipeline) MaxBytes() int64 { return p.maxBytes }
 
 type Uploaded struct {
 	Token    string  `json:"media_token"`
@@ -116,7 +133,9 @@ func (p *Pipeline) SaveTemp(r io.Reader, filename string, ownerID int64) (*Uploa
 	if err != nil {
 		return nil, err
 	}
-	size, err := io.Copy(f, r)
+	// 上限 +1：写满即停。必须用 LimitReader 而非 CopyN——CopyN 在源比 n 短时
+	// 返回 io.EOF，会命中下面的 err != nil 分支把正常文件判成失败。
+	size, err := io.Copy(f, io.LimitReader(r, p.maxBytes+1))
 	closeErr := f.Close()
 	if err == nil {
 		err = closeErr
@@ -127,7 +146,7 @@ func (p *Pipeline) SaveTemp(r io.Reader, filename string, ownerID int64) (*Uploa
 	}
 	if size > p.maxBytes {
 		_ = os.Remove(rawPath)
-		return nil, fmt.Errorf("文件超过大小上限（%d MB）", p.maxBytes/(1<<20))
+		return nil, errTooLarge(p.maxBytes)
 	}
 
 	up := &Uploaded{Token: token, Kind: kind, Size: size}

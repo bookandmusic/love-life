@@ -22,6 +22,11 @@ import (
 // maxPostMedia 单条动态的媒体文件数上限（与 APP 同源，见 ARCHITECTURE「媒体上传管线」）。
 var maxPostMedia = limits.MaxMediaPerPost
 
+// multipartEnvelopeMargin 请求体上限相对文件上限的余量：multipart 的 boundary、
+// Content-Disposition 与 Content-Type 头（实测单文件约 190 字节，文件名受文件系统
+// 限制在数百字节内）。只影响「恰好等于上限的文件能否通过 HTTP 层」，8 KiB 有几十倍余量。
+const multipartEnvelopeMargin = 8 << 10
+
 type postsAPI struct {
 	db *store.DB
 	mp *media.Pipeline
@@ -43,8 +48,15 @@ func nullStrText(n sql.NullString) string {
 // ---- 媒体上传（两段式第一段：临时区） ----
 
 func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
+	// 上限在读取阶段生效：超限请求不落盘（否则会整份写进临时区再判限）
+	r.Body = http.MaxBytesReader(w, r.Body, a.mp.MaxBytes()+multipartEnvelopeMargin)
 	file, header, err := r.FormFile("file")
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, media.TooLargeMessage(a.mp.MaxBytes()))
+			return
+		}
 		writeError(w, http.StatusBadRequest, "缺少 file 字段")
 		return
 	}
@@ -54,6 +66,11 @@ func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, media.ErrUnsupportedFormat) {
 			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// 略超上限但仍在信封余量内：HTTP 层放行、SaveTemp 判限，与上面同归 413。
+		if errors.Is(err, media.ErrTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, media.TooLargeMessage(a.mp.MaxBytes()))
 			return
 		}
 		writeError(w, http.StatusBadRequest, err.Error())
