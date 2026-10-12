@@ -8,6 +8,8 @@ import { useAuth } from '../stores/auth'
 import { loadCachedHistory, saveCachedHistory } from '../utils/chatCache'
 import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
 import { appendThink, displayThinkSeconds } from '../utils/thinking'
+import { mediaUrl } from '../utils/mediaUrls'
+import { mediaIdOf } from '../utils/mediaSign'
 import MEDIA_LIMITS from '../../../server/internal/limits/media.json' with { type: 'json' }
 import NavActions from '../components/NavActions.vue'
 import MessageList from '../components/chat/MessageList.vue'
@@ -582,7 +584,17 @@ function toggleOpen(key: string) {
 
 function openMedia(rec: UIRecord) {
   if (!rec.thumb_url) return
-  viewerItems.value = [{ id: rec.id, kind: rec.kind === 'media' ? 'photo' : rec.kind, thumb_url: rec.thumb_url, url: rec.thumb_url }]
+  // 结果集记录只有签名缩略图（15 分钟 TTL，历史回显时多已过期）。走 mediaUrl 注册表：
+  // 键从 URL 路径解析（rec.id 可能是动态/相册 id，不是媒体 id），注册即触发重签。
+  // raw 此刻还没有真实地址（签名覆盖 variant，改不出有效的 raw），先回落 thumb 顶上，
+  // 重签回来后由 version bump 换成大图——照片分支两种地址都能显示，故不是黑屏。
+  const u = mediaUrl(rec)
+  viewerItems.value = [{
+    id: mediaIdOf(rec) ?? rec.id,
+    kind: rec.kind === 'media' ? 'photo' : rec.kind,
+    thumb_url: u.thumb,
+    url: u.raw,
+  }]
   viewerStart.value = 0
 }
 

@@ -6,6 +6,7 @@
 // 「渲染中写 reactive 容器 → 触发重渲染 → 再写」的循环。
 import { ref } from 'vue'
 import { api } from '../api/client'
+import { mediaIdOf, needsResign, rawOrThumb } from './mediaSign'
 
 interface MediaLike {
   id?: number | string
@@ -24,9 +25,7 @@ const version = ref(0)
 const REFRESH_INTERVAL = 5 * 60 * 1000
 
 function derive(m: MediaLike): { thumb: string; raw: string } {
-  const thumb = m.thumb_url ?? ''
-  const raw = m.url || thumb.replace('v=thumb', 'v=raw')
-  return { thumb, raw }
+  return { thumb: m.thumb_url ?? '', raw: rawOrThumb(m) }
 }
 
 // mediaUrl 取媒体当前签名地址（未注册/未重签时返回由 m 派生的原值，行为与直接
@@ -34,11 +33,15 @@ function derive(m: MediaLike): { thumb: string; raw: string } {
 export function mediaUrl(m: MediaLike): { thumb: string; raw: string } {
   void version.value // 响应式依赖：重签成功后触发各引用处刷新（C11：显式丢弃表达式值，过 no-unused-expressions）
   const fallback = derive(m)
-  if (m.id === undefined || m.id === null || m.id === '') return fallback
-  const key = String(m.id)
+  const id = mediaIdOf(m)
+  if (id === undefined || id === '') return fallback
+  const key = String(id)
   const e = registry.get(key)
   if (!e) {
     registry.set(key, { ...fallback, lastSeen: Date.now() })
+    // 注册即需重签（地址已过期 / 只有 thumb 换不出 raw）：立刻换一轮，
+    // 不等下一个 5 分钟周期——否则这段时间里缩略图与查看器一直是黑屏。
+    if (needsResign(m, Date.now())) void refreshNow()
     return fallback
   }
   e.lastSeen = Date.now()
@@ -91,11 +94,36 @@ async function refreshSignedUrls(): Promise<void> {
   }
 }
 
+// refreshing 防重入：渲染中注册会触发重签，一次渲染可能带出多个过期媒体，
+// 不设标志就会并发打出多份重复的 reurl 请求（同一批 id）。
+// pending 记「本轮跑动期间又来了新的重签请求」——一次渲染的多个过期媒体常落在
+// 首次请求已在途时注册，只跑一轮会漏掉它们（要等下一个 5 分钟周期，期间仍是黑屏）。
+let refreshing = false
+let pending = false
+
+// refreshNow 注册到需重签的地址时立刻换新（不等下一个 5 分钟周期）。
+async function refreshNow(): Promise<void> {
+  if (refreshing) {
+    pending = true
+    return
+  }
+  refreshing = true
+  try {
+    do {
+      pending = false
+      await refreshSignedUrls()
+    } while (pending)
+  } finally {
+    refreshing = false
+  }
+}
+
 let started = false
 
 // startMediaRefresh 全局启动定时重签（App.vue 挂载时调用一次）。
 export function startMediaRefresh(): void {
   if (started) return
   started = true
-  window.setInterval(() => void refreshSignedUrls(), REFRESH_INTERVAL)
+  // 走 refreshNow 复用防重入：定时轮与「注册即重签」撞上时不会对同一批 id 重复请求
+  window.setInterval(() => void refreshNow(), REFRESH_INTERVAL)
 }

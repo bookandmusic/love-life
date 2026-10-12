@@ -72,7 +72,7 @@ function onRec(ui: UIBlockT | undefined, rec: UIRecord) {
         <img
           v-if="rec.thumb_url"
           class="thumb"
-          :src="mediaSrc({ thumb_url: rec.thumb_url }, 'thumb')"
+          :src="mediaSrc(rec, 'thumb')"
           alt=""
           loading="lazy"
           @click.stop="emit('open-media', rec)"
