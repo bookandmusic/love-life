@@ -308,6 +308,7 @@ UI 块载荷（缩略图 URL、网格结构）**永不进模型上下文**——
 - 会话的锁定时机（何时禁止切换/删除、待确认期间输入区是否可用）见 PRODUCT「卡片体系」；服务端侧的对应约束：`turn_id` 未终结时、或会话存在未过期 `pending` 提案时，一律拒绝 `DELETE /sessions/{id}`——否则待确认提案会被随会话硬删而静默丢弃（那是一张即将生效的写操作卡，丢卡即无声取消，见 ARCHITECTURE「数据模型」ConfirmAction）
 - **裁决执行中同样拒绝删除**：确认/取消在**原子认领之后**才执行工具并写回执，此时卡片已不是 `pending`（上面的计数拦不住），也不再是一个 turn——若不额外登记，删会话能从「工具执行」与「回执落库」之间穿过，回执落进已删会话（`chat_messages.session_id` 刻意无外键，落库不报错，只会留下永不清理的孤儿行）。故裁决执行期间把该会话登记进**与 turn 同一份进程内活跃表**（合成 key 用 action_id），执行结束即注销。**不得**改用「把 `confirmed` 计入 `pending` 拦截」：进程中途崩溃会留下永久的 `confirmed` 行，会话就再也删不掉了（把竞态换成锁死）
 - **历史回显**：`GET /chat/history` 直接下发 parts 由客户端按类型渲染；含 `card` part 时附 `card` 快照对象（`{action_id, intent, summary, preview, warnings, attachments, status, expires_in, result?}`，其中 `intent` / `summary` / `preview` / `warnings` / `attachments` 全部从 `preview_json` 读出（结构见「提案契约」）、永不反推）；状态归一 `confirmed→executed`、已过期的 `pending→expired`、`failed` 原样下发
+- **卡片指针只随出卡载体行下发**：裁决回执行也带 `card_id`（回执文本靠它归到卡片），但它只有 `tool` part、不含 `card` part——`history` 据此判定，只对带 `card` part 的行下发 `card_id` / `card` 快照，否则同一张卡会被渲染两次（刷新后双卡）。裁决回执行的 `label` 落人话标签（与流式侧 `tool.start` 同源，见「过程收起（客户端渲染口径）」），不落原始工具名
 - **历史不自动过期**：不设保留时长，也没有清理消息/会话的定时任务；删会话即硬删其全部消息（不进回收站）。因此不存在「消息被清掉、只剩空会话壳」的状态
 
 ### 3.6 停止与断连（两件事，不是一条）

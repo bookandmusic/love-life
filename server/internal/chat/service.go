@@ -1562,7 +1562,7 @@ func (s *Service) recordDecision(ctx context.Context, userID int64, action *stor
 	}
 	{
 		pj, _ := json.Marshal([]map[string]any{
-			{"type": "tool", "call_id": "", "label": action.ToolName, "status": status, "text": text},
+			{"type": "tool", "call_id": "", "label": s.progressLabel(action.ToolName), "status": status, "text": text},
 		})
 		if _, err := s.db.SaveChatMessage(ctx, &store.ChatMessage{
 			UserID: userID, SessionID: sessionID, TurnID: carrierTurn, Role: "assistant",
@@ -1823,6 +1823,23 @@ type proposalSnapshot struct {
 	Result      string                `json:"result,omitempty"`
 }
 
+// hasCardPart 该行 parts 里是否含 card part（卡片指针的唯一载体）。
+// 裁决回执行不带 card part，故据此区分「出卡载体行」与「裁决回执行」。
+func hasCardPart(parts string) bool {
+	var mp []struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(parts), &mp) != nil {
+		return false
+	}
+	for _, p := range mp {
+		if p.Type == "card" {
+			return true
+		}
+	}
+	return false
+}
+
 // History GET /api/v1/chat/history?session_id=N：按会话回显；缺省/0 → 空列表。
 func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
@@ -1848,7 +1865,10 @@ func (s *Service) History(w http.ResponseWriter, r *http.Request) {
 	items := make([]histItem, 0, len(list))
 	for _, m := range list {
 		cardID := int64(0)
-		if m.CardID.Valid {
+		// 卡片指针只挂在实际带 card part 的载体行上。裁决回执行同样带 card_id
+		// （CardResults 据它取回执文本），但它只有 tool part——若一并下发 card_id，
+		// 客户端会对同一张卡渲染两次（刷新后双卡）。
+		if m.CardID.Valid && hasCardPart(m.Parts) {
 			cardID = m.CardID.Int64
 		}
 		quoted := json.RawMessage("")
