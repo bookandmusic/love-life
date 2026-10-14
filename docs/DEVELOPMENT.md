@@ -124,7 +124,7 @@
 
 | 端 | 打开 | 期望看到 |
 |:--|:--|:--|
-| admin | `http://<IP>:5173` | 登录页 → admin 登录 → 仪表盘，六个导航项（仪表盘 / 空间管理 / AI 配置 / 外部集成 / 回收站 / 审计日志，PRODUCT「后台管理页面功能范围（admin）」） |
+| admin | `http://<IP>:5173` | 登录页 → admin 登录 → 仪表盘，七个导航项（仪表盘 / 空间管理 / AI 配置 / 外部集成 / 回收站 / 审计日志 / 服务日志，PRODUCT「后台管理页面功能范围（admin）」） |
 | APP | `http://<IP>:1420` | 登录页 → 成员账号登录（见「APP 登录用成员账号，不是 admin」）→ 传统模式底部五个 tab + 右下角 FAB；AI 模式未配模型 Key 时切换项置灰是预期（PRODUCT「双模式界面」） |
 
 每端三件事：`take_snapshot` 确认上表元素在；`list_console_messages` 无 error；`list_network_requests` 里 `/api/*` 无 5xx、无代理失败。各留一张 `take_screenshot` 存档。
