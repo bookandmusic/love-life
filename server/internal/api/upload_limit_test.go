@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/media"
+	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
 // 上传上限的守卫用例（ARCHITECTURE「媒体上传管线」· 格式与大小）：
@@ -147,4 +149,19 @@ func newPostTestEnvWithLimit(t *testing.T, mediaMaxBytes int64) (*testEnv, strin
 		t.Fatalf("admin login: %d", code)
 	}
 	return ts, adminToken
+}
+
+// newPostTestEnvWithLimit2 同上的三返回值版本（需要第二个用户验归属时用）。
+func newPostTestEnvWithLimit2(t *testing.T, mediaMaxBytes int64) (*testEnv, string, string) {
+	t.Helper()
+	ts, adminToken := newPostTestEnvWithLimit(t, mediaMaxBytes)
+	hash, _ := auth.HashPassword("girl-pw")
+	if _, err := ts.db.CreateUser(t.Context(), &store.User{Username: "girl", PasswordHash: hash, Role: "girl", Nickname: "她"}); err != nil {
+		t.Fatalf("create girl: %v", err)
+	}
+	girlToken, code := loginToken(t, ts.URL, "girl", "girl-pw", "app")
+	if code != http.StatusOK {
+		t.Fatalf("girl login: %d", code)
+	}
+	return ts, adminToken, girlToken
 }

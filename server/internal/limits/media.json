@@ -1,4 +1,5 @@
 {
   "maxMediaPerPost": 9,
-  "maxMediaPerChatMessage": 9
+  "maxMediaPerChatMessage": 9,
+  "uploadChunkBytes": 8388608
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
 	"strconv"
 	"strings"
@@ -47,6 +48,14 @@ func nullStrText(n sql.NullString) string {
 
 // ---- 媒体上传（两段式第一段：临时区） ----
 
+// 分片上传协议头（ARCHITECTURE「媒体上传管线」）。无这些头 = 传统整文件上传，
+// 走原 SaveTemp 全流程——APP 与服务端独立升级，必须让旧 APP 的整文件请求行为不变。
+const (
+	hdrUploadID     = "X-Upload-Id"     // 上传 id（= 临时区 token）；首片不带，由服务端下发
+	hdrUploadOffset = "X-Upload-Offset" // 本片起始偏移，必须等于服务端已收字节数
+	hdrUploadFinal  = "X-Upload-Final"  // 本片是最后一片
+)
+
 func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	// 上限在读取阶段生效：超限请求不落盘（否则会整份写进临时区再判限）
 	r.Body = http.MaxBytesReader(w, r.Body, a.mp.MaxBytes()+multipartEnvelopeMargin)
@@ -62,21 +71,121 @@ func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	claims, _ := auth.UserFromContext(r.Context())
-	up, err := a.mp.SaveTemp(file, header.Filename, claims.UserID)
+
+	uploadID := r.Header.Get(hdrUploadID)
+	offsetStr := r.Header.Get(hdrUploadOffset)
+	if uploadID == "" && offsetStr == "" {
+		// 无分片头：传统整文件上传（旧 APP / curl / 既有测试走这里，行为不变）
+		a.finishLegacyUpload(w, file, header.Filename, claims.UserID)
+		return
+	}
+	a.handleChunkedUpload(w, r, file, header.Filename, claims.UserID, uploadID, offsetStr)
+}
+
+// finishLegacyUpload 无分片头的整文件上传。
+func (a *postsAPI) finishLegacyUpload(w http.ResponseWriter, file multipart.File, filename string, userID int64) {
+	up, err := a.mp.SaveTemp(file, filename, userID)
 	if err != nil {
-		if errors.Is(err, media.ErrUnsupportedFormat) {
-			writeError(w, http.StatusBadRequest, err.Error())
-			return
-		}
-		// 略超上限但仍在信封余量内：HTTP 层放行、SaveTemp 判限，与上面同归 413。
-		if errors.Is(err, media.ErrTooLarge) {
-			writeError(w, http.StatusRequestEntityTooLarge, media.TooLargeMessage(a.mp.MaxBytes()))
-			return
-		}
-		writeError(w, http.StatusBadRequest, err.Error())
+		a.writeUploadError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, up)
+}
+
+// handleChunkedUpload 分片上传的四种形态（ARCHITECTURE「媒体上传管线」）：
+// 首片即末片（文件 ≤ 一片，最常见）、首片、中间片、末片；末片可重复（幂等）。
+func (a *postsAPI) handleChunkedUpload(w http.ResponseWriter, r *http.Request, file multipart.File,
+	filename string, userID int64, uploadID, offsetStr string) {
+	offset, perr := strconv.ParseInt(offsetStr, 10, 64)
+	if perr != nil || offset < 0 {
+		writeError(w, http.StatusBadRequest, "X-Upload-Offset 非法")
+		return
+	}
+	isFinal := r.Header.Get(hdrUploadFinal) != ""
+
+	// 首片（无 id）：带 final 即「首片即末片」——一次请求走完三段，直接回完成响应；
+	// 不带则只开上传，回 upload_id 与已收字节。
+	if uploadID == "" {
+		if offset != 0 {
+			writeError(w, http.StatusBadRequest, "首片 offset 必须为 0")
+			return
+		}
+		up, err := a.mp.BeginUpload(filename, userID)
+		if err != nil {
+			a.writeUploadError(w, err)
+			return
+		}
+		if err := a.mp.AppendChunk(up.Token, 0, file, userID); err != nil {
+			a.writeUploadError(w, err)
+			return
+		}
+		if !isFinal {
+			a.writeChunkAck(w, up.Token, userID)
+			return
+		}
+		done, err := a.mp.FinalizeUpload(up.Token)
+		if err != nil {
+			a.writeUploadError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, done)
+		return
+	}
+
+	// 带 id + final：先只读查是否已收尾。已收尾即回同一结果（幂等）——否则客户端重发末片
+	// 会因 offset 落后拿到 409，卡在「文件传完了却拿不到 token」。
+	if isFinal {
+		if _, finalized, err := a.mp.UploadState(uploadID, userID); err == nil && finalized {
+			done, ferr := a.mp.FinalizeUpload(uploadID)
+			if ferr != nil {
+				a.writeUploadError(w, ferr)
+				return
+			}
+			writeJSON(w, http.StatusOK, done)
+			return
+		}
+	}
+	if err := a.mp.AppendChunk(uploadID, offset, file, userID); err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	if !isFinal {
+		a.writeChunkAck(w, uploadID, userID)
+		return
+	}
+	up, err := a.mp.FinalizeUpload(uploadID)
+	if err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
+}
+
+// writeChunkAck 中间片的回执：upload_id + 已收字节（客户端据 received 推进 offset）。
+func (a *postsAPI) writeChunkAck(w http.ResponseWriter, token string, userID int64) {
+	received, _, err := a.mp.UploadState(token, userID)
+	if err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"upload_id": token, "received": received})
+}
+
+// writeUploadError 上传错误 → 状态码（413 超限 / 409 分片位置 / 404 上传不存在 / 400 其余）。
+func (a *postsAPI) writeUploadError(w http.ResponseWriter, err error) {
+	var offsetErr *media.OffsetMismatchError
+	switch {
+	case errors.Is(err, media.ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, media.TooLargeMessage(a.mp.MaxBytes()))
+	case errors.As(err, &offsetErr):
+		// 409 + 实际长度：客户端据 received 重同步，不必重传已收部分
+		writeJSON(w, http.StatusConflict, map[string]any{"error": offsetErr.Error(), "received": offsetErr.Received})
+	case errors.Is(err, media.ErrUploadNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		// 含 ErrUnsupportedFormat（格式不支持）：同为 400 + 原文案
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
 }
 
 // ---- 动态 ----

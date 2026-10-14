@@ -232,7 +232,10 @@ func cors(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
 			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
-			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, Range")
+			// X-Upload-* 是分片上传协议头（常量定义在 posts.go）：自定义头必须在此放行，
+			// 否则浏览器预检直接拒绝（curl 测试不受影响，极易漏——典型「测试过了线上不通」）。
+			w.Header().Set("Access-Control-Allow-Headers",
+				"Authorization, Content-Type, Range, "+hdrUploadID+", "+hdrUploadOffset+", "+hdrUploadFinal)
 			// 另存到本机：APP 需读取服务端生成的文件名（Content-Disposition 不在 CORS 安全头里）
 			w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition, Content-Length, Accept-Ranges, Content-Range")
 			w.Header().Set("Access-Control-Max-Age", "600")
