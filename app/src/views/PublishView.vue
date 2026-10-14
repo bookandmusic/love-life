@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { MapPin, Send, ImagePlus, Music, Play, X, Search } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
 import MEDIA_LIMITS from '../../../server/internal/limits/media.json' with { type: 'json' }
+import { uploadMediaFile } from '../utils/uploadMedia'
 import AppToast from '../components/AppToast.vue'
 import PageLayout from '../components/PageLayout.vue'
 import Sheet from '../components/Sheet.vue'
@@ -44,21 +45,16 @@ function resetUploadState() {
 
 async function uploadOne(i: number): Promise<boolean> {
   upStates.value[i] = 'uploading'
-  const attempts = 3 // 首传 + 自动重试 2 次（指数退避），之后转手动重传
-  for (let a = 0; a < attempts; a++) {
-    try {
-      const form = new FormData()
-      form.append('file', files.value[i])
-      const up = await api<{ media_token: string }>('/api/v1/media/upload', { method: 'POST', body: form })
-      tokens.value[i] = up.media_token
-      upStates.value[i] = 'ok'
-      return true
-    } catch {
-      if (a < attempts - 1) await new Promise((r) => setTimeout(r, 500 * 3 ** a))
-    }
+  try {
+    // 分片上传（含断点续传与重试策略）统一在 utils/uploadMedia：与 AI 模式同一实现
+    const up = await uploadMediaFile(files.value[i]!)
+    tokens.value[i] = up.media_token
+    upStates.value[i] = 'ok'
+    return true
+  } catch {
+    upStates.value[i] = 'failed'
+    return false
   }
-  upStates.value[i] = 'failed'
-  return false
 }
 
 // 手动重传单个失败文件；全部就绪后自动续提交（无需再点发布）

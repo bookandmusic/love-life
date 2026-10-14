@@ -10,6 +10,7 @@ import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatu
 import { appendThink, displayThinkSeconds } from '../utils/thinking'
 import { mediaUrl } from '../utils/mediaUrls'
 import { mediaIdOf } from '../utils/mediaSign'
+import { uploadMediaFile } from '../utils/uploadMedia'
 import MEDIA_LIMITS from '../../../server/internal/limits/media.json' with { type: 'json' }
 import NavActions from '../components/NavActions.vue'
 import MessageList from '../components/chat/MessageList.vue'
@@ -267,20 +268,14 @@ type UpState = 'idle' | 'uploading' | 'ok' | 'failed'
 const cardUpStates = ref<Record<number, UpState[]>>({})
 const cardTokens = ref<Record<number, (string | null)[]>>({})
 
-/** 单个文件上传：首传 + 自动重试 2 次（500 * 3^a 退避），失败返回 null 转手动重传。 */
+/** 单个文件上传：分片 + 断点续传（统一在 utils/uploadMedia，与发动态同一实现）；失败返回 null 转手动重传。 */
 async function uploadOne(f: PickedMedia): Promise<string | null> {
-  const attempts = 3
-  for (let a = 0; a < attempts; a++) {
-    try {
-      const form = new FormData()
-      form.append('file', f.file)
-      const up = await api<{ media_token: string }>('/api/v1/media/upload', { method: 'POST', body: form })
-      return up.media_token
-    } catch {
-      if (a < attempts - 1) await new Promise((r) => setTimeout(r, 500 * 3 ** a))
-    }
+  try {
+    const up = await uploadMediaFile(f.file)
+    return up.media_token
+  } catch {
+    return null
   }
-  return null
 }
 
 /** 逐个上传并维护状态；返回是否全部成功。已成功的不重传。 */

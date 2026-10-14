@@ -91,10 +91,13 @@ async function doRefresh(): Promise<boolean> {
 /** 请求失败的错误对象：message 供展示，status 供调用处按语义分流（如 409/410 = 卡片已过期） */
 export class ApiError extends Error {
   status: number
-  constructor(status: number, message: string) {
+  /** 响应体的结构化字段（如分片上传 409 的 received = 服务端已收字节，用于重同步） */
+  details?: Record<string, unknown>
+  constructor(status: number, message: string, details?: Record<string, unknown>) {
     super(message)
     this.name = 'ApiError'
     this.status = status
+    this.details = details
   }
 }
 
@@ -127,7 +130,8 @@ export async function api<T>(path: string, options: RequestInit = {}, retry = tr
   }
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string }
-    throw new ApiError(res.status, body.error ?? `HTTP ${res.status}`)
+    // 整个响应体作为 details 带上（分片上传 409 的 received 在里面，调用方据此重同步）
+    throw new ApiError(res.status, body.error ?? `HTTP ${res.status}`, body as Record<string, unknown>)
   }
   // 204 / 空响应体（DELETE 走 noContent()，mock 与真实服务端一致）不能按 JSON 解析，
   // 否则每次删除都会抛 "Unexpected end of JSON input"

@@ -101,15 +101,16 @@ flowchart TB
 | 决策项 | 方案 |
 |:---|:---|
 | 上传时序 | 两段式：**提交（点 [发布] / [确认执行]，传统与 AI 同一规则）时**逐个上传至临时区（`media/tmp/{uuid}`，返回 media_token）；创建请求携带 token 列表，服务端原子创建 Post + Media 并将文件移入正式区。选择阶段服务端零数据（PRODUCT「发布动态」「提交时才上传」）；单文件独立请求、独立重试，失败不影响其他文件 |
-| 整批把关 | 创建请求只在**批次全部就绪后自动发出**（无需二次点击）：个别文件上传失败（自动重试 2 次指数退避 + 可手动重传）不阻塞已成功文件（token 保留不重传）。服务端侧任一 token 失效 / 校验失败 → 整批回滚（已转正文件删除），不产生缺图的半条动态 |
+| 分片与断点续传 | 上传默认**分片**（片大小 8MiB，`limits/media.json` 的 `uploadChunkBytes`，APP 切片、服务端按 offset 追加）：`X-Upload-Offset`（本片起始偏移）+ `X-Upload-Id`（首片不带、服务端下发）+ `X-Upload-Final`（末片）。四种形态：**首片即末片**（文件 ≤ 一片，最常见——照片/录音/短视频，一次请求走完直接回 media_token）、首片（回 `{upload_id, received}`）、中间片（回同上）、末片（回 `Uploaded`）。`received` 是客户端推进 offset 的**唯一依据**（不是本地累加），故「响应丢失但字节已落盘」能自动纠正；offset 不符回 **409 + `{received}`** 供重同步。**末片幂等**：sidecar 带 `finalized` 标记，已收尾的重发末片直接回同一结果（否则客户端卡在「传完了却拿不到 token」）。**无分片头 = 传统整文件上传**，走原 `SaveTemp`——APP 与服务端独立升级，旧 APP 的行为必须不变。半成品由 `discard` 撤销、24h 无进展由 janitor 兜底清理。**升级顺序：先服务端后 APP**——反序（新 APP + 旧服务端）下旧端不认分片头、会把首片当完整文件收下，故客户端以**回执 `size` 必须等于文件大小**为完整性判据（不符即报错，不静默截断） |
+| 整批把关 | 创建请求只在**批次全部就绪后自动发出**（无需二次点击）：个别文件上传失败（**单侧重试**：仅网络异常与 5xx 重试、指数退避；4xx 是确定性失败，直接转手动重传，不白传）不阻塞已成功文件（token 保留不重传）。服务端侧任一 token 失效 / 校验失败 → 整批回滚（已转正文件删除），不产生缺图的半条动态 |
 | 主动撤销 | `POST /api/v1/media/discard`（体带 token 列表，幂等）：放弃 / 取消 / 卡片过期 / 把关作废时客户端立即撤销已上传的临时文件；sidecar 记录上传者、服务端校验归属，防跨用户误删。**sidecar 缺失与损坏分别处置**：文件不存在（可能已被 janitor 清理）仍放行删除——否则正常的放弃/重试会留下删不掉的临时文件；存在但解析失败或上传者为空则拒绝并告警（被篡改或写坏的信号） |
-| 临时区元数据 | sidecar JSON `media/tmp/{token}.json` 存 kind/宽高/size/duration/taken_at/上传者（discard 归属校验用），让元数据跨重启存活；**临时区阶段不落任何数据库行** |
+| 临时区元数据 | sidecar JSON `media/tmp/{token}.json` 存 kind/宽高/size/duration/taken_at/上传者（discard 归属校验用）+ `finalized`（分片收尾标记，见「分片与断点续传」），让元数据跨重启存活；**临时区阶段不落任何数据库行** |
 | 孤儿清理（兜底） | 临时区文件 24h 未被发布引用，由 janitor 的每小时循环删除（见「定时任务总表」）——常规路径由主动撤销清理，此项只兜客户端崩溃 / 断网来不及撤销的残留 |
 | 缩略图 | 上传时同步生成：图片等比缩放（最长边 1080px）；视频不抽帧，使用统一播放占位图 + 时长角标——零外部依赖，保持单二进制自包含（不引入 ffmpeg） |
 | EXIF | 读取拍摄时间作为 taken_at（缺失回退上传时间），供时间轴与那年今日排序；GPS 坐标忽略；EXIF 原样保留（自部署无外泄面，签名 URL 仅短时有效） |
 | 音频时长 | 上传时解析容器头取 duration（mp3/m4a/wav 自实现，不引入 ffmpeg）；解析失败不阻塞上传、duration 留空 |
 | 视频时长 | 上传时解析容器头取 duration（mp4/mov 读 `moov/mvhd`，与 m4a 同一个 box；webm 读 `Segment/Info` 的 `Duration` × `TimecodeScale`）；**同样零 ffmpeg**，解析失败不阻塞上传、duration 留空，缩略图上的时长角标随之不显示。解析按容器的声明长度逐 box / 逐元素步进，不全文搜特征字节——媒体数据区里出现同名四字节会把随机数据读成时长 |
-| 格式与大小 | 照片 jpg/png/webp；视频 mp4/mov/webm；音频 mp3/m4a/wav；HEIC 首版不支持（上传时明确拒绝并提示）；单文件默认软限 500MB（`MEDIA_MAX_MB` 可配）。**上限在读取阶段生效**：请求体先经 `http.MaxBytesReader` 截断（留 8 KiB multipart 信封余量）、`SaveTemp` 内部再用 `LimitReader` 兜底；超限一律 413（文案见 `media.TooLargeMessage`）且不产生任何落盘。请求体上限的守卫用例在 `server/internal/api/upload_limit_test.go` |
+| 格式与大小 | 照片 jpg/png/webp；视频 mp4/mov/webm；音频 mp3/m4a/wav；HEIC 首版不支持（上传时明确拒绝并提示）；单文件默认软限 500MB（`MEDIA_MAX_MB` 可配）。**上限在读取阶段生效**：每片请求体先经 `http.MaxBytesReader` 截断（留 8 KiB multipart 信封余量）、追加时再按**累计**字节判限（`AppendChunk`）；超限一律 413（文案见 `media.TooLargeMessage`）且删除半成品、不产生残留 |
 | 数量上限的单一数据源 | 「单条最多几个媒体」由服务端与 APP **共用同一份** `server/internal/limits/media.json`（Go `go:embed`、APP 直接 import）——服务端校验与发布页/聊天的选择器提示同源，不会各写一份而漂移（历史上后端 18、前端 9，互不相认） |
 | 存储布局 | 数据目录内 `media/{yyyy}/{mm}/{uuid}.{ext}` 主文件 + `thumbs/` 平行缩略图 + `avatars/` 头像（见「部署形态与产物」）。**文件本体在文件系统，数据库只存相对路径** |
 | 无主文件通道 | 头像走独立通道（`SaveAvatar` 直接写 `avatars/{yyyy}/{mm}/`，路径存 `users.avatar_path`），**不进媒体表**——头像无缩略图变体、无相册归属，且是「单用户覆盖」语义，与媒体的追加式记录不同；签名命名空间与媒体隔离（`avatar:<userID>` vs `media:<id>:<variant>`）。后台维护入口见「后台管理页面实现」空间管理 |
