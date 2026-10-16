@@ -154,9 +154,13 @@ function retryMedia() {
 
 /* 待确认窗口需要醒目（PRODUCT「过程呈现」：渐变描边带）——裁决后各态退回常规边框。
    双层背景：内层实色裁到 padding-box 盖住卡身，外层主色渐变裁到 border-box 只露边框。
-   随主题与强调色自动跟随（--surface / --primary 均为主题令牌，不写字面量）。 */
+   随主题与强调色自动跟随（--surface / --primary 均为主题令牌，不写字面量）。
+   宽度定稿 2px：浏览器实测 1.5px 在 DPR=1 下被取整成 1px（getBoundingClientRect().width
+   − clientWidth = 1），2px 才拿满两个设备像素。注意描边宽度只改变墨量、不改变颜色对比度：
+   浅色模式下渐变浅端（--primary）对白底仍只有 1.85–2.97:1，低于非文本 3:1 下限，
+   这里是靠加粗而非改色来保证可辨。 */
 .card.pending {
-  border: 1.5px solid transparent;
+  border: 2px solid transparent;
   background-image:
     linear-gradient(var(--surface), var(--surface)),
     linear-gradient(135deg, var(--primary-deep), var(--primary));
