@@ -766,6 +766,10 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/anniversaries$/, handler: (u
   const uid = userIdFromToken(headers)
   if (!uid) return unauthorized()
   const b = JSON.parse(body || '{}')
+  // 提醒天数越界即拒（与后端同口径：0-90，默认 1；显式 0=当天提醒）
+  if (b.remind_days_before !== undefined && (b.remind_days_before < 0 || b.remind_days_before > 90)) {
+    return badRequest('提前天数应为 0-90')
+  }
   const id = ++seq.anniversary
   const type = b.type === 'lunar' ? 'lunar' : 'solar'
   // 统一契约：date 一律 YYYY-MM-DD，type 决定语义（solar=公历；lunar=农历日期）；闰月语义由 is_leap 标记承载
@@ -804,6 +808,10 @@ routes.push({ method: 'PATCH', pattern: /^\/api\/v1\/anniversaries\/\d+\/reminde
   const a = anniversaries.find((x) => x.id === id)
   if (!a) return notFound()
   const b = JSON.parse(body || '{}')
+  // 越界即拒（与后端 PATCH reminder 同口径）
+  if (b.remind_days_before !== undefined && (b.remind_days_before < 0 || b.remind_days_before > 90)) {
+    return badRequest('提前天数应为 0-90')
+  }
   if (b.remind_days_before !== undefined) a.remind_days_before = b.remind_days_before
   return ok({ status: 'ok' })
 }})

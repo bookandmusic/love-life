@@ -2138,9 +2138,6 @@ func proposeAnniversaryTool() *Tool {
 			if _, ok := args["remind_days_before"]; ok {
 				remind = int(num(args, "remind_days_before"))
 			}
-			if remind < 0 || remind > store.MaxRemindDaysBefore {
-				remind = 1
-			}
 			if mode == ModeExecute {
 				id, err := d.DB.CreateAnniversary(ctx, name, date, annivType, isLeap, remind, userID)
 				if err != nil {
@@ -2168,6 +2165,12 @@ func validateAnniversaryArgs(args map[string]any) error {
 	name, date := str(args, "name"), str(args, "date")
 	if name == "" || date == "" {
 		return fmt.Errorf("name 与 date 必填")
+	}
+	// remind_days_before 可选：给了就必须在范围内（与 REST 创建/修改同口径，不再静默改写）
+	if _, ok := args["remind_days_before"]; ok {
+		if remind := int(num(args, "remind_days_before")); remind < 0 || remind > store.MaxRemindDaysBefore {
+			return fmt.Errorf("提前天数应为 0-%d", store.MaxRemindDaysBefore)
+		}
 	}
 	if str(args, "calendar") == "lunar" {
 		if !lunar.ValidDateShape(date) {

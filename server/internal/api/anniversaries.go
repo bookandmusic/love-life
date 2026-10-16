@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -59,8 +60,9 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	if req.RemindDays != nil {
 		remindDays = *req.RemindDays
 	}
-	if remindDays < 0 || remindDays > 90 {
-		remindDays = 1
+	if remindDays < 0 || remindDays > store.MaxRemindDaysBefore {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("提前天数应为 0-%d", store.MaxRemindDaysBefore))
+		return
 	}
 	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, isLeap, remindDays, claims.UserID)
 	if err != nil {
@@ -107,8 +109,8 @@ func (a *anniversariesAPI) updateReminder(w http.ResponseWriter, r *http.Request
 	var req struct {
 		Days int `json:"remind_days_before"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Days < 0 || req.Days > 90 {
-		writeError(w, http.StatusBadRequest, "提前天数应为 0-90")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Days < 0 || req.Days > store.MaxRemindDaysBefore {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("提前天数应为 0-%d", store.MaxRemindDaysBefore))
 		return
 	}
 	if err := a.db.UpdateAnniversaryReminder(r.Context(), id, req.Days); err != nil {

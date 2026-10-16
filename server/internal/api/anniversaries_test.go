@@ -84,6 +84,17 @@ func TestAnniversaryLunarType(t *testing.T) {
 		t.Fatalf("显式 0 应保留为当天提醒，got %d", zeroRemind)
 	}
 
+	// 越界提醒天数（>90 / <0）→ 400，不静默改写（与 PATCH reminder 同口径）
+	for _, bad := range []int{91, -1} {
+		res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
+			"name": "越界提醒", "date": "2026-12-12", "remind_days_before": bad,
+		})
+		res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("越界提醒天数 %d 应 400，got %d", bad, res.StatusCode)
+		}
+	}
+
 	// 非法 type 归一 solar（mock 宽容语义）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/anniversaries", girlToken, map[string]any{
 		"name": "公历项", "date": "2026-12-25", "type": "lunarr",

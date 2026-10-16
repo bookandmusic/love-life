@@ -591,6 +591,11 @@ func TestProposeAnniversaryReminderPlace(t *testing.T) {
 		map[string]any{"name": "x", "date": "1996/05/15"}, ModePropose); err == nil {
 		t.Fatal("非法日期应报错")
 	}
+	// 越界提醒天数 → 前置报错（与 REST 同口径，不静默改写）
+	if _, err := findTool(t, "propose_anniversary").Invoke(ctx, d, 1,
+		map[string]any{"name": "x", "date": "1996-05-15", "remind_days_before": float64(91)}, ModePropose); err == nil {
+		t.Fatal("越界提醒天数应报错")
+	}
 	// reminder：预览 from → to
 	out = propose(t, "propose_reminder", d, 1, map[string]any{"anniversary_id": float64(res.Record.ID), "days_before": float64(7)})
 	body, _ = json.Marshal(out.Proposal.Preview.Body)

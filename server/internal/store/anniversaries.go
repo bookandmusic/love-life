@@ -9,7 +9,7 @@ import (
 	"github.com/bookandmusic/love-life/server/internal/lunar"
 )
 
-// MaxRemindDaysBefore 提前提醒天数的上限（ARCHITECTURE/PRODUCT：0-90 天）。
+// MaxRemindDaysBefore 提前提醒天数的上限（PRODUCT「纪念日」：0-90 天，默认 1 天）。
 const MaxRemindDaysBefore = 90
 
 type Anniversary struct {
