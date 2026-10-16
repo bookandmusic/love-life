@@ -245,7 +245,11 @@ routes.push({ method: 'POST', pattern: /^\/api\/v1\/auth\/logout$/, handler: (ur
 // --- Space / Me ---
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/space$/, handler: () => ok(spaceResponse()) })
 
-routes.push({ method: 'PUT', pattern: /^\/api\/v1\/space$/, handler: (url, body) => {
+routes.push({ method: 'PUT', pattern: /^\/api\/v1\/space$/, handler: (url, body, headers) => {
+  // 空间配置仅 admin 可改（与后端 requireAdmin 同口径；GET 仍对登录用户开放）
+  const uid = userIdFromToken(headers)
+  if (!uid) return unauthorized()
+  if (userById(uid)?.role !== 'admin') return forbidden('仅 admin 可访问')
   const b = JSON.parse(body || '{}')
   if (b.name !== undefined) space.name = b.name
   if (b.signature !== undefined) space.signature = b.signature

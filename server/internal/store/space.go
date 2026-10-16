@@ -44,7 +44,7 @@ func DaysTogether(loveStartDate string, now time.Time) (int, bool) {
 	return int(now.Sub(start).Hours()/24) + 1, true
 }
 
-// UpdateSpace 情侣空间信息属配置信息，双方均可改。
+// UpdateSpace 情侣空间信息属配置信息，仅 admin 可改（PRODUCT「设置」：统一由后台维护）。
 func (d *DB) UpdateSpace(ctx context.Context, s *Space) error {
 	_, err := d.ExecContext(ctx,
 		`UPDATE space SET name = ?, signature = ?, love_start_date = ? WHERE id = 1`,

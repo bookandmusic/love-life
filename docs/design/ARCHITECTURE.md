@@ -197,7 +197,7 @@ flowchart TD
   - 空间成员：可创建、可改字段、不可删除等业务规则见 PRODUCT「后台管理页面功能范围（admin）」；此处只定接口与实现约束
   - admin 账号只读展示，由部署环境管理，后台不提供增改
   - 数据保留：**取值域与默认值见 PRODUCT「后台管理页面功能范围（admin）」**；本文件只管读写语义——回收站页只读读自同一数据源，对话历史不设保留期限（见「数据模型」的 User / ChatMessage）
-  - 接口：`GET /api/v1/admin/users`、`POST /admin/users/couple`（原子创建）、`PUT /admin/users/{id}`（昵称 + 生日）、`POST /admin/users/{id}/avatar`（头像上传）、`POST /admin/users/{id}/reset-password`、`GET/PUT /space`、`GET/PUT /admin/security`
+  - 接口：`GET /api/v1/admin/users`、`POST /admin/users/couple`（原子创建）、`PUT /admin/users/{id}`（昵称 + 生日）、`POST /admin/users/{id}/avatar`（头像上传）、`POST /admin/users/{id}/reset-password`、`GET/PUT /space`（**PUT 仅 admin**——空间配置统一由后台维护；GET 对登录用户开放，首页读空间信息）、`GET/PUT /admin/security`
   - **保留策略部分更新**：`/admin/security` 请求体可只含本次变更字段（`recycleRetentionDays`），服务端按字段合并，**不得整体覆盖**；该接口无对话保留字段——对话历史不设保留期限（PRODUCT「会话模型」）
 - **AI 配置**（6 tabs，配置语义与拼装规则见 AI模式设计「配置中心与 Prompt 拼装」，此处只列接口）
   - **供应商（/ai/providers）**：模型服务的增删改，Key 只写不读。接口：`GET/POST /api/v1/admin/model-providers`、`PUT/DELETE /{id}`、`PUT /{id}/key`

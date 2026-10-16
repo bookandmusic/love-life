@@ -89,7 +89,7 @@ func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// updateSpace PUT /api/v1/space（双方均可改，配置信息）。
+// updateSpace PUT /api/v1/space（仅 admin：空间配置统一由后台维护，PRODUCT「设置」）。
 func (a *profileAPI) updateSpace(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name          string `json:"name"`

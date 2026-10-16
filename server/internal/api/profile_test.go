@@ -40,8 +40,16 @@ func TestSpaceAndProfile(t *testing.T) {
 		t.Fatalf("空库计数应为 0: anniv=%d album=%d", space.AnniversaryCount, space.AlbumCount)
 	}
 
-	// girl 也能改空间信息（双方对等）+ 设恋爱开始日 + 建纪念日
+	// 空间配置仅 admin 可改（PRODUCT「设置」：统一由后台维护）——girl 被拒
 	res = doJSON(t, "PUT", ts.URL+"/api/v1/space", girlToken, map[string]string{
+		"name": "小美与小明", "signature": "慢慢来", "love_start_date": "2020-05-20",
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("girl 改空间信息应 403，got %d", res.StatusCode)
+	}
+	// admin 改空间信息 + 设恋爱开始日 + 建纪念日
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/space", adminToken, map[string]string{
 		"name": "小美与小明", "signature": "慢慢来", "love_start_date": "2020-05-20",
 	})
 	res.Body.Close()

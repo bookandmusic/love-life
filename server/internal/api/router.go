@@ -155,11 +155,11 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	mcpSvc := mcp.NewService(db, deps)
 	mux.HandleFunc("POST /api/v1/mcp", mcpSvc.Handle)
 
-	// 空间信息与个人资料（登录用户；配置信息可修改）
+	// 空间信息与个人资料（登录用户；空间配置仅 admin 可改，PRODUCT「设置」——GET 仍对登录用户开放，首页读空间信息）
 	profileAPI := &profileAPI{db: db, mp: mp}
 	profileMux := http.NewServeMux()
 	profileMux.HandleFunc("GET /api/v1/space", profileAPI.getSpace)
-	profileMux.HandleFunc("PUT /api/v1/space", profileAPI.updateSpace)
+	profileMux.Handle("PUT /api/v1/space", requireAdmin(http.HandlerFunc(profileAPI.updateSpace)))
 	profileMux.HandleFunc("PATCH /api/v1/me", profileAPI.updateMe)
 	mux.Handle("/api/v1/space", authSvc.RequireAuth(profileMux))
 	mux.Handle("/api/v1/space/", authSvc.RequireAuth(profileMux))
