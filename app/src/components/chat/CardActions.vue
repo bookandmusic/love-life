@@ -152,6 +152,18 @@ function retryMedia() {
   border-color: var(--primary);
 }
 
+/* 待确认窗口需要醒目（PRODUCT「过程呈现」：渐变描边带）——裁决后各态退回常规边框。
+   双层背景：内层实色裁到 padding-box 盖住卡身，外层主色渐变裁到 border-box 只露边框。
+   随主题与强调色自动跟随（--surface / --primary 均为主题令牌，不写字面量）。 */
+.card.pending {
+  border: 1.5px solid transparent;
+  background-image:
+    linear-gradient(var(--surface), var(--surface)),
+    linear-gradient(135deg, var(--primary-deep), var(--primary));
+  background-origin: border-box;
+  background-clip: padding-box, border-box;
+}
+
 .card.expired {
   opacity: 0.6;
 }
