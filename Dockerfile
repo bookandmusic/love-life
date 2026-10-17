@@ -14,7 +14,8 @@ RUN make build-admin
 
 # ===== Stage 2: 构建 Go 服务端二进制（内嵌 admin 产物）=====
 FROM golang:1.25-alpine AS go-build
-# golang 镜像自带 make；GOPROXY 经 build-arg 透传给 Makefile 的同名变量（GO_ENV 条件拼装）
+RUN apk add --no-cache make
+# GOPROXY 经 build-arg 透传给 Makefile 的同名变量（GO_ENV 条件拼装）
 ARG GOPROXY=https://proxy.golang.org,direct
 WORKDIR /app
 COPY Makefile ./
