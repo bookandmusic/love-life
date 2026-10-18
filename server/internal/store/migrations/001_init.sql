@@ -11,7 +11,8 @@
 --   provider_models.thinking 按模型的思考档位（off/low/medium/high，默认 off）；
 --   provider_models 参数面收敛为 max_tokens / thinking / thinking_levels / context_window
 --   （删 temperature，加支持的思考档位与上下文窗口）（2026-10-08）；
---   model_providers.header_timeout_sec 供应商响应头超时可配（NULL=默认 30s）（2026-10-11）。
+--   model_providers.header_timeout_sec 供应商响应头超时可配（NULL=默认 30s）（2026-10-11）；
+--   notifications 去 is_read/read_at：通知为临时消费品，点击即删，列表内均为未消费（2026-10-17）。
 -- 本文件一次性建出最新库：新部署空库直接应用，无历史升级路径。
 
 -- ============ 账号与配置（ARCHITECTURE「数据模型」） ============
@@ -172,8 +173,6 @@ CREATE TABLE notifications (
     target_type   TEXT,
     target_id     INTEGER,
     snapshot_json TEXT,
-    is_read       INTEGER NOT NULL DEFAULT 0,
-    read_at       TEXT,
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_notifications_recipient ON notifications(recipient_id, created_at DESC);

@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -53,12 +54,11 @@ func TestInteractionsAndNotifications(t *testing.T) {
 		t.Fatalf("comment: %d", res.StatusCode)
 	}
 
-	// admin 的通知： 后 girl 的赞/评不进 admin（admin 不在情侣里）= 0 条
+	// admin 的通知：girl 的赞/评不进 admin（admin 不在情侣里）= 0 条
 	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications", adminToken, nil)
 	var notif struct {
 		Items []struct {
 			EventType string `json:"event_type"`
-			IsRead    bool   `json:"is_read"`
 		} `json:"items"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&notif)
@@ -67,7 +67,7 @@ func TestInteractionsAndNotifications(t *testing.T) {
 		t.Fatalf("admin notifications: want 0, got %d %+v", len(notif.Items), notif.Items)
 	}
 
-	// 未读数与全部已读
+	// 未读数（admin 0 条）
 	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications/unread-count", adminToken, nil)
 	var unread struct {
 		Count int `json:"count"`
@@ -77,35 +77,78 @@ func TestInteractionsAndNotifications(t *testing.T) {
 	if unread.Count != 0 {
 		t.Fatalf("unread: %d", unread.Count)
 	}
-	res = doJSON(t, "POST", ts.URL+"/api/v1/notifications/read-all", adminToken, nil)
-	res.Body.Close()
-	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications/unread-count", adminToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&unread)
-	res.Body.Close()
-	if unread.Count != 0 {
-		t.Fatalf("unread after read-all: %d", unread.Count)
-	}
 
 	// girl 的通知：admin 发的新动态 + admin 自赞的通知 = 2 条
 	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications", girlToken, nil)
 	var girlNotif struct {
 		Items []struct {
+			ID        int64  `json:"id"`
 			EventType string `json:"event_type"`
+			Snapshot  string `json:"snapshot"`
 		} `json:"items"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&girlNotif)
 	res.Body.Close()
 	var createdCount, likedCount int
+	var likedID int64
+	var likedSnap struct {
+		AuthorID int64 `json:"author_id"`
+	}
 	for _, it := range girlNotif.Items {
 		switch it.EventType {
 		case "post_created":
 			createdCount++
 		case "post_liked":
 			likedCount++
+			likedID = it.ID
+			// 自赞快照必须带 author_id（= 操作者本人）：客户端据此渲染「自己的动态」而非「你的动态」
+			if err := json.Unmarshal([]byte(it.Snapshot), &likedSnap); err != nil {
+				t.Fatalf("parse liked snapshot: %v", err)
+			}
 		}
 	}
 	if len(girlNotif.Items) != 2 || createdCount != 1 || likedCount != 1 {
 		t.Fatalf("girl notifications: %d items (%+v), want created=1 liked=1", len(girlNotif.Items), girlNotif.Items)
+	}
+	var adminID int64
+	_ = ts.db.QueryRow(`SELECT id FROM users WHERE username = 'admin'`).Scan(&adminID)
+	if likedSnap.AuthorID != adminID {
+		t.Fatalf("post_liked snapshot author_id = %d, want admin %d（自赞归属）", likedSnap.AuthorID, adminID)
+	}
+
+	// 点击即删：DELETE 单条 → 列表移除、未读数减 1
+	res = doJSON(t, "DELETE", fmt.Sprintf("%s/api/v1/notifications/%d", ts.URL, likedID), girlToken, nil)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("delete notification: %d", res.StatusCode)
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications/unread-count", girlToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&unread)
+	res.Body.Close()
+	if unread.Count != 1 {
+		t.Fatalf("unread after delete one: %d, want 1", unread.Count)
+	}
+
+	// 清空：DELETE 全部 → 列表空、计数 0
+	res = doJSON(t, "DELETE", ts.URL+"/api/v1/notifications", girlToken, nil)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("clear notifications: %d", res.StatusCode)
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications/unread-count", girlToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&unread)
+	res.Body.Close()
+	if unread.Count != 0 {
+		t.Fatalf("unread after clear: %d", unread.Count)
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/notifications", girlToken, nil)
+	var girlNotifAfterClear struct {
+		Items []map[string]any `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&girlNotifAfterClear)
+	res.Body.Close()
+	if len(girlNotifAfterClear.Items) != 0 {
+		t.Fatalf("girl notifications after clear: %d, want 0", len(girlNotifAfterClear.Items))
 	}
 
 	// 收藏切换：girl 收 → 取消收

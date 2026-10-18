@@ -34,6 +34,16 @@ func New(db *store.DB) *Dispatcher {
 	return &Dispatcher{db: db, client: &http.Client{Timeout: 10 * time.Second}}
 }
 
+// PossessivePost 互动通知归属口径：目标动态作者是操作者本人 → 「自己的动态」；
+// 作者是对方（收件人）→ 「你的动态」。单情侣模型下作者只可能是这两种。
+// REST 与 AI 代操作两条路径共用，保证站内快照与外部推送文案一致。
+func PossessivePost(authorID, operatorID int64) string {
+	if authorID == operatorID {
+		return "自己的动态"
+	}
+	return "你的动态"
+}
+
 // Dispatch 站内通知 recipientIDs（全量）+ 外部推送（订阅对应事件的渠道）。
 func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventType, targetType string, targetID int64, snapshot string, title, content string) {
 	for _, uid := range recipientIDs {

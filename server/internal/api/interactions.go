@@ -25,7 +25,8 @@ func postIDFromPath(r *http.Request) (int64, bool) {
 // notifyPartner 互动通知口径：允许自赞/自藏，任何一方动作（含自己
 // 赞/藏自己发布的动态）都通知另一方（传达「我在意这条内容」），评论同口径；
 // 另一方不存在时站内无收件人，外部推送仍按渠道订阅照常发送。
-func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targetID int64, title, content string, snapshot map[string]any) {
+// authorID 为目标动态作者：快照供客户端按「你的 / 自己的」渲染，content 同规则。
+func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targetID, authorID int64, title, content string, snapshot map[string]any) {
 	claims, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		return
@@ -34,6 +35,7 @@ func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targe
 		snapshot = map[string]any{}
 	}
 	snapshot["operator"] = claims.Username
+	snapshot["author_id"] = authorID
 	// 通知快照仅含字符串，必然可序列化。
 	b, _ := json.Marshal(snapshot)
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
@@ -47,7 +49,8 @@ func (a *interactionsAPI) toggleLike(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
-	if _, err := a.db.GetPost(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+	post, err := a.db.GetPost(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "动态不存在")
 		return
 	} else if err != nil {
@@ -60,7 +63,8 @@ func (a *interactionsAPI) toggleLike(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if liked {
-		a.notifyPartner(r, "post_liked", id, "收到点赞", claims.Username+" 赞了你的动态", nil)
+		a.notifyPartner(r, "post_liked", id, post.AuthorID, "收到点赞",
+			claims.Username+" 赞了"+notify.PossessivePost(post.AuthorID, claims.UserID), nil)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked})
 }
@@ -72,7 +76,8 @@ func (a *interactionsAPI) toggleFavorite(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
-	if _, err := a.db.GetPost(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+	post, err := a.db.GetPost(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "动态不存在")
 		return
 	} else if err != nil {
@@ -85,7 +90,8 @@ func (a *interactionsAPI) toggleFavorite(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	if favorited {
-		a.notifyPartner(r, "post_favorited", id, "收到收藏", claims.Username+" 收藏了你的动态", nil)
+		a.notifyPartner(r, "post_favorited", id, post.AuthorID, "收到收藏",
+			claims.Username+" 收藏了"+notify.PossessivePost(post.AuthorID, claims.UserID), nil)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"favorited": favorited})
 }
@@ -108,7 +114,8 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "评论最多 500 字")
 		return
 	}
-	if _, err := a.db.GetPost(r.Context(), id); errors.Is(err, store.ErrNotFound) {
+	post, err := a.db.GetPost(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "动态不存在")
 		return
 	} else if err != nil {
@@ -120,8 +127,9 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
-	a.notifyPartner(r, "post_commented", id, "收到评论",
-		claims.Username+"："+textutil.TruncMark(req.Content, 50), map[string]any{"content": textutil.TruncMark(req.Content, 50)})
+	a.notifyPartner(r, "post_commented", id, post.AuthorID, "收到评论",
+		claims.Username+" 评论了"+notify.PossessivePost(post.AuthorID, claims.UserID)+"："+textutil.TruncMark(req.Content, 50),
+		map[string]any{"content": textutil.TruncMark(req.Content, 50)})
 	// 返回完整评论对象（R7：补齐返回值，对齐契约）
 	c, err := a.db.GetComment(r.Context(), commentID)
 	if err != nil {
@@ -217,14 +225,13 @@ func (a *interactionsAPI) listNotifications(w http.ResponseWriter, r *http.Reque
 		TargetType string `json:"target_type"`
 		TargetID   int64  `json:"target_id"`
 		Snapshot   string `json:"snapshot"`
-		IsRead     bool   `json:"is_read"`
 		CreatedAt  string `json:"created_at"`
 	}
 	items := make([]item, 0, len(list))
 	for _, n := range list {
 		items = append(items, item{
 			ID: n.ID, EventType: n.EventType, TargetType: n.TargetType.String, TargetID: n.TargetID.Int64,
-			Snapshot: n.Snapshot.String, IsRead: n.IsRead, CreatedAt: n.CreatedAt,
+			Snapshot: n.Snapshot.String, CreatedAt: n.CreatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
@@ -240,23 +247,25 @@ func (a *interactionsAPI) unreadCount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]int{"count": n})
 }
 
-func (a *interactionsAPI) markRead(w http.ResponseWriter, r *http.Request) {
+// consumeNotification 消费单条通知：点击即删除（PRODUCT「通知中心」：临时消费品）。
+func (a *interactionsAPI) consumeNotification(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, errInvalidID)
 		return
 	}
-	if err := a.db.MarkNotificationRead(r.Context(), id, claims.UserID); err != nil {
+	if err := a.db.DeleteNotification(r.Context(), id, claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-func (a *interactionsAPI) markAllRead(w http.ResponseWriter, r *http.Request) {
+// clearNotifications 清空：删除收件人全部通知（「清空」按钮）。
+func (a *interactionsAPI) clearNotifications(w http.ResponseWriter, r *http.Request) {
 	claims, _ := auth.UserFromContext(r.Context())
-	if err := a.db.MarkAllNotificationsRead(r.Context(), claims.UserID); err != nil {
+	if err := a.db.DeleteAllNotifications(r.Context(), claims.UserID); err != nil {
 		writeError(w, http.StatusInternalServerError, errInternal)
 		return
 	}
