@@ -78,7 +78,7 @@ verify-app:
 	cd $(APP_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0 && npm test
 
 verify-admin:
-	cd $(ADMIN_DIR) && npx vue-tsc --noEmit
+	cd $(ADMIN_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0
 
 # ============================================================
 # 构建（二进制 / 镜像 / APK）：三个发布产物，日常开发不碰

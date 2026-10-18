@@ -10,7 +10,7 @@
 |:--|:--|
 | 后端编译 + 测试 | `make verify-server` |
 | APP 类型检查 + lint + 测试 | `make verify-app` |
-| admin 类型检查 | `make verify-admin` |
+| admin 类型检查 + lint | `make verify-admin` |
 | 全部自动化验证 | `make verify`（fail-fast；`make -k verify` 跑完全部再报） |
 | 端到端契约脚本（已无在仓脚本） | `.verify/*.mjs` 早年用过但未入仓、现已不在；端到端验证 = 起真实后端（`make serve`）+ 浏览器实测；各设计的验收口径与自动守卫见对应设计文档（如客户端设计「坑与验收口径（改浮层前先看这里）」） |
 

@@ -45,7 +45,7 @@
 | | `make reset` | 清空数据目录（交互确认） | 「数据目录与重置」 |
 | | `make serve` | 后端 `go run` 直跑（无需构建） | 「启动命令（三端都连真实后端）」 |
 | | `make admin-dev` / `make app-dev` | 两端 dev server | 同上 |
-| 本地测试 | `make verify` / `verify-server` / `verify-app` / `verify-admin` | 三端测试与类型检查（`verify-app` 含 APP 侧 `node --test`；`-k` 跑完全部再报） | AGENTS「验证命令」 |
+| 本地测试 | `make verify` / `verify-server` / `verify-app` / `verify-admin` | 三端测试、类型检查与 lint（`verify-app` 含 APP 侧 `node --test`；`-k` 跑完全部再报） | AGENTS「验证命令」 |
 | 构建 | `make build` / `make build-server` / `make clean` | 二进制 | 「二进制」 |
 | | `make compose-build` / `make up` / `make logs` / `make down` | 镜像 | 「Docker 镜像」 |
 | | `make android-keystore` / `make android-sign-env` / `make android-apk` / `make app-icon` | APK | 「APK」 |
@@ -112,6 +112,8 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 ### 2.1 自动化验证
 
 `make verify` 依次跑三端（`verify-server` / `verify-app` / `verify-admin`），默认 fail-fast；`make -k verify` 跑完全部再一起报。口径（什么必须过、失败怎么办）见 AGENTS「验证命令」。
+
+**两端前端验证强度对齐**：`verify-app` 与 `verify-admin` 都走「类型检查 + ESLint（`--max-warnings=0`）」，规则同一套（各自的 `eslint.config.js`，Vue 3 + TS 扁平配置）；差别只在 APP 侧多一层 `node --test`。admin 没有单测——它的逻辑集中在配置表单与接口调用，类型检查 + lint 已覆盖主要风险面。
 
 **APP 侧测试用 Node 内置 runner**（`node --test`，零新依赖，无需 vitest / jest）：用例文件与源码同目录、后缀 `.test.mjs`（`.mjs` 而非 `.ts`，否则 `vue-tsc` 会因 `import '…/x.ts'` 的扩展名报错）；入口是 `app/scripts/run-tests.mjs`，`make verify-app` 里以 `npm test` 调用。该入口除了跑用例，还要求**实际执行的用例数不低于一个下限**——`node --test <glob>` 在 glob 一个文件都没匹配到时返回 exit 0，不设下限的话改名/换后缀会让整套 APP 测试静默消失、verify 依旧全绿。新增用例请同步抬高 `run-tests.mjs` 里的 `MIN_TESTS`。
 
