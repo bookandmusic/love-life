@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { Bell, Settings } from 'lucide-vue-next'
 import { useUnread } from '../stores/notifications'
@@ -13,6 +13,13 @@ const unreadStore = useUnread()
 onMounted(() => {
   if (props.showBell) void unreadStore.refresh()
 })
+
+// 红点是跨页共享状态，而本组件可能不随路由重挂（KeepAlive 的 tab 页）：
+// 通知页消费/清空通知后返回，若只认 onMounted 就仍是旧数。故每次路由落定都重新拉一次。
+const stopAfterEach = router.afterEach(() => {
+  if (props.showBell) void unreadStore.refresh()
+})
+onUnmounted(stopAfterEach)
 </script>
 
 <template>
