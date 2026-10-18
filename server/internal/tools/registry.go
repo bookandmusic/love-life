@@ -974,17 +974,19 @@ func attachmentsFromRefs(args map[string]any) []AttachmentRef {
 
 // ---- 对象摘要（提案预览引用既有记录时使用） ----
 
-// postSummaryRecord 动态摘要条目；不存在（已删/越权 id）返回 ok=false。
-func (d *Deps) postSummaryRecord(ctx context.Context, id int64) (UIRecord, bool) {
+// postSummaryRecord 动态摘要条目 + 作者 id；不存在（已删/越权 id）返回 ok=false。
+// 作者 id 一并返回：互动通知归属口径（notify.PossessivePost：自己的 / 你的）要用，
+// 且调用方此时已持有该行，不必再取一次。
+func (d *Deps) postSummaryRecord(ctx context.Context, id int64) (UIRecord, int64, bool) {
 	p, err := d.DB.GetPost(ctx, id)
 	if err != nil || p == nil {
-		return UIRecord{ID: id, Kind: "post", Text: fmt.Sprintf("已删除的动态 #%d", id)}, false
+		return UIRecord{ID: id, Kind: "post", Text: fmt.Sprintf("已删除的动态 #%d", id)}, 0, false
 	}
 	r := UIRecord{ID: id, Kind: "post", Text: truncateRunes(strings.TrimSpace(p.Content), 40), Date: utcToLocalDate(p.CreatedAt)}
 	if thumbs := d.mediaThumbsByPostIDs(ctx, []int64{id}); thumbs[id] != "" {
 		r.ThumbURL = thumbs[id]
 	}
-	return r, true
+	return r, p.AuthorID, true
 }
 
 // commentSummaryRecord 评论摘要条目。
@@ -1928,7 +1930,8 @@ func proposeCommentTool() *Tool {
 				return nil, err
 			}
 			if mode == ModeExecute {
-				if _, err := d.DB.GetPost(ctx, postID); err != nil {
+				post, err := d.DB.GetPost(ctx, postID)
+				if err != nil {
 					return nil, fmt.Errorf("动态不存在")
 				}
 				commentID, err := d.DB.CreateComment(ctx, postID, userID, content)
@@ -1939,13 +1942,13 @@ func proposeCommentTool() *Tool {
 				if err != nil {
 					return nil, err
 				}
-				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username, "via": "ai"})
+				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username, "author_id": post.AuthorID, "via": "ai"})
 				d.notifyPartners(ctx, userID, "post_commented", "post", postID, string(snapshot),
-					"收到评论", operator.Username+"（AI）："+textutil.Trunc(content, 50))
+					"收到评论", operator.Username+"（AI）评论了"+notify.PossessivePost(post.AuthorID, userID)+"："+textutil.Trunc(content, 50))
 				return &ToolResult{ModelText: fmt.Sprintf("评论 #%d 已发表。", commentID),
 					UserText: "评论已发表", Record: &RecordRef{Kind: "comment", ID: commentID}}, nil
 			}
-			post, ok := d.postSummaryRecord(ctx, postID)
+			post, _, ok := d.postSummaryRecord(ctx, postID)
 			if !ok {
 				return nil, fmt.Errorf("动态不存在")
 			}
@@ -2550,11 +2553,13 @@ func proposeReactionTool() *Tool {
 			if err := checkQuotedSubset(ctx, "post", []int64{postID}); err != nil {
 				return nil, err
 			}
-			post, ok := d.postSummaryRecord(ctx, postID)
+			post, authorID, ok := d.postSummaryRecord(ctx, postID)
 			if !ok {
 				return nil, fmt.Errorf("动态不存在")
 			}
 			if mode == ModeExecute {
+				// 互动通知归属口径用目标动态作者（notify.PossessivePost：自己的 / 你的）；
+				// 上面的存在性检查已取到该行，直接复用，不再二次查库。
 				var changes []string
 				if hasLike {
 					changed, err := d.DB.SetLike(ctx, postID, userID, wantLike)
@@ -2568,9 +2573,9 @@ func proposeReactionTool() *Tool {
 							// ARCHITECTURE「通知分发器」事件源含点赞）。与 REST 同口径：
 							// 只在状态真的变为「已赞」时发，取消赞不发。
 							op := d.aiOperatorName(ctx, userID)
-							snapshot, _ := json.Marshal(map[string]any{"operator": op, "via": "ai"})
+							snapshot, _ := json.Marshal(map[string]any{"operator": op, "author_id": authorID, "via": "ai"})
 							d.notifyPartners(ctx, userID, "post_liked", "post", postID, string(snapshot),
-								"收到点赞", op+"（AI）赞了你的动态")
+								"收到点赞", op+"（AI）赞了"+notify.PossessivePost(authorID, userID))
 						} else {
 							changes = append(changes, "已取消点赞")
 						}
@@ -2586,9 +2591,9 @@ func proposeReactionTool() *Tool {
 							changes = append(changes, "已收藏")
 							// 同点赞：收藏成立才通知另一方，取消收藏不发。
 							op := d.aiOperatorName(ctx, userID)
-							snapshot, _ := json.Marshal(map[string]any{"operator": op, "via": "ai"})
+							snapshot, _ := json.Marshal(map[string]any{"operator": op, "author_id": authorID, "via": "ai"})
 							d.notifyPartners(ctx, userID, "post_favorited", "post", postID, string(snapshot),
-								"收到收藏", op+"（AI）收藏了你的动态")
+								"收到收藏", op+"（AI）收藏了"+notify.PossessivePost(authorID, userID))
 						} else {
 							changes = append(changes, "已取消收藏")
 						}
@@ -2737,7 +2742,7 @@ func proposeDeleteTool() *Tool {
 				var exists bool
 				switch kind {
 				case "post":
-					rec, exists = d.postSummaryRecord(ctx, id)
+					rec, _, exists = d.postSummaryRecord(ctx, id)
 				case "comment":
 					rec, exists = d.commentSummaryRecord(ctx, id)
 				case "album":
