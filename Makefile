@@ -15,7 +15,7 @@ ADMIN_USER  ?= admin
 ADMIN_PASS  ?= admin123456
 # 前端 dev server 代理目标：默认连真实后端；连 mock 时 make app-dev API_PROXY=http://127.0.0.1:8787
 API_PROXY   ?= http://127.0.0.1:8080
-# 本机部署的镜像版本（透传 compose 的 LOVE_LIFE_VERSION；tag 集合见 README「快速开始」，无 latest）
+# 本机部署的镜像版本（透传 compose 的 LOVE_LIFE_VERSION；tag 集合见 README「快速开始」）
 VERSION     ?= 0.1.0
 # 本地签名密钥目录（与 scripts/gen-android-keystore.sh 默认落点一致）
 KEYSTORE_DIR ?= $(HOME)/.love-life-keys
@@ -113,7 +113,7 @@ clean:
 compose-build:   # 经 compose 构建本地镜像（Dockerfile 内部调 make，与本地同一构建链）；随后 make up 直接用本地产物
 	LOVE_LIFE_VERSION=$(VERSION) $(COMPOSE) build
 
-up:   # 启动（本地无镜像则拉远端；版本用 make up VERSION=<x.y.z>，无 latest tag）
+up:   # 启动（本地无镜像则拉远端；版本用 make up VERSION=<x.y.z>）
 	LOVE_LIFE_VERSION=$(VERSION) $(COMPOSE) up -d
 
 down:

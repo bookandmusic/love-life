@@ -168,7 +168,7 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 `make compose-build`：经 compose 构建本地镜像——`Dockerfile` 内部调的正是「二进制」那批目标（先建 admin 内嵌、再 `make build-server`），构建链与本地一致；产物与 `make up` 同名同版本，构建后直接 `make up` 即跑本地产物、不拉远端。
 
 - 跑本地镜像的**数据卷 / 首启凭据 / 端口 / TLS** 见 README「快速开始」：`DATA_DIR` 要指卷内路径（备份口径见 ARCHITECTURE「备份与迁移」），`ADMIN_USER` / `ADMIN_PASS` 只在数据目录为空时生效（同「开发账号」）。
-- `make up` / `make logs` / `make down`：compose 三连，部署面权威在 README；版本用 `make up VERSION=<x.y.z>` 覆盖（无 `latest` tag）。
+- `make up` / `make logs` / `make down`：compose 三连，部署面权威在 README；版本用 `make up VERSION=<x.y.z>` 覆盖。
 
 ### 3.3 APK
 
@@ -213,7 +213,7 @@ git push origin v0.1.0
 
 推送即触发 Docker 与 APK 两个 workflow。
 
-- **Docker**（`docker-publish.yml`）：推 `ghcr.io/bookandmusic/love-life`，多架构 `linux/amd64` + `linux/arm64`；tag 集合 = `v0.1.0` / `0.1.0` / `0.1`（`1` 仅非 v0.x，`v0.x` 阶段不产裸主版本）/ `sha-<短SHA>`，**不产 `latest`**——compose 与 README 用版本变量，见 README「快速开始」。workflow 本身只调 `docker build`，构建链在 `Dockerfile` 内（即 Makefile 的目标）。
+- **Docker**（`docker-publish.yml`）：推 `ghcr.io/bookandmusic/love-life`，多架构 `linux/amd64` + `linux/arm64`；tag 集合 = `v0.1.0` / `0.1.0` / `0.1`（`1` 仅非 v0.x，`v0.x` 阶段不产裸主版本）/ `sha-<短SHA>`，另由 `docker/metadata-action` 的 `flavor.latest=auto` 默认产出 **`latest`**（跟随最新 `v*` tag 移动；自部署仍应钉版本号，见 README「快速开始」）。workflow 本身只调 `docker build`，构建链在 `Dockerfile` 内（即 Makefile 的目标）。
 - **APK**（`android-build.yml`）：构建步骤为 `make android-apk`，与本地同链（`keystore.properties` 由 workflow 前序步骤从 secrets 写入；本地由 `android-sign-env` 从 `.env` 生成，这是两条路径的唯一差异）。产出单个通用 APK（含 `arm64-v8a` / `armeabi-v7a` / `x86_64` / `x86` 四种 ABI）+ Play 上架用 AAB，传一份 Release 草稿；workflow artifact **未设 `retention-days`**，保留期按仓库设置（默认 90 天）。产物形态与安装方式见 README「手机 APP」。
 
 ### 4.3 维护事项

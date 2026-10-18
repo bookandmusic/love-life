@@ -6,7 +6,7 @@
 services:
   love-life:
     build: .   # 本地构建（make compose-build）；拉远端时 image 名即 registry 名
-    image: ghcr.io/bookandmusic/love-life:${LOVE_LIFE_VERSION:-0.1.0}   # 升级改版本号；不存在 latest tag
+    image: ghcr.io/bookandmusic/love-life:${LOVE_LIFE_VERSION:-0.1.0}   # 升级改版本号；别用 latest（会随发版漂移）
     container_name: love-life
     ports:
       - "8080:8080"
