@@ -12,7 +12,7 @@
 
 ## 1. 本地开发（浏览器为主）
 
-日常开发 = **浏览器 + Vite dev server**：三个终端（后端 / admin / APP）跑起来后，页面开发、联调、自测全在浏览器里完成，**不需要 Rust / Android SDK**——那两样只有构建 APK 与真机验证时才用，见「构建（二进制 / 镜像 / APK）」。
+日常开发 = **浏览器 + Vite dev server**：三个终端（后端 / admin / APP）跑起来后，页面开发、联调、自测全在浏览器里完成，**不需要 Rust / Android SDK**——那两样只有构建 APK 时才用，见「构建（二进制 / 镜像 / APK）」。APP 的手机形态在浏览器里用移动视口验证（见「健康检查（全链路）」）。
 
 后端用 `go run` 直跑，**没有「先构建再运行」这一步**，也就不存在二进制落后于源码的问题；`bin/server` 只是供发布的构建产物，与镜像、APK 并列，日常开发不碰。
 
@@ -26,7 +26,7 @@
 | Node | 22（workflow `node-version: '22'`，镜像 `node:22-alpine`） | admin、mock、APP 前端 |
 | pnpm | 随 Node 22（`app/pnpm-lock.yaml`）；CI 钉 `pnpm@11`（`corepack prepare`） | APP（`app/` 只用 pnpm） |
 | npm | 随 Node 22（`admin/package-lock.json`） | admin 与 mock（`make deps` / `make mock`） |
-| Rust + Android SDK | 仅构建 APK 与真机验证需要 | `make android-apk`；浏览器开发全程不需要 |
+| Rust + Android SDK | 仅构建 APK 需要 | `make android-apk`；浏览器开发全程不需要 |
 
 > 本机没有 Rust 工具链不影响日常开发；工具链装在容器内的，容器重建即丢失（见「发布前检查清单」）。
 
@@ -66,8 +66,8 @@
 
 访问地址口径：
 
-- Android 真机访问不到 `127.0.0.1`：APP 登录页的服务端地址要填**本机局域网地址**（`hostname -I | awk '{print $1}'`；macOS 用 `ipconfig getifaddr en0`），形如 `192.168.1.23:8080`。
-- 用浏览器验证页面时同理——访问局域网地址而不是 `127.0.0.1`（理由与前置检查见 AGENTS「浏览器验证」）。
+- 服务端地址一律填**本机局域网地址**（`hostname -I | awk '{print $1}'`；macOS 用 `ipconfig getifaddr en0`），形如 `192.168.1.23:8080`：服务常跑在容器或另一层命名空间里，`127.0.0.1` 指向的是浏览器那一侧，会连不上或连到别的东西。
+- 浏览器验证页面同理——访问局域网地址而不是 `127.0.0.1`（理由与前置检查见 AGENTS「浏览器验证」）。
 
 ### 1.5 端口分配
 
@@ -125,17 +125,22 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 
 固定用 `mcp__chrome-devtools__*` 工具，**访问局域网地址**（IP 取法见「启动命令（三端都连真实后端）」，形如 `http://192.168.x.x:5173`）——不用 `127.0.0.1`：服务常跑在容器里，浏览器那一侧的 `127.0.0.1` 连不到它。
 
+**APP 一律按手机页面验**：先用 `chrome-devtools-emulate` 把视口设成手机档（`390x844x3,mobile,touch`），再按页面走查——这是 APP 的基准形态，桌面 / 平板档只在改响应式或浮层时补验（客户端设计「坑与验收口径（改浮层前先看这里）」的六档）。手机视口下能验的都在这里验完，不需要另找设备。
+
 两端各走一遍 登录 → 首屏：
 
 | 端 | 打开 | 期望看到 |
 |:--|:--|:--|
 | admin | `http://<IP>:5173` | 登录页 → admin 登录 → 仪表盘，七个导航项（仪表盘 / 空间管理 / AI 配置 / 外部集成 / 回收站 / 审计日志 / 服务日志，PRODUCT「后台管理页面功能范围（admin）」） |
-| APP | `http://<IP>:1420` | 登录页 → 成员账号登录（见「APP 登录用成员账号，不是 admin」）→ 传统模式底部五个 tab + 右下角 FAB；AI 模式未配模型 Key 时切换项置灰是预期（PRODUCT「双模式界面」） |
+| APP | `http://<IP>:1420`（手机视口） | 登录页 → 成员账号登录（见「APP 登录用成员账号，不是 admin」）→ 传统模式底部五个 tab + 右下角 FAB；AI 模式未配模型 Key 时切换项置灰是预期（PRODUCT「双模式界面」） |
 
 每端三件事：`take_snapshot` 确认上表元素在；`list_console_messages` 无 error；`list_network_requests` 里 `/api/*` 无 5xx、无代理失败。各留一张 `take_screenshot` 存档。
 
-**② 判定口径**
+**② 功能走查（手机视口，改到哪验到哪）**
 
+- 传统模式五 tab + 发布 + 通知 + 设置各走一遍主路径：列表 → 详情/弹层 → 提交，覆盖「空态 / 有数据 / 长按删除」三种状态。
+- AI 模式：空会话欢迎语与 chips、发一条消息（流式正文）、出确认卡 → 确认或取消、结果卡勾选 → 引用条、停止生成、会话新建与删除。
+- 交互手势在触屏模拟下验：长按（`pointerdown` 500ms）走 `ConfirmSheet`；弹层贴屏幕底、不溢出（手机档 32px 溢出是历史坑，见客户端设计「坑与验收口径」）。
 - 结论落到具体观测（页面元素、console、网络响应），不写「看起来正常」（AGENTS「浏览器验证」）。
 - 白屏 / console 报错 → 前端问题：查 vite 与 console，不回后端。
 - 页面在但接口 4xx / 5xx → 前后端契约或登录态问题：按响应码查。
@@ -167,7 +172,7 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 
 ### 3.3 APK
 
-本地签名包（冒烟用）三步——**需要 Rust + Android SDK**：
+本地签名包（自测用）三步——**需要 Rust + Android SDK**：
 
 ```text
 make android-keystore    一次性：生成密钥并写 .env
@@ -178,7 +183,7 @@ make android-apk         构建 release 包，产物在 app/src-tauri/gen/androi
 - `keystore.properties` 由 CI 构建时写入，本地即由第二步生成；缺失时 release 用未签名/默认配置，debug 不受影响。
 - 本地与 CI 都经 `make android-apk` 调用（底层即 `pnpm tauri android build`）。用 `node_modules/.bin/tauri` 直调会让 CLI 把生成的 Gradle 任务写成 `executable="node"`，Gradle 阶段报 `Cannot find module '<路径>/tauri'`（CI 的 init 会自愈回 `pnpm`，本地需注意）。
 - 换图标：`make app-icon`——源图是 `app/src-tauri/icons/icon.png`（512×512 主图，在仓；README 顶部那张 `assets/images/logo.png` 是同款设计的 1254×1254 大图，但 tauri 命令只吃前者）。换图标 = 替换该文件后重跑，`src-tauri/icons/` 与 Android `res/` 整套重新生成，diff 较大属正常。
-- **发布产物仍以 CI 为准**（见「发布（CI，tag 触发）」）；本地包只供真机冒烟。
+- **发布产物仍以 CI 为准**（见「发布（CI，tag 触发）」）；本地包只供自测。
 
 ## 4. 发布（CI，tag 触发）
 
@@ -222,10 +227,4 @@ git push origin v0.1.0
 - [ ] **仓库已配置 git remote 并推送**：workflow 跑在 GitHub Actions 上，没有 remote（或没推 tag）不会触发；仓库地址由仓库所有者决定。
 - [ ] **三项签名 secrets 已录入**：见「发布（CI，tag 触发）」，名称须完全一致；未录入时 workflow 会在签名步骤直接失败。
 - [ ] **密钥库已离线备份**：丢失后无法为已安装的 App 发布更新。
-- [ ] **CI 产出的 release APK 已在真机安装并启动一次**：本地可先用 `make android-apk` 打签名包冒烟，发布前仍以 CI 产物为准。
-- [ ] **功能侧真机待验项已过**：本仓库开发环境默认没有 Rust 工具链与 Android SDK（工具链装在容器内，容器重建即丢失），以下真机侧行为一律未在设备上跑过：
-  - [ ] `dialog.save()` 在 Android 上返回的路径形态，以及 `fs` 能否直接写 `content://` URI（**首要待验项**：若不支持，改为先写应用目录再用系统「打开 / 分享」交给用户）。
-  - [ ] SAF 选择器里是否出现相册 / 下载目录；`fs:scope` 现给 `**`，真机若拒绝则按需收窄。
-  - [ ] 大文件（>100MB 视频）流式写入的内存与耗时；保存过程中切到后台的行为。
-  - [ ] 未登录 / 离线 / 服务端不可达时的提示；弱网下签名重签的表现。
-  - [ ] iOS（若后续打包）：`save()` 走「文件」App，`fs` 写入沙盒内路径。
+- [ ] **CI 产出的 release APK 安装并启动一次**：确认签名与打包链路产物可用；功能验收以浏览器手机视口实测为准（见「健康检查（全链路）」）。
