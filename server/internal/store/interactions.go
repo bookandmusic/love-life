@@ -221,13 +221,6 @@ func (d *DB) ListComments(ctx context.Context, postID int64, limit, offset int) 
 	return list, rows.Err()
 }
 
-// CountComments 某动态未删评论总数（list_comments 分页 total 用）。
-func (d *DB) CountComments(ctx context.Context, postID int64) (int, error) {
-	var n int
-	err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM comments WHERE post_id = ? AND deleted_at IS NULL`, postID).Scan(&n)
-	return n, err
-}
-
 func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	row := d.QueryRowContext(ctx, `
 		SELECT c.id, c.post_id, c.author_id, c.content, c.created_at, COALESCE(u.nickname, u.username)

@@ -93,13 +93,13 @@ type Uploaded struct {
 
 // tempMeta 临时区 sidecar 元数据（media/tmp/{token}.json），发布转正时读取；让元数据跨重启存活。
 type tempMeta struct {
-	Kind     string `json:"kind"`
-	Width    int    `json:"width"`
-	Height   int    `json:"height"`
-	Size     int64  `json:"size"`
+	Kind     string  `json:"kind"`
+	Width    int     `json:"width"`
+	Height   int     `json:"height"`
+	Size     int64   `json:"size"`
 	Duration float64 `json:"duration,omitempty"`
-	TakenAt  string `json:"taken_at,omitempty"`
-	OwnerID  int64  `json:"owner_id,omitempty"` // 上传者：discard 归属校验用（ARCHITECTURE「媒体上传管线」）
+	TakenAt  string  `json:"taken_at,omitempty"`
+	OwnerID  int64   `json:"owner_id,omitempty"` // 上传者：discard 归属校验用（ARCHITECTURE「媒体上传管线」）
 	// Finalized 已收尾：分片上传的末片响应丢失后，客户端重发末片时据它直接取回结果
 	// （否则 offset 已落后、只会拿到 409，客户端卡在「传完了却拿不到 token」）。
 	Finalized bool `json:"finalized,omitempty"`

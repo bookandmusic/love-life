@@ -433,34 +433,6 @@ func (d *DB) GetResultSet(ctx context.Context, sessionID int64, resultID string)
 
 // ---- 上下文组装与会话范围查询（模型上下文组装用） ----
 
-// CardCarrier 卡片载体消息行（会话内所有带 card_id 的消息，按 id 升序）。
-type CardCarrier struct {
-	RowID  int64
-	CardID int64
-}
-
-// CardCarriers 会话内全部卡片载体行（不受条数窗口限制）：已裁决提案的回放要跨窗口稳定存在。
-func (d *DB) CardCarriers(ctx context.Context, userID, sessionID int64) ([]CardCarrier, error) {
-	// 载体行 = 带 card_id 的 assistant 行；同一 card_id 可能有多行（提案载体 + 裁决回执），
-	// 按 card_id 去重取最早一行——否则同一张卡会在上下文里回放两次。
-	rows, err := d.QueryContext(ctx, `SELECT MIN(id), card_id FROM chat_messages
-		WHERE user_id = ? AND session_id = ? AND card_id IS NOT NULL AND role = 'assistant'
-		GROUP BY card_id ORDER BY MIN(id) ASC`, userID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []CardCarrier
-	for rows.Next() {
-		var c CardCarrier
-		if err := rows.Scan(&c.RowID, &c.CardID); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
-}
-
 // CardResults 各卡片最新一条执行回执（tool_result 行内容）；无回执不在返回中。
 func (d *DB) CardResults(ctx context.Context, cardIDs []int64) (map[int64]string, error) {
 	out := map[int64]string{}
