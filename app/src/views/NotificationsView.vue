@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { CheckCheck, Bell, Heart, MessageCircle, Star, Trash2, Images, Cake, MapPin } from 'lucide-vue-next'
-import { api, errText, fmtDateTime } from '../api/client'
+import { Bell, Heart, MessageCircle, Star, Trash2, Images, Cake, MapPin } from 'lucide-vue-next'
+import { api, errText } from '../api/client'
+import { fmtDateTime } from '../utils/time'
 import AppToast from '../components/AppToast.vue'
 import PageLayout from '../components/PageLayout.vue'
 import EmptyState from '../components/EmptyState.vue'
 import ErrorState from '../components/ErrorState.vue'
 import SkeletonState from '../components/SkeletonState.vue'
 import { useUnread } from '../stores/notifications'
+import { useAuth } from '../stores/auth'
 
 interface NotifItem {
   id: number
@@ -16,12 +18,12 @@ interface NotifItem {
   target_type: string
   target_id: number
   snapshot: string
-  is_read: boolean
   created_at: string
 }
 
 const router = useRouter()
 const unreadStore = useUnread()
+const auth = useAuth()
 const items = ref<NotifItem[]>([])
 const error = ref('')
 const loading = ref(false)
@@ -47,11 +49,21 @@ function iconOf(t: string) {
   return eventIcon[t] ?? { icon: Bell, color: 'var(--muted-ink)' }
 }
 
+// 互动通知归属：目标动态作者是当前用户 → 「你的动态」；是操作者本人 → 「自己的动态」。
+// author_id 缺失（升级前的历史通知）按旧口径「你的」渲染；当前身份未就绪时同样不猜归属，
+// 一并回退「你的」——反猜成「自己的」会把对方的内容说成自己的。
+function possessive(s: Record<string, unknown>): string {
+  if (typeof s.author_id !== 'number') return '你的'
+  const me = auth.user?.id
+  if (me == null) return '你的'
+  return s.author_id === me ? '你的' : '自己的'
+}
+
 const eventText: Record<string, (s: Record<string, unknown>) => string> = {
   post_created: (s) => `${s.operator} 发布了新动态：${s.content ?? ''}`,
-  post_liked: (s) => `${s.operator} 赞了你的动态`,
-  post_favorited: (s) => `${s.operator} 收藏了你的动态`,
-  post_commented: (s) => `${s.operator} 评论了你的动态：${s.content ?? ''}`,
+  post_liked: (s) => `${s.operator} 赞了${possessive(s)}动态`,
+  post_favorited: (s) => `${s.operator} 收藏了${possessive(s)}动态`,
+  post_commented: (s) => `${s.operator} 评论了${possessive(s)}动态：${s.content ?? ''}`,
   post_deleted: (s) => `${s.deleted_by} 删除了你发布的动态：${s.content ?? ''}`,
   comment_deleted: (s) => `${s.deleted_by} 删除了你的评论：${s.content ?? ''}`,
   album_created: (s) => `${s.operator ?? ''} 创建了相册「${s.name}」`,
@@ -88,11 +100,11 @@ async function load() {
   }
 }
 
-async function readAll() {
+async function clearAll() {
   try {
-    await api('/api/v1/notifications/read-all', { method: 'POST' })
+    await api('/api/v1/notifications', { method: 'DELETE' })
+    items.value = []
     unreadStore.reset()
-    await load()
   } catch (e) {
     toast.value = errText(e, '操作失败')
   }
@@ -118,24 +130,22 @@ function targetRoute(n: NotifItem): string | null {
 }
 
 async function open(n: NotifItem) {
-  const to = targetRoute(n)
-  const deleted = n.event_type.endsWith('_deleted')
- // 删除类通知虽无跳转，仍要可点：消红点并提示「内容已删除」
-  if (!to && !deleted) return
-  if (!n.is_read) {
-    try {
-      await api(`/api/v1/notifications/${n.id}/read`, { method: 'POST' })
-      n.is_read = true
-      unreadStore.decrement() // 标记已读成功后红点同步减 1（失败静默则不减）
-    } catch {
-      /* 已读失败静默 */
-    }
+  // 点击即删（PRODUCT「通知中心」：通知是临时消费品，点击 = 知道）——无论有没有跳转目标都先消费；
+  // 失败静默：仍继续跳转，条目下次加载仍在
+  try {
+    await api(`/api/v1/notifications/${n.id}`, { method: 'DELETE' })
+    items.value = items.value.filter((x) => x.id !== n.id)
+    unreadStore.decrement() // 删除成功后红点同步减 1（失败静默则不减）
+  } catch {
+    /* 删除失败静默 */
   }
+  const to = targetRoute(n)
   if (to) {
     router.push(to)
     return
   }
-  toast.value = '内容已删除'
+  // 删除类通知无跳转：明说一句（内容已不可见）；其余无目标的通知（如系统公告）点了就是知道，静默消失
+  if (n.event_type.endsWith('_deleted')) toast.value = '内容已删除'
 }
 
 onMounted(load)
@@ -144,7 +154,7 @@ onMounted(load)
 <template>
   <PageLayout title="通知" back standalone @back="router.back()">
     <template #nav-right>
-      <button class="nav-btn action" @click="readAll"><CheckCheck :size="18" stroke-width="2" />全部已读</button>
+      <button class="nav-btn action" @click="clearAll"><Trash2 :size="16" stroke-width="2" />清空</button>
     </template>
       <SkeletonState v-if="loading" variant="list" :rows="5" />
       <ErrorState v-else-if="error" :error="error" :retry="load" />
@@ -155,14 +165,16 @@ onMounted(load)
           v-for="n in items"
           :key="n.id"
           class="row"
-          :class="{ unread: !n.is_read, tappable: !!targetRoute(n) }"
+          :class="{ tappable: !!targetRoute(n) }"
           @click="open(n)"
         >
           <span class="row-icon" :style="{ color: iconOf(n.event_type).color }">
             <component :is="iconOf(n.event_type).icon" :size="16" :fill="n.event_type === 'post_liked' ? 'currentColor' : 'none'" stroke-width="2" />
           </span>
-          <span class="label">{{ text(n) }}</span>
-          <span class="value num">{{ fmtDateTime(n.created_at) }}</span>
+          <div class="row-body">
+            <span class="label">{{ text(n) }}</span>
+            <span class="value num">{{ fmtDateTime(n.created_at) }}</span>
+          </div>
         </div>
       </div>
 
@@ -190,28 +202,41 @@ onMounted(load)
 
 .row {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 10px;
 }
 .row-icon {
   flex-shrink: 0;
   display: flex;
   align-items: center;
+  height: 21px; /* 与 14px×1.5 的首行文字同高：图标光学居中于首行，长内容时不被拉高 */
+}
+.row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
 }
 .label {
-  flex: 1;
   font-size: 14px;
-  min-width: 0;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2; /* 长内容两行截断：通知是临时消费品，全文去内容页看 */
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 .value {
   color: var(--muted-ink);
   font-size: 12px;
   white-space: nowrap;
 }
-.row.unread .label {
+/* 列表内均为未消费通知（临时消费品，PRODUCT「通知中心」）：无需区分已读态，
+   红点恒显示、正文恒加粗。 */
+.row .label {
   font-weight: 600;
 }
-.row.unread::before {
+.row::before {
   content: '';
   width: 6px;
   height: 6px;

@@ -133,17 +133,23 @@ export const anniversaries = [
 ]
 
 // ---------- 通知（字段对齐真实：snapshot 为 JSON 字符串，快照键 operator 等） ----------
-// 站内共 12 类事件（ARCHITECTURE「通知分发器」）；此处抽样展示常见几种
+// 站内共 12 类事件（ARCHITECTURE「通知分发器」）；此处抽样展示常见几种。
+// 通知为临时消费品（PRODUCT「通知中心」）：无 is_read，列表内均为未消费，剩余即未读数。
+// 互动三类（点赞/收藏/评论）快照带 author_id = 目标动态作者，客户端据此渲染
+// 「你的动态 / 自己的动态」；这里两条样本分别覆盖两个分支：
+//   id 1/2/5：他赞/评/藏她发的动态（author 2 = 收件人本人、非操作者）→「你的动态」
+//   id 10：她赞自己发的动态 #1（author 2 = 操作者本人）→「自己的动态」
 export const notifications = [
-  { id: 1, recipient_id: 2, event_type: 'post_liked', target_type: 'post', target_id: 1, is_read: 0, snapshot: '{"operator":"他"}', created_at: new Date(now - 1 * 3600000).toISOString() },
-  { id: 2, recipient_id: 2, event_type: 'post_commented', target_type: 'post', target_id: 1, is_read: 0, snapshot: '{"operator":"他","content":"照片拍得真好！下次带我去"}', created_at: new Date(now - 2 * 3600000).toISOString() },
-  { id: 3, recipient_id: 3, event_type: 'post_created', target_type: 'post', target_id: 5, is_read: 0, snapshot: '{"operator":"她","content":"外滩夜景"}', created_at: new Date(now - 3 * 3600000).toISOString() },
-  { id: 4, recipient_id: 2, event_type: 'anniversary_reminder', target_type: 'anniversary', target_id: 1, is_read: 1, snapshot: '{"name":"在一起"}', created_at: new Date(now - 26 * 3600000).toISOString() },
-  { id: 5, recipient_id: 2, event_type: 'post_favorited', target_type: 'post', target_id: 5, is_read: 1, snapshot: '{"operator":"他"}', created_at: new Date(now - 30 * 3600000).toISOString() },
-  { id: 6, recipient_id: 3, event_type: 'album_created', target_type: 'album', target_id: 2, is_read: 1, snapshot: '{"operator":"她","name":"苏州回忆"}', created_at: new Date(now - 50 * 3600000).toISOString() },
-  { id: 7, recipient_id: 2, event_type: 'post_deleted', target_type: 'post', target_id: null, is_read: 1, snapshot: '{"deleted_by":"他","content":"被我删除的动态内容"}', created_at: new Date(now - 55 * 3600000).toISOString() },
-  { id: 8, recipient_id: 2, event_type: 'comment_deleted', target_type: 'comment', target_id: null, is_read: 1, snapshot: '{"deleted_by":"他","content":"被你删除的评论"}', created_at: new Date(now - 60 * 3600000).toISOString() },
-  { id: 9, recipient_id: 2, event_type: 'system', target_type: null, target_id: null, is_read: 1, snapshot: '{"message":"系统维护公告"}', created_at: new Date(now - 72 * 3600000).toISOString() },
+  { id: 1, recipient_id: 2, event_type: 'post_liked', target_type: 'post', target_id: 1, snapshot: '{"operator":"他","author_id":2}', created_at: new Date(now - 1 * 3600000).toISOString() },
+  { id: 2, recipient_id: 2, event_type: 'post_commented', target_type: 'post', target_id: 1, snapshot: '{"operator":"他","author_id":2,"content":"照片拍得真好！下次带我去"}', created_at: new Date(now - 2 * 3600000).toISOString() },
+  { id: 3, recipient_id: 3, event_type: 'post_created', target_type: 'post', target_id: 5, snapshot: '{"operator":"她","content":"外滩夜景"}', created_at: new Date(now - 3 * 3600000).toISOString() },
+  { id: 4, recipient_id: 2, event_type: 'anniversary_reminder', target_type: 'anniversary', target_id: 1, snapshot: '{"name":"在一起"}', created_at: new Date(now - 26 * 3600000).toISOString() },
+  { id: 5, recipient_id: 2, event_type: 'post_favorited', target_type: 'post', target_id: 5, snapshot: '{"operator":"他","author_id":2}', created_at: new Date(now - 30 * 3600000).toISOString() },
+  { id: 6, recipient_id: 3, event_type: 'album_created', target_type: 'album', target_id: 2, snapshot: '{"operator":"她","name":"苏州回忆"}', created_at: new Date(now - 50 * 3600000).toISOString() },
+  { id: 7, recipient_id: 2, event_type: 'post_deleted', target_type: 'post', target_id: null, snapshot: '{"deleted_by":"他","content":"被我删除的动态内容"}', created_at: new Date(now - 55 * 3600000).toISOString() },
+  { id: 8, recipient_id: 2, event_type: 'comment_deleted', target_type: 'comment', target_id: null, snapshot: '{"deleted_by":"他","content":"被你删除的评论"}', created_at: new Date(now - 60 * 3600000).toISOString() },
+  { id: 9, recipient_id: 2, event_type: 'system', target_type: null, target_id: null, snapshot: '{"message":"系统维护公告"}', created_at: new Date(now - 72 * 3600000).toISOString() },
+  { id: 10, recipient_id: 3, event_type: 'post_liked', target_type: 'post', target_id: 1, snapshot: '{"operator":"她","author_id":2}', created_at: new Date(now - 4 * 3600000).toISOString() },
 ]
 
 // ---------- 地图点位（无 merged_into；同名即同一点位，坐标以先创建者为准） ----------

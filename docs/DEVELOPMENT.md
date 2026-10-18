@@ -87,20 +87,25 @@
 
 **重置** = 清空该目录：`make reset`（先停后端——服务运行中持有 SQLite；目标带交互确认，输 `n` 不动数据）。清空即重置一切：admin 重建、所有 token 失效、成员 / AI 供应商 / 地图源 / Webhook 全部丢失。
 
-### 1.7 admin 账号
+### 1.7 开发账号
 
-本机默认凭据 `admin / admin123456` 已内置为 Makefile 变量（`serve` 自动带上），想换就 `make serve ADMIN_PASS=<密码>` 临时覆盖。
+本机开发三账号的默认凭据（**弱口令，仅限本机开发**，禁止用于任何可被外部访问的实例）：
 
-- 只在库中**无** admin 时生效；已存在则忽略（改密走后台）。
-- **弱口令，仅限本机开发**，禁止用于任何可被外部访问的实例。
+| 账号 | 密码 | 用途 |
+|:--|:--|:--|
+| `admin` | `admin123456` | 登录 admin 后台（`:5173`）。Makefile `serve` 自动带上；只在库中**无** admin 时生效，已存在则忽略（改密走后台）；想换就 `make serve ADMIN_PASS=<密码>` 临时覆盖 |
+| `girl` | `girl123456` | 情侣成员，登录 APP |
+| `boy` | `boy123456` | 情侣成员，登录 APP |
+
+girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设密码。
 
 ### 1.8 APP 登录用成员账号，不是 admin
 
 登录按 `client` 分流——admin 只能登录后台、APP 只接受情侣角色（口径见 PRODUCT「角色与账号」）；admin 账号走 APP 入口（`client:"app"`）登录会被 403 拒绝。所以清空数据后 APP 无法直接用 admin 登录：
 
 1. 先用 `admin / admin123456` 登录后台 `:5173`
-2. 在「成员」里创建情侣成员（girl / boy）
-3. 用成员账号登录 APP
+2. 在「成员」里创建情侣成员（girl / boy，密码见「开发账号」）
+3. 用 girl / boy 登录 APP
 
 ## 2. 本地测试
 
@@ -157,7 +162,7 @@
 
 `make compose-build`：经 compose 构建本地镜像——`Dockerfile` 内部调的正是「二进制」那批目标（先建 admin 内嵌、再 `make build-server`），构建链与本地一致；产物与 `make up` 同名同版本，构建后直接 `make up` 即跑本地产物、不拉远端。
 
-- 跑本地镜像的**数据卷 / 首启凭据 / 端口 / TLS** 见 README「快速开始」：`DATA_DIR` 要指卷内路径（备份口径见 ARCHITECTURE「备份与迁移」），`ADMIN_USER` / `ADMIN_PASS` 只在数据目录为空时生效（同「admin 账号」）。
+- 跑本地镜像的**数据卷 / 首启凭据 / 端口 / TLS** 见 README「快速开始」：`DATA_DIR` 要指卷内路径（备份口径见 ARCHITECTURE「备份与迁移」），`ADMIN_USER` / `ADMIN_PASS` 只在数据目录为空时生效（同「开发账号」）。
 - `make up` / `make logs` / `make down`：compose 三连，部署面权威在 README；版本用 `make up VERSION=<x.y.z>` 覆盖（无 `latest` tag）。
 
 ### 3.3 APK

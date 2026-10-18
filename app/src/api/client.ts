@@ -144,11 +144,3 @@ export async function api<T>(path: string, options: RequestInit = {}, retry = tr
 export function fullUrl(u: string): string {
   return getBase() + u
 }
-
-// 日期展示：ISO（T 分隔）与空格分隔都可能出现，统一为 "YYYY-MM-DD · HH:mm"（按本地时区）
-export function fmtDateTime(s: string): string {
-  const d = new Date(s.replace(' ', 'T'))
-  if (Number.isNaN(d.getTime())) return s.slice(0, 16).replace(/[T ]/, ' · ')
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} · ${p(d.getHours())}:${p(d.getMinutes())}`
-}

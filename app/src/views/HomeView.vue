@@ -3,6 +3,7 @@ import { computed, onActivated, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Cake, ChevronRight, RefreshCw, CalendarDays, Heart, MapPin, Sparkles } from 'lucide-vue-next'
 import { api, errText, fullUrl } from '../api/client'
+import { fmtDate, parseDBTime } from '../utils/time'
 import { mediaSrc, type Post } from '../types'
 import PageLayout from '../components/PageLayout.vue'
 import SkeletonState from '../components/SkeletonState.vue'
@@ -64,18 +65,17 @@ const todayDD = computed(() => {
   return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 })
 // 那年今日：同月同日的历史回忆（有数据才出现，入口卡）；服务端已按本地时区过滤，这里再校验一次。
-// created_at 为 UTC（库内 datetime('now')），直接 slice 取的是 UTC 月日 → 必须解析后按本地时区取月日。
-// 兜底：解析失败回退字符串 slice（老口径），不因格式异常而清空列表。
+// 解析规则统一走 utils/time 的 parseDBTime（库内为 UTC，见该文件头注释）；解析失败兜底字符串 slice。
 function localMMDD(s: string): string {
-  const d = new Date(s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
-  if (Number.isNaN(d.getTime())) return `${(s || '').slice(5, 7)}${(s || '').slice(8, 10)}`
+  const d = parseDBTime(s)
+  if (!d) return `${(s || '').slice(5, 7)}${(s || '').slice(8, 10)}`
   return `${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`
 }
 // 「历史」年份：当年今天发的动态不算那年今日（「同月同日历史回忆」），
 // 与服务端 ListPosts(memories) / mock 同口径。
 function localYear(s: string): number {
-  const d = new Date(s.replace(' ', 'T') + (s.includes('Z') ? '' : 'Z'))
-  return Number.isNaN(d.getTime()) ? Number((s || '').slice(0, 4)) : d.getFullYear()
+  const d = parseDBTime(s)
+  return d ? d.getFullYear() : Number((s || '').slice(0, 4))
 }
 const thisYear = new Date().getFullYear()
 const memoriesToday = computed(() =>
@@ -228,7 +228,7 @@ onActivated(() => {
                   <span v-if="coverMemory.location_name" class="cover-tag"><MapPin :size="12" stroke-width="2" />{{ coverMemory.location_name }}</span>
                 </div>
                 <b class="cover-title">{{ memoryTitle(coverMemory) }}</b>
-                <span class="cover-date">{{ coverMemory.created_at.slice(0, 10) }}</span>
+                <span class="cover-date">{{ fmtDate(coverMemory.created_at) }}</span>
               </div>
             </div>
           </div>
@@ -239,7 +239,7 @@ onActivated(() => {
             <div class="tc-body">
               <p>{{ m.content || '一条回忆' }}</p>
               <div class="tc-meta">
-                <span>{{ m.created_at.slice(0, 10) }}</span>
+                <span>{{ fmtDate(m.created_at) }}</span>
                 <span v-if="m.mood" class="tc-mood">· {{ m.mood }}</span>
                 <span v-if="m.location_name" class="tc-loc">· {{ m.location_name }}</span>
               </div>

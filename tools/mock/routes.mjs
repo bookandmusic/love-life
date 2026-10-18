@@ -164,6 +164,7 @@ function postOut(p, viewerId) {
 }
 
 // 追加站内通知（统一构造 snapshot 字符串）
+// 通知为临时消费品（PRODUCT「通知中心」）：无 is_read 字段，列表内均为未消费，剩余即未读数。
 function addNotification(recipientId, eventType, targetType, targetId, snapshot, minutesAgo = 0) {
   notifications.push({
     id: ++seq.notification,
@@ -171,7 +172,6 @@ function addNotification(recipientId, eventType, targetType, targetId, snapshot,
     event_type: eventType,
     target_type: targetType,
     target_id: targetId,
-    is_read: 0,
     snapshot: typeof snapshot === 'string' ? snapshot : JSON.stringify(snapshot),
     created_at: new Date(now - minutesAgo * 60000).toISOString(),
   })
@@ -831,23 +831,29 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/notifications$/, handler: (ur
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/notifications\/unread-count$/, handler: (url, body, headers) => {
   const uid = userIdFromToken(headers)
   if (!uid) return ok({ count: 0 })
-  const count = notifications.filter((n) => n.recipient_id === uid && !n.is_read).length
+  // 通知为临时消费品：无已读态，列表内剩余条数即未读数（与服务端 UnreadNotificationCount 同口径）
+  const count = notifications.filter((n) => n.recipient_id === uid).length
   return ok({ count })
 }})
 
-routes.push({ method: 'POST', pattern: /^\/api\/v1\/notifications\/\d+\/read$/, handler: (url) => {
-  const id = parseIntParam(url, /\/notifications\/(\d+)\/read/)
+// 点击即删（PRODUCT「通知中心」：通知是临时消费品）；仅能删自己的
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/notifications\/\d+$/, handler: (url, body, headers) => {
+  const uid = userIdFromToken(headers)
+  const id = parseIntParam(url, /\/notifications\/(\d+)/)
   if (!id) return notFound()
-  const n = notifications.find((x) => x.id === id)
-  if (!n) return notFound()
-  n.is_read = 1
-  return ok({})
+  const idx = notifications.findIndex((x) => x.id === id && x.recipient_id === uid)
+  if (idx < 0) return notFound()
+  notifications.splice(idx, 1)
+  return ok({ status: 'ok' })
 }})
 
-routes.push({ method: 'POST', pattern: /^\/api\/v1\/notifications\/read-all$/, handler: (url, body, headers) => {
+// 清空：删除收件人全部通知
+routes.push({ method: 'DELETE', pattern: /^\/api\/v1\/notifications$/, handler: (url, body, headers) => {
   const uid = userIdFromToken(headers)
-  notifications.forEach((n) => { if (n.recipient_id === uid) n.is_read = 1 })
-  return ok({})
+  for (let i = notifications.length - 1; i >= 0; i--) {
+    if (notifications[i].recipient_id === uid) notifications.splice(i, 1)
+  }
+  return ok({ status: 'ok' })
 }})
 
 // --- Chat ---

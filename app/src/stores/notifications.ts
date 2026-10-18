@@ -19,7 +19,7 @@ export const useUnread = defineStore('unread', () => {
     count.value = 0
   }
 
-  /** ：单条标记已读成功后减 1（失败不减；不为负——总数会在下次 refresh 对齐） */
+  /** 单条通知被消费（点击即删）成功后减 1（失败不减；不为负——总数会在下次 refresh 对齐） */
   function decrement() {
     count.value = Math.max(0, count.value - 1)
   }
