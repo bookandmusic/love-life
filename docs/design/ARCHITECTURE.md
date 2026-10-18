@@ -111,6 +111,7 @@ flowchart TB
 | 音频时长 | 上传时解析容器头取 duration（mp3/m4a/wav 自实现，不引入 ffmpeg）；解析失败不阻塞上传、duration 留空 |
 | 视频时长 | 上传时解析容器头取 duration（mp4/mov 读 `moov/mvhd`，与 m4a 同一个 box；webm 读 `Segment/Info` 的 `Duration` × `TimecodeScale`）；**同样零 ffmpeg**，解析失败不阻塞上传、duration 留空，缩略图上的时长角标随之不显示。解析按容器的声明长度逐 box / 逐元素步进，不全文搜特征字节——媒体数据区里出现同名四字节会把随机数据读成时长 |
 | 格式与大小 | 照片 jpg/png/webp；视频 mp4/mov/webm；音频 mp3/m4a/wav；HEIC 首版不支持（上传时明确拒绝并提示）；单文件默认软限 500MB（`MEDIA_MAX_MB` 可配）。**上限在读取阶段生效**：每片请求体先经 `http.MaxBytesReader` 截断（留 8 KiB multipart 信封余量）、追加时再按**累计**字节判限（`AppendChunk`）；超限一律 413（文案见 `media.TooLargeMessage`）且删除半成品、不产生残留 |
+| 空文件 | **0 字节一律拒收**（`media.ErrEmptyFile`，400，文案「文件是空的，请重新选择」）：收尾时（`FinalizeUpload`）统一判 `size == 0` 并清理临时区，三类媒体同一处守卫。不能指望各 kind 的解析兜住——照片会因缩略图解码失败偶然被挡，而视频 / 音频按「容器头解析失败不阻塞上传」静默放过，空文件就会落库成 0:00 的假媒体条目、被统计与相册当成正常媒体计数。守卫在 `finalized` 幂等分支**之后**，已收尾的上传重发末片仍能取回结果。**只拒空文件**：非空但容器头损坏的视频 / 音频照旧通过（时长留空），不把「解析失败」升级成拒收 |
 | 数量上限的单一数据源 | 「单条最多几个媒体」由服务端与 APP **共用同一份** `server/internal/limits/media.json`（Go `go:embed`、APP 直接 import）——服务端校验与发布页/聊天的选择器提示同源，不会各写一份而漂移（历史上后端 18、前端 9，互不相认） |
 | 存储布局 | 数据目录内 `media/{yyyy}/{mm}/{uuid}.{ext}` 主文件 + `thumbs/` 平行缩略图 + `avatars/` 头像（见「部署形态与产物」）。**文件本体在文件系统，数据库只存相对路径** |
 | 无主文件通道 | 头像走独立通道（`SaveAvatar` 直接写 `avatars/{yyyy}/{mm}/`，路径存 `users.avatar_path`），**不进媒体表**——头像无缩略图变体、无相册归属，且是「单用户覆盖」语义，与媒体的追加式记录不同；签名命名空间与媒体隔离（`avatar:<userID>` vs `media:<id>:<variant>`）。后台维护入口见「后台管理页面实现」空间管理 |

@@ -36,6 +36,11 @@ var ErrUnsupportedFormat = errors.New("不支持的媒体格式（照片 jpg/png
 // ErrTooLarge 单文件超过大小上限（可被 errors.Is 识别）。
 var ErrTooLarge = errors.New("文件超过大小上限")
 
+// ErrEmptyFile 上传的文件是 0 字节。必须在收尾时统一拒绝：照片分支会因缩略图解码失败
+// 偶然挡住空文件，而视频 / 音频只做容器头时长解析、解析失败按「不阻塞上传」静默放过，
+// 空文件于是落库成 0:00 的假媒体条目。三类媒体同一处守卫（ARCHITECTURE「媒体上传管线」格式与大小）。
+var ErrEmptyFile = errors.New("文件是空的，请重新选择")
+
 // ErrUploadNotFound 分片上传的目标不存在：token 非法、已被 janitor 清理、或归属不符。
 // 归属不符也归到这里——不向调用方区分「不存在」与「不是你的」，免得成为探测他人上传的手段。
 var ErrUploadNotFound = errors.New("上传不存在或已过期")
@@ -258,6 +263,14 @@ func (p *Pipeline) FinalizeUpload(token string) (*Uploaded, error) {
 	up := &Uploaded{Token: token, Kind: meta.Kind}
 	if info, serr := os.Stat(rawPath); serr == nil {
 		up.Size = info.Size()
+	}
+
+	// 空文件三类一律拒收：放在 photo 解码之前，让「空的 jpg」也得到面向用户的那句文案，
+	// 而不是「生成缩略图失败: decode: image: unknown format」。放在 finalized 幂等分支之后，
+	// 使已收尾的上传重发末片仍能取回结果（协议幂等不被历史空文件卡死）。
+	if up.Size == 0 {
+		p.discardTemp(token)
+		return nil, ErrEmptyFile
 	}
 
 	if meta.Kind == "photo" {
