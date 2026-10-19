@@ -22,7 +22,8 @@ defineOptions({ name: 'AlbumsView' })
 const router = useRouter()
 const route = useRoute()
 const auth = useAuth()
-const view = ref<'timeline' | 'collection'>('timeline')
+// 默认展示「相册」视图（手动相册列表）；时间轴退为第二页签
+const view = ref<'timeline' | 'collection'>('collection')
 // 全屏媒体查看器（iOS）
 const { viewer, openViewer, closeViewer } = useViewer()
 function onViewerPost(postId: number) {
@@ -109,7 +110,7 @@ function askDeleteAlbum(a: AlbumItem) {
   deletingAlbum.value = a
   showDeleteAlbum.value = true
 }
-// 时间轴的月份标题 → 该月未归档媒体详情（按月分组不是册子实体，不列在集合视图里）
+// 时间轴的月份标题 → 该月未归档媒体详情（按月分组不是册子实体，不列在相册视图里）
 function onMonthClick(key: string) {
   router.push(`/albums/month/${key}`)
 }
@@ -138,6 +139,17 @@ async function confirmDeleteAlbum() {
 }
 
 // FAB「相册」带 ?new=1 时自动弹创建 sheet（onActivated 覆盖跨 tab 抵达；watch 覆盖同页重复触发）
+// 默认页签「分情况」：从别的 tab 进「相册」→ 回默认（相册视图）；从本 tab 的子页
+// （/albums/<id>、/albums/month/<key>）返回 → **保留当前视图**，否则"点月份标题看详情、
+// 返回又被弹回相册视图"，用户得重新切时间轴再滚回原处，比不重置更烦。
+// KeepAlive 下失活组件的 watcher 仍响应全局路由（同 PostsView 的 ?focus 处理）。
+watch(
+  () => route.path,
+  (to, from) => {
+    if (to === '/albums' && !from.startsWith('/albums')) view.value = 'collection'
+  },
+)
+
 onActivated(() => {
   void loadAlbums()
   // 时间轴：冷启动或停在第一页时刷新（新增即时可）；已翻页则保留浏览位置
@@ -257,8 +269,8 @@ function onTimelineScroll(e: Event) {
   <PageLayout title="相册" actions @scroll="onTimelineScroll">
     <template #subheader>
       <div class="seg">
+        <button :class="{ on: view === 'collection' }" @click="view = 'collection'">相册</button>
         <button :class="{ on: view === 'timeline' }" @click="view = 'timeline'">时间轴</button>
-        <button :class="{ on: view === 'collection' }" @click="view = 'collection'">集合</button>
       </div>
     </template>
       <!-- 阶段5.1：错误可重试 -->
@@ -338,7 +350,8 @@ function onTimelineScroll(e: Event) {
   flex: 1;
   border: none;
   background: none;
-  padding: 7px 0;
+  padding: 10px 0;
+  min-height: 36px; /* 触控目标 ≥36px（字体行高取整不可靠，用 min-height 定高） */
   border-radius: 7px;
   font-size: 14px;
   font-weight: 500;

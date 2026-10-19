@@ -594,6 +594,15 @@ watch(() => route.query.focus, () => {
   cursor: pointer;
   padding: 4px 6px;
 }
+/* 命中区扩到 44px（iOS HIG 最小点击区）：视觉保持 26px 的小图标。
+   不放大视觉的理由：一屏 120 个操作按钮，全拉到 44px 会让每个帖子的操作行
+   从 48px 长到 66px，白付列表密度的代价。
+   横向只外扩 2px——同排按钮间距有限，大幅横扩会让相邻命中区互相重叠。 */
+.act::before {
+  content: '';
+  position: absolute;
+  inset: -9px -2px;
+}
 .act.on {
   color: var(--primary-deep);
 }

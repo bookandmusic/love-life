@@ -372,7 +372,7 @@ async function finalize() {
   border: none;
   background: var(--surface);
   border-radius: 999px;
-  padding: 6px 12px;
+  padding: 9px 12px; /* 触控目标 ≥32px */
   font-size: 13px;
   color: var(--muted-ink);
   box-shadow: var(--shadow);
@@ -390,7 +390,10 @@ async function finalize() {
   border: none;
   border-radius: 999px;
   padding: 6px 12px;
-  width: 100px;
+  /* flex 而非固定 width：与标签同排时占剩余宽度，被挤到下一行时伸展占满整行
+     （固定 100px 换行后右侧会空出 234px） */
+  flex: 1 1 100px;
+  min-width: 100px;
   font-size: 13px;
   background: var(--surface);
   color: var(--ink);
@@ -526,7 +529,8 @@ async function finalize() {
   background: none;
   color: var(--tint);
   border: none;
-  padding: 4px;
+  /* 主操作：视觉给足（触控目标 ≥36px），不靠伪元素扩命中区 */
+  padding: 8px 12px;
   font-size: 17px;
 }
 .primary:disabled {

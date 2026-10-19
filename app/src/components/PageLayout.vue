@@ -98,7 +98,7 @@ onActivated(() => {
   background: none;
   color: var(--primary);
   cursor: pointer;
-  padding: 4px;
+  padding: 8px; /* 触控目标 ≥36px（原 4px → 30px） */
   display: flex;
   align-items: center;
 }
@@ -127,6 +127,14 @@ onActivated(() => {
   padding-inline: var(--side-pad);
   padding-top: 12px;
   padding-bottom: calc(16px + env(safe-area-inset-bottom));
+}
+
+/* 只有「会滚到底」的内容才需要让开全局 FAB：--fab-space 由 MainView 在「本页有 FAB」时声明
+   （88px），详情页等无 FAB 的场景未声明 → 回落 0。
+   填充型页面（地图视图传 scroll=false → .no-scroll）必须排除：它没有"滚到底"这回事，
+   凭空让出 88px 只会在地图与 TabBar 之间留一条空白带、把地图顶上去（实测地图被压矮 88px）。 */
+.page-body:not(.no-scroll) {
+  padding-bottom: calc(16px + var(--fab-space, 0px) + env(safe-area-inset-bottom));
 }
 .page-body.no-scroll {
   overflow: hidden;

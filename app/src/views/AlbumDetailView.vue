@@ -240,12 +240,15 @@ onMounted(async () => {
         </button>
       </div>
     </div>
-    <!-- 全屏媒体查看器（iOS） -->
+    <!-- 全屏媒体查看器（iOS）。
+         月度分段页只读：它不是相册实体，没有「移出当前相册」这回事，故传 timeline 模式
+         （该模式只渲染「保存 + 查看动态」），避免出现点了没反应的死按钮。
+         月度页 album?.name 恒为 null，改用 timeline 不丢任何展示信息。 -->
     <MediaViewer
       v-if="viewer"
       :items="media"
       :start="viewer.index"
-      mode="album"
+      :mode="isMonth ? 'timeline' : 'album'"
       :album-name="album?.name"
       @close="closeViewer"
       @remove="onViewerRemove"

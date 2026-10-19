@@ -36,7 +36,9 @@ function addClick(fn: () => void) {
 </script>
 
 <template>
-  <div class="main">
+  <!-- has-fab：本页有全局 FAB（chrome 可见）时挂上，PageLayout 据此在内容区底部预留
+       一圈空间，避免滚到底时最后一个列表项被 FAB 压住（详见 --fab-space 的推导注释） -->
+  <div class="main" :class="{ 'has-fab': !chromeHidden }">
     <router-view v-slot="{ Component }">
       <KeepAlive :include="tabViews">
         <component :is="Component" />
@@ -94,6 +96,17 @@ function addClick(fn: () => void) {
   max-width: var(--frame-max);
   margin: 0 auto;
   background: var(--app-veil);
+}
+
+/* FAB 悬浮在内容之上，内容区必须自己让开它，否则滚到底时最后一个列表项被压住
+   （实测重叠 52×52px：FAB 占 (320,706)-(372,758)，末个卡片底边 771）。
+   取值推导：FAB 底距 86px + FAB 高 52px = 其顶边距视口底 138px；TabBar 高 = 6 + 44(min-height)
+   + 6 = 56px；故 FAB 顶边高出「内容区底边」82px，再留 6px 间隙 → 88px。
+   两端都含 env(safe-area-inset-bottom)（FAB 的 bottom 与 TabBar 的 padding），相减时抵消，
+   故 88px 在任何机型一致；PageLayout 自己那份 safe-area 另加，不在此列。
+   改 FAB 尺寸 / TabBar 高度时必须同步这里。 */
+.main.has-fab {
+  --fab-space: 88px;
 }
 
 .main > :deep(*) {

@@ -497,7 +497,8 @@ watch(
 .seg button {
   border: none;
   background: none;
-  padding: 7px 16px;
+  padding: 10px 16px;
+  min-height: 36px; /* 触控目标 ≥36px */
   border-radius: 7px;
   font-size: 13px;
   font-weight: 500;
@@ -635,6 +636,7 @@ watch(
 }
 /* 提醒入口：贴在「下次/每年」小字下方，点开改天数 */
 .meta-line.remind {
+  position: relative; /* 命中区伪元素的锚点 */
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -645,6 +647,14 @@ watch(
   color: var(--tint);
   cursor: pointer;
   width: max-content;
+}
+/* 命中区扩到 39px：原视觉仅 15px，是全站最小的可点控件。
+   纵向只取 ±12px——实测按钮下方到卡片底仅 17px、再往下 28px 就是下一张可点卡片，
+   再多探就会把下一张卡的点击抢走；39px 是「不越界」前提下的上限。 */
+.meta-line.remind::before {
+  content: '';
+  position: absolute;
+  inset: -12px -6px;
 }
 .s-hint {
   margin: 0 0 8px;

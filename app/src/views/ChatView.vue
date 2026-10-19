@@ -1191,13 +1191,14 @@ onBeforeUnmount(() => {
 }
 /* AI 专属头像标识：助手气泡左侧固定标识，用户气泡不加 */
 /* 搜索结果卡片（内联，无跳转） */
-/* 左上角菜单按钮：与 PageLayout 的 nav-btn 同视觉（scoped 下不复用其类，本地等价实现） */
+/* 左上角菜单按钮：与 PageLayout 的 nav-btn 同视觉（scoped 下不复用其类，本地等价实现）——
+   尺寸必须跟着 nav-btn 走，否则同一种控件在两页上手感不一致（nav-btn 已提到 8px / 38px） */
 .menu-btn {
   border: none;
   background: none;
   color: var(--primary);
   cursor: pointer;
-  padding: 4px;
+  padding: 8px; /* 触控目标 ≥36px（与 nav-btn 一致） */
   display: flex;
   align-items: center;
 }
@@ -1210,12 +1211,21 @@ onBeforeUnmount(() => {
   background: var(--ai-bg, var(--bg));
 }
 .chips button {
+  position: relative; /* 命中区伪元素的锚点 */
   border: 1px solid var(--rule);
   background: var(--surface);
   border-radius: 999px;
   padding: 0.35rem 0.9rem;
   font-size: 0.8125rem;
   color: var(--primary-deep);
+}
+/* 命中区扩到 44px：视觉保持 28px。
+   本行在固定高度的对话列里（消息流 + 建议词 + 输入栏），放大视觉会直接吃掉
+   消息流可视高度，故只扩命中区。横向只外扩 2px（行内 gap 为 8px）。 */
+.chips button::before {
+  content: '';
+  position: absolute;
+  inset: -8px -2px;
 }
 
 /* AI 不可用提示（有历史对话时补位，替代 MessageList 的空态）；底色由 --page-bg 钩子承担 */

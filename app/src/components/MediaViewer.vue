@@ -545,6 +545,11 @@ const transformStyle = computed(() => ({
   flex-wrap: wrap;
   justify-content: center;
   gap: 10px;
+  /* 三按钮按容器均分（366px 下各约 115px）：不给固定 min-width，
+     否则「保存 150 + 查看动态 150 + 移出当前相册 150」超过容器宽会换行，
+     把底栏撑高、挤掉图片可视区 */
+  width: 100%;
+  box-sizing: border-box;
 }
 .mv-note {
   margin: 0;
@@ -570,11 +575,13 @@ const transformStyle = computed(() => ({
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-width: 150px;
+  flex: 1 1 auto;
+  min-width: 0; /* 关键：为 0 才能在窄容器里压缩，固定值会导致换行 */
+  white-space: nowrap; /* 文字不折行；最窄 320px 实测三按钮仍不溢出，故不做自适应缩字 */
   border: none;
   border-radius: 999px;
-  padding: 12px 20px;
-  font-size: 15px;
+  padding: 12px 14px;
+  font-size: 14px;
   font-weight: 600;
   color: var(--tint);
   background: rgba(255, 255, 255, 0.18);

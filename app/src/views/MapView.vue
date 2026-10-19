@@ -340,7 +340,8 @@ async function confirmDeletePoint() {
 .seg button {
   border: none;
   background: none;
-  padding: 6px 14px;
+  padding: 9px 14px;
+  min-height: 36px; /* 触控目标 ≥36px（与其它页签统一） */
   border-radius: 7px;
   font-size: 13px;
   font-weight: 500;

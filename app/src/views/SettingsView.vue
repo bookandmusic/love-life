@@ -343,7 +343,8 @@ onMounted(() => {
   flex: 1;
   border: none;
   background: none;
-  padding: 7px 0;
+  padding: 10px 0;
+  min-height: 36px; /* 触控目标 ≥36px */
   border-radius: 7px;
   font-size: 13px;
   color: var(--ink);
