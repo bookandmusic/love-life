@@ -103,9 +103,9 @@ jobs:
           name: love-life-android-${{ github.ref_name }}
           path: artifacts/*
 
-      - name: 上传到 GitHub Release（草稿）
+      - name: 发布到 GitHub Release
         uses: softprops/action-gh-release@v3
         with:
           files: artifacts/*
-          draft: true
+          draft: false
           generate_release_notes: true
