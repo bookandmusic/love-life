@@ -137,7 +137,7 @@ sqlite3 data/love-life.db < server/migrations/fix-time-format.sql
 | [docs/design/客户端设计.md](docs/design/客户端设计.md) | 客户端通用能力：两端职责 / 删除交互 / 另存到本机 / 响应式与浮层 / 媒体查看器 |
 | [docs/design/对外集成.md](docs/design/对外集成.md) | 对外通道与 MCP：双通道调用模型 / PAT 档位 / 工具注解 / 接入与传输协议 |
 | [docs/design/AI模式设计.md](docs/design/AI模式设计.md) | AI 模式子系统设计：模型网关 / Agent 调度 / 工具契约 / SSE 协议 / 图片处理 |
-| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发与构建：本地开发（浏览器为主）/ 本地测试 / 构建（二进制 / 镜像 / APK）/ 发布（CI）/ 发布前检查清单 |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | 开发与构建：本地开发（浏览器为主）/ 本地测试 / 构建（二进制 / 镜像 / APK）/ CI 与发布 / 发布前检查清单 |
 | [AGENTS.md](AGENTS.md) | **文档地图**（哪份内容放哪份文档）；AI 协作开发流程与仓库约定 |
 
 > `docs/dev/` 是本地推进目录（在 `.gitignore` 内）：克隆仓库里没有这个路径。待办与待验证项写在对应文档的清单里，不另设台账文件。

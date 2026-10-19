@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # 版本口径见 DEVELOPMENT「环境要求」：Go 跟 server/go.mod，Node 钉 22
+      - name: 设置 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+
+      - name: 设置 Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: 启用 pnpm（corepack）
+        run: corepack enable && corepack prepare pnpm@11 --activate
+
+      - name: 装三端依赖
+        run: make deps
+
+      # -k：三端各自跑完再一起报，避免后端一挂就看不到前端的结论
+      - name: 全量验证（后端 / APP / admin）
+        run: make -k verify

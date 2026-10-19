@@ -13,6 +13,8 @@ COMPOSE     := docker compose
 # 本机开发默认凭据（弱口令，仅限本机；README 快速开始由部署者自设）
 ADMIN_USER  ?= admin
 ADMIN_PASS  ?= admin123456
+# 数据目录（serve 用）：默认仓库内 server/data；换目录直接覆盖，如 make serve DATA_DIR=$PWD/server/data-prod
+DATA_DIR    ?= $(CURDIR)/server/data
 # 前端 dev server 代理目标：默认连真实后端；连 mock 时 make app-dev API_PROXY=http://127.0.0.1:8787
 API_PROXY   ?= http://127.0.0.1:8080
 # 本机部署的镜像版本（透传 compose 的 LOVE_LIFE_VERSION；tag 集合见 README「快速开始」）
@@ -51,13 +53,13 @@ deps:
 mock:   # 离线开发辅助（:8787，MOCK_PORT 可改）
 	cd $(ADMIN_DIR) && npm run mock
 
-reset:   # 清空 server/data；交互确认，输 n 不动数据
-	@printf '将清空 server/data（admin / token / 成员 / 配置全部丢失），确认？[y/N] '; \
+reset:   # 清空 $(DATA_DIR)；交互确认，输 n 不动数据
+	@printf '将清空 %s（admin / token / 成员 / 配置全部丢失），确认？[y/N] ' '$(DATA_DIR)'; \
 	read a; case "$$a" in [yY]) ;; *) echo 已取消; exit 1;; esac; \
-	rm -rf server/data && mkdir -p server/data
+	rm -rf '$(DATA_DIR)' && mkdir -p '$(DATA_DIR)'
 
 serve:   # 后端 go run 直跑：改了代码即生效，无需先构建（日常开发路径；发布产物见「构建」组）
-	cd $(SERVER_DIR) && $(GO_ENV) DATA_DIR=$(CURDIR)/server/data ADMIN_USER=$(ADMIN_USER) ADMIN_PASS=$(ADMIN_PASS) go run ./cmd/server
+	cd $(SERVER_DIR) && $(GO_ENV) DATA_DIR=$(DATA_DIR) ADMIN_USER=$(ADMIN_USER) ADMIN_PASS=$(ADMIN_PASS) go run ./cmd/server
 
 admin-dev:   # 后台管理页 dev server（:5173）
 	cd $(ADMIN_DIR) && API_PROXY=$(API_PROXY) npm run dev
@@ -73,6 +75,10 @@ verify: verify-server verify-app verify-admin   # fail-fast；make -k verify 跑
 
 verify-server:
 	cd $(SERVER_DIR) && $(GO_ENV) go build ./... && $(GO_ENV) go test ./...
+	@unfmt=$$(cd $(SERVER_DIR) && gofmt -l ./cmd ./internal); \
+		if [ -n "$$unfmt" ]; then \
+			echo "gofmt 未通过，先 gofmt -w 再提交:"; echo "$$unfmt"; exit 1; \
+		fi
 
 verify-app:
 	cd $(APP_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0 && npm test

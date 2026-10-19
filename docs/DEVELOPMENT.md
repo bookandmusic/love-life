@@ -5,7 +5,7 @@
 1. [本地开发（浏览器为主）](#1-本地开发浏览器为主)
 2. [本地测试](#2-本地测试)
 3. [构建（二进制 / 镜像 / APK）](#3-构建二进制--镜像--apk)
-4. [发布（CI，tag 触发）](#4-发布citag-触发)
+4. [CI 与发布](#4-ci-与发布)
 5. [发布前检查清单](#5-发布前检查清单)
 
 ---
@@ -60,7 +60,7 @@
 
 三个终端各起一个（都是前台进程）：
 
-- `make serve` — 后端：`go run` 直跑（`DATA_DIR` 固定指向仓库内 `server/data`——Makefile 传绝对路径，不受 `cd server` 影响；`ADMIN_USER` / `ADMIN_PASS` 内置默认值；**改了 `server/` 保存即生效，不用先构建**）
+- `make serve` — 后端：`go run` 直跑（`DATA_DIR` 默认指向仓库内 `server/data`，换目录就覆盖它：`make serve DATA_DIR=$PWD/server/data-prod`；`ADMIN_USER` / `ADMIN_PASS` 内置默认值；**改了 `server/` 保存即生效，不用先构建**）
 - `make admin-dev` — 后台管理页（`:5173`）
 - `make app-dev` — APP（`:1420`）；连 mock 时 `make app-dev API_PROXY=http://127.0.0.1:8787`
 
@@ -81,9 +81,9 @@
 
 ### 1.6 数据目录与重置
 
-固定使用 `server/data`（已被 `.gitignore` 忽略，清空不影响版本库）。
+开发默认用 `server/data`（已被 `.gitignore` 忽略，清空不影响版本库）；`make serve` 的 `DATA_DIR` 默认就是它，需要另开一份数据（如跑一份真实数据、与开发数据并存）时覆盖即可：`make serve DATA_DIR=$PWD/server/data-prod`——`server/data-prod` 同样已在忽略名单内。
 
-`DATA_DIR` 要显式给成 `server/data`：它的默认值是相对 `./data`、随进程 cwd 解析——不给 `DATA_DIR` 直接跑（`go run ./cmd/server` 或跑 `bin/server`）都会在仓库根另建一份空库，看起来像「数据全丢了」。
+`DATA_DIR` 无论走哪条路都要给成**绝对路径**：它的默认值是相对 `./data`、随进程 cwd 解析——不经 `make serve` 直接跑（`go run ./cmd/server` 或跑 `bin/server`）都会在仓库根另建一份空库，看起来像「数据全丢了」。
 
 **重置** = 清空该目录：`make reset`（先停后端——服务运行中持有 SQLite；目标带交互确认，输 `n` 不动数据）。清空即重置一切：admin 重建、所有 token 失效、成员 / AI 供应商 / 地图源 / Webhook 全部丢失。
 
@@ -114,6 +114,8 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 `make verify` 依次跑三端（`verify-server` / `verify-app` / `verify-admin`），默认 fail-fast；`make -k verify` 跑完全部再一起报。口径（什么必须过、失败怎么办）见 AGENTS「验证命令」。
 
 **两端前端验证强度对齐**：`verify-app` 与 `verify-admin` 都走「类型检查 + ESLint（`--max-warnings=0`）」，规则同一套（各自的 `eslint.config.js`，Vue 3 + TS 扁平配置）；差别只在 APP 侧多一层 `node --test`。admin 没有单测——它的逻辑集中在配置表单与接口调用，类型检查 + lint 已覆盖主要风险面。
+
+**后端多一道 gofmt**：`verify-server` 在编译与测试之外跑 `gofmt -l`，列出的文件即未通过（先 `gofmt -w` 再提交）。编辑器保存时自动格式化的可以忽略这道，它是给「没配自动格式化」的环境兜底的，也是 CI 的同一道门。
 
 **APP 侧测试用 Node 内置 runner**（`node --test`，零新依赖，无需 vitest / jest）：用例文件与源码同目录、后缀 `.test.mjs`（`.mjs` 而非 `.ts`，否则 `vue-tsc` 会因 `import '…/x.ts'` 的扩展名报错）；入口是 `app/scripts/run-tests.mjs`，`make verify-app` 里以 `npm test` 调用。该入口除了跑用例，还要求**实际执行的用例数不低于一个下限**——`node --test <glob>` 在 glob 一个文件都没匹配到时返回 exit 0，不设下限的话改名/换后缀会让整套 APP 测试静默消失、verify 依旧全绿。新增用例请同步抬高 `run-tests.mjs` 里的 `MIN_TESTS`。
 
@@ -149,7 +151,7 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 
 ## 3. 构建（二进制 / 镜像 / APK）
 
-构建 = 三个发布产物，各自独立、按需产出；日常开发不碰它们（后端 `go run`、前端 Vite，见「本地开发（浏览器为主）」）。三个产物本地与 CI 走同一条 make 构建链：二进制与镜像由 `Dockerfile` 调同一批目标（见「Docker 镜像」），APK 的 CI 也执行 `make android-apk`（见「发布（CI，tag 触发）」）。
+构建 = 三个发布产物，各自独立、按需产出；日常开发不碰它们（后端 `go run`、前端 Vite，见「本地开发（浏览器为主）」）。三个产物本地与 CI 走同一条 make 构建链：二进制与镜像由 `Dockerfile` 调同一批目标（见「Docker 镜像」），APK 的 CI 也执行 `make android-apk`（见「CI 与发布」）。
 
 ### 3.1 二进制
 
@@ -185,13 +187,29 @@ make android-apk         构建 release 包，产物在 app/src-tauri/gen/androi
 - `keystore.properties` 由 CI 构建时写入，本地即由第二步生成；缺失时 release 用未签名/默认配置，debug 不受影响。
 - 本地与 CI 都经 `make android-apk` 调用（底层即 `pnpm tauri android build`）。用 `node_modules/.bin/tauri` 直调会让 CLI 把生成的 Gradle 任务写成 `executable="node"`，Gradle 阶段报 `Cannot find module '<路径>/tauri'`（CI 的 init 会自愈回 `pnpm`，本地需注意）。
 - 换图标：`make app-icon`——源图是 `app/src-tauri/icons/icon.png`（512×512 主图，在仓；README 顶部那张 `assets/images/logo.png` 是同款设计的 1254×1254 大图，但 tauri 命令只吃前者）。换图标 = 替换该文件后重跑，`src-tauri/icons/` 与 Android `res/` 整套重新生成，diff 较大属正常。
-- **发布产物仍以 CI 为准**（见「发布（CI，tag 触发）」）；本地包只供自测。
+- **发布产物仍以 CI 为准**（见「CI 与发布」）；本地包只供自测。
 
-## 4. 发布（CI，tag 触发）
+## 4. CI 与发布
 
-两个 workflow 都由推 `v*` tag 触发，各产各的物。
+三个 workflow：`ci.yml` 在推 main / 提 PR / 打 `v*` tag 时跑全量验证；`android-build.yml` 与 `docker-publish.yml` 由推 `v*` tag 触发，各产各的物。
 
-### 4.1 一次性配置：签名密钥与 secrets（仅 APK 需要）
+### 4.1 CI 检查（push / PR 自动验证）
+
+`.github/workflows/ci.yml` 只做一件事：把验证命令原样搬到 CI（口径见 AGENTS「验证命令」）。依赖安装与验证全走 make（`make deps` + `make -k verify`），本地与 CI 同一口径，不在 workflow 里另写一套命令。
+
+| 触发 | 时机 |
+|:--|:--|
+| `push: branches: [main]` | 推 main |
+| `pull_request` | 提 PR |
+| `push: tags: ['v*']` | 打 tag（发布前先验一遍） |
+| `workflow_dispatch` | 手动跑 |
+
+- **版本口径与「环境要求」同源**：Go 跟 `server/go.mod`（`go-version-file`，不钉死数字）；Node 钉 22、pnpm 钉 11（corepack）。
+- **`-k` 跑完全部再报**：三端各自出结论，不会后端一挂就看不到前端结果。
+- **权限只读**（`contents: read`）：不碰仓库内容、不传制品。
+- 想在本机复现 CI 行为，就是 `make deps && make -k verify`。
+
+### 4.2 一次性配置：签名密钥与 secrets（仅 APK 需要）
 
 运行 `make android-keystore`。脚本会交互式询问密码，然后：把密钥库生成到 `~/.love-life-keys/upload-keystore.jks`（放在仓库之外避免误提交，可用 `KEYSTORE_DIR` 覆盖）；把三项 secret 写入仓库根目录 `.env`（已被 gitignore），并打印 `gh` 一键录入命令。在仓库 Settings → Secrets and variables → Actions 录入，名称须完全一致：
 
@@ -204,7 +222,7 @@ make android-apk         构建 release 包，产物在 app/src-tauri/gen/androi
 > [!CAUTION]
 > **换了密钥，已安装的旧 APK 无法覆盖安装 / 更新。**密钥库请离线备份；未录入 secrets 时 workflow 会在签名步骤直接失败。
 
-### 4.2 触发与产物
+### 4.3 触发与产物
 
 tag 名 = `v<version>`，version 必须与 `app/src-tauri/tauri.conf.json` 的 `version` 一致（推送前先核对，不一致 workflow 直接失败）：
 
@@ -213,12 +231,12 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-推送即触发 Docker 与 APK 两个 workflow。
+推送即触发三个 workflow：CI 再验一遍，Docker 与 APK 各产各的物。
 
 - **Docker**（`docker-publish.yml`）：推 `ghcr.io/bookandmusic/love-life`，多架构 `linux/amd64` + `linux/arm64`；tag 集合 = `v0.1.0` / `0.1.0` / `0.1`（`1` 仅非 v0.x，`v0.x` 阶段不产裸主版本）/ `sha-<短SHA>`，另由 `docker/metadata-action` 的 `flavor.latest=auto` 默认产出 **`latest`**（跟随最新 `v*` tag 移动；自部署仍应钉版本号，见 README「快速开始」）。workflow 本身只调 `docker build`，构建链在 `Dockerfile` 内（即 Makefile 的目标）。
 - **APK**（`android-build.yml`）：构建步骤为 `make android-apk`，与本地同链（`keystore.properties` 由 workflow 前序步骤从 secrets 写入；本地由 `android-sign-env` 从 `.env` 生成，这是两条路径的唯一差异）。产出单个通用 APK（含 `arm64-v8a` / `armeabi-v7a` / `x86_64` / `x86` 四种 ABI）+ Play 上架用 AAB，传一份 Release 草稿；workflow artifact **未设 `retention-days`**，保留期按仓库设置（默认 90 天）。产物形态与安装方式见 README「手机 APP」。
 
-### 4.3 维护事项
+### 4.4 维护事项
 
 - **〔两端〕**`app/src-tauri/gen/android/` 纳入版本管理（Tauri 官方约定，工程自带 `.gitignore`，构建产物与 `keystore.properties` 不会入库）。签名配置与 release 明文开关写在 `app/build.gradle.kts`。
 
@@ -227,6 +245,7 @@ git push origin v0.1.0
 首次发布前逐项确认——**下面任何一项未完成，都是发布阻断**：
 
 - [ ] **仓库已配置 git remote 并推送**：workflow 跑在 GitHub Actions 上，没有 remote（或没推 tag）不会触发；仓库地址由仓库所有者决定。
-- [ ] **三项签名 secrets 已录入**：见「发布（CI，tag 触发）」，名称须完全一致；未录入时 workflow 会在签名步骤直接失败。
+- [ ] **待发布提交的 CI 全绿**：main 上 `ci.yml` 通过（后端编译测试 + gofmt / APP 与 admin 类型检查 lint / APP 单测）；本机复现 = `make -k verify`。tag 推送会再触发一次，别等它先失败。
+- [ ] **三项签名 secrets 已录入**：见「CI 与发布」，名称须完全一致；未录入时 workflow 会在签名步骤直接失败。
 - [ ] **密钥库已离线备份**：丢失后无法为已安装的 App 发布更新。
 - [ ] **CI 产出的 release APK 安装并启动一次**：确认签名与打包链路产物可用；功能验收以浏览器手机视口实测为准（见「健康检查（全链路）」）。
