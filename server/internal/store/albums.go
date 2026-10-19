@@ -18,13 +18,6 @@ type Album struct {
 	CoverMediaID sql.NullInt64
 }
 
-// MonthGroup 集合视图里的按月分组（查询即时聚合，非实体）：该月未归属手动相册的媒体。
-type MonthGroup struct {
-	MonthKey     string
-	ItemCount    int
-	CoverMediaID sql.NullInt64
-}
-
 func (d *DB) CreateAlbum(ctx context.Context, name, description string, createdBy int64) (int64, error) {
 	return createAlbumTx(ctx, d, name, description, createdBy)
 }
@@ -73,39 +66,6 @@ func (d *DB) GetAlbum(ctx context.Context, id int64) (*Album, error) {
 		return nil, err
 	}
 	return &a, nil
-}
-
-// ListMonthGroups 按月分组列表：该月未归属相册的媒体按 taken_at||created_at 归月
-// （口径与 ListMonthlyMedia 同源，避免两处漂移）；无照片的月份不出现（有几个月亮几个月）。
-func (d *DB) ListMonthGroups(ctx context.Context) ([]MonthGroup, error) {
-	monthExpr := func(alias string) string {
-		return `COALESCE(NULLIF(strftime('%Y-%m', ` + alias + `.taken_at), ''), strftime('%Y-%m', ` + alias + `.created_at, 'localtime'))`
-	}
-	query := `SELECT mk, COUNT(*) AS n,
-			(SELECT m3.id FROM media m3 JOIN posts p3 ON p3.id = m3.post_id
-			 WHERE m3.deleted_at IS NULL AND p3.deleted_at IS NULL
-			   AND ` + monthExpr("m3") + ` = mk AND ` + notInAlbum("m3") + `
-			 ORDER BY COALESCE(NULLIF(m3.taken_at,''), m3.created_at) DESC, m3.id DESC LIMIT 1) AS cover
-		FROM (
-			SELECT m.id, ` + monthExpr("m") + ` AS mk
-			FROM media m JOIN posts p ON p.id = m.post_id
-			WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND ` + notInAlbum("m") + `
-		)
-		GROUP BY mk ORDER BY mk DESC`
-	rows, err := d.QueryContext(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var list []MonthGroup
-	for rows.Next() {
-		var g MonthGroup
-		if err := rows.Scan(&g.MonthKey, &g.ItemCount, &g.CoverMediaID); err != nil {
-			return nil, err
-		}
-		list = append(list, g)
-	}
-	return list, rows.Err()
 }
 
 // SoftDeleteAlbum 仅手动相册可删（月）；

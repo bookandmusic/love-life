@@ -15,7 +15,7 @@ import ErrorState from '../components/ErrorState.vue'
 import TimelineGrid from '../components/albums/TimelineGrid.vue'
 import AlbumCollection from '../components/albums/AlbumCollection.vue'
 import AlbumSheets from '../components/albums/AlbumSheets.vue'
-import type { AlbumItem, MonthRow, TimelineItem } from '../types/albums'
+import type { AlbumItem, TimelineItem } from '../types/albums'
 
 defineOptions({ name: 'AlbumsView' })
 
@@ -31,7 +31,6 @@ function onViewerPost(postId: number) {
 }
 
 const albums = ref<AlbumItem[]>([])
-const months = ref<MonthRow[]>([])
 const timeline = ref<TimelineItem[]>([])
 const error = ref('')
 // C2 手动相册创建 sheet
@@ -110,8 +109,9 @@ function askDeleteAlbum(a: AlbumItem) {
   deletingAlbum.value = a
   showDeleteAlbum.value = true
 }
-function onMonthClick(m: MonthRow) {
-  router.push(`/albums/month/${m.month_key}`)
+// 时间轴的月份标题 → 该月未归档媒体详情（按月分组不是册子实体，不列在集合视图里）
+function onMonthClick(key: string) {
+  router.push(`/albums/month/${key}`)
 }
 function onAlbumClick(a: AlbumItem, e: MouseEvent) {
   pressClick(e)
@@ -188,9 +188,6 @@ async function loadAlbums() {
   try {
     const res = await api<{ items: AlbumItem[] }>('/api/v1/albums')
     albums.value = res.items
-    // 月度分组：查询即时聚合的展示形态（非实体，无删除/隐藏入口）
-    const m = await api<{ items: MonthRow[] }>('/api/v1/albums/months')
-    months.value = m.items
     error.value = ''
   } catch (e) {
     if (albums.value.length === 0) error.value = errText(e, '加载失败')
@@ -279,17 +276,16 @@ function onTimelineScroll(e: Event) {
         @toggle-select="toggleSelect"
         @open-pick-album="openPickAlbum"
         @open-viewer="openViewer"
+        @open-month="onMonthClick"
       />
       <AlbumCollection
         v-else
         :albums="albums"
-        :months="months"
         :pressing="pressing"
         @pointer-down="pressDown"
         @pointer-move="pressMove"
         @pointer-up="pressUp"
         @open="onAlbumClick"
-        @open-month="onMonthClick"
         @request-delete="askDeleteAlbum"
       />
     <!-- 全屏媒体查看器（iOS） -->

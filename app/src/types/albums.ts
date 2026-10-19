@@ -9,13 +9,6 @@ export interface AlbumItem {
   created_by?: number
 }
 
-// 月度分组（PRODUCT「相册（独立底部 tab）」：展示形态非实体，无隐藏开关、不可删）
-export interface MonthRow {
-  month_key: string
-  item_count: number
-  cover_url?: string
-}
-
 export interface TimelineItem {
   id: number
   post_id: number
@@ -23,6 +16,8 @@ export interface TimelineItem {
   thumb_url: string
   url?: string
   taken_at: string
+  /** 时间轴按月分组的键（YYYY-MM）：服务端按与按月聚合同一份本地时区口径算好，勿自行截 taken_at */
+  month_key?: string
   /** 时长（秒）：视频角标与音频查看器用；解析不出时服务端不下发 */
   duration?: number
 }

@@ -202,7 +202,6 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	annivMux.HandleFunc("DELETE /api/v1/anniversaries/{id}", annivAPI.remove)
 	albumsAPI := &albumsAPI{db: db, mp: mp, dp: dp}
 	annivMux.HandleFunc("GET /api/v1/albums", albumsAPI.list)
-	annivMux.HandleFunc("GET /api/v1/albums/months", albumsAPI.months)
 	annivMux.HandleFunc("GET /api/v1/albums/months/{month_key}", albumsAPI.monthMedia)
 	annivMux.HandleFunc("POST /api/v1/albums", albumsAPI.create)
 	annivMux.HandleFunc("GET /api/v1/albums/{id}", albumsAPI.get)

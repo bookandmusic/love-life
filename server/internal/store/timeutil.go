@@ -48,3 +48,20 @@ func LocalDate(raw string) string {
 	}
 	return raw
 }
+
+// LocalMonth 把库内 UTC 时间串转为本地时区的 `YYYY-MM`。
+// 与按月聚合的 SQL 口径（`strftime('%Y-%m', created_at, 'localtime')`）同一份时区换算，
+// 供客户端按同一个键分组与跳详情——否则标题按 UTC 截月、详情按本地月查，跨 UTC 月界的照片会点进错的月。
+// taken_at 是 EXIF 墙钟时间（无时区），原样取前 7 位即本地月，不参与换算。
+func LocalMonth(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	if t, err := ParseDBTime(raw); err == nil {
+		return t.Local().Format("2006-01")
+	}
+	if len(raw) >= 7 {
+		return raw[:7]
+	}
+	return raw
+}

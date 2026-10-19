@@ -108,28 +108,17 @@ func jsonNumber(n int64) string {
 	return string(b)
 }
 
-// TestMonthGroupAggregation 月度分组聚合口径：详情=该月未归属媒体（查询即时聚合，非实体）；
-// 媒体入手动相册后即时从月度组消失。
+// TestMonthGroupAggregation 按月分段的聚合口径：详情=该月未归属媒体（查询即时聚合，非实体）；
+// 媒体入手动相册后即时从该月消失。
+// 列表接口已随集合视图改口径删除（PRODUCT「相册（独立底部 tab）」：集合只列手动相册），
+// 故这里只验详情——它才是时间轴月份标题的落点。
 func TestMonthGroupAggregation(t *testing.T) {
 	ts, adminToken, _ := newPostTestEnv(t)
 	mediaID := newMediaPost(t, ts, adminToken)
 	cur := time.Now().Format("2006-01")
 
-	// 分组列表出现本月组，详情含该媒体
-	res := doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
-	var groups struct {
-		Items []struct {
-			MonthKey  string `json:"month_key"`
-			ItemCount int    `json:"item_count"`
-		} `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&groups)
-	res.Body.Close()
-	if len(groups.Items) != 1 || groups.Items[0].MonthKey != cur || groups.Items[0].ItemCount != 1 {
-		t.Fatalf("month groups: %+v", groups.Items)
-	}
-
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
+	// 该月详情含这条未归档媒体
+	res := doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
 	var detail struct {
 		MonthKey string `json:"month_key"`
 		Media    []struct {
@@ -149,11 +138,11 @@ func TestMonthGroupAggregation(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("add to manual: %d", res.StatusCode)
 	}
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&groups)
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&detail)
 	res.Body.Close()
-	if len(groups.Items) != 0 {
-		t.Fatalf("month group must vanish when all archived: %+v", groups.Items)
+	if len(detail.Media) != 0 {
+		t.Fatalf("该月详情应随归档清空: %+v", detail.Media)
 	}
 }
 

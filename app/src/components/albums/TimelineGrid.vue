@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { Check, Images, Music, Play } from 'lucide-vue-next'
+import { ChevronRight, Check, Images, Music, Play } from 'lucide-vue-next'
 import { fullUrl } from '../../api/client'
 import { mediaUrl } from '../../utils/mediaUrls'
 import { mediaDurationText } from '../../utils/mediaKind'
@@ -27,9 +27,15 @@ const emit = defineEmits<{
   (e: 'toggle-select', id: number): void
   (e: 'open-pick-album'): void
   (e: 'open-viewer', index: number): void
+  // 点月份标题 → 该月未归档媒体详情（按月分组不是册子实体，只在这里给入口）
+  (e: 'open-month', key: string): void
 }>()
 
-const groups = computed<MonthGroup[]>(() => groupByMonth(props.items, (m) => m.taken_at))
+// 分组键优先用服务端下发的 month_key（与按月聚合同一本地时区口径）；缺失时回退 taken_at。
+// 自己截 taken_at 前 7 位会在跨 UTC 月界的照片上把月份算错，点进详情就落到隔壁月。
+const groups = computed<MonthGroup[]>(() =>
+  groupByMonth(props.items, (m) => m.month_key ?? m.taken_at),
+)
 
 // monthOffsets: 每个月分组的首条在全局 items 数组中的索引（MediaViewer 的 start 期望全局索引，
 // 而模板里 v-for 只拿到月内索引——跨月点击会错位）。按 groupByMonth 的输出顺序累加。
@@ -45,6 +51,13 @@ const monthOffsets = computed<Record<string, number>>(() => {
 
 function isSelected(id: number) {
   return props.selectedIds.includes(id)
+}
+
+// 月份标题点进该月详情；多选模式下不跳——跳走会丢掉当前勾选（勾选状态在这个视图里）。
+// 'unknown' 是纯客户端的兜底桶（无日期），服务端月份键校验会拒它，故不给入口。
+function openMonth(key: string) {
+  if (props.selectMode || key === 'unknown') return
+  emit('open-month', key)
 }
 </script>
 
@@ -65,7 +78,14 @@ function isSelected(id: number) {
         <button class="tl-sel go" :disabled="selectedIds.length === 0" @click="emit('open-pick-album')">加入相册</button>
       </div>
       <div v-for="g in groups" :key="g.key" class="month-block">
-        <div class="month-label">{{ g.label }}</div>
+        <div
+          class="month-label"
+          :class="{ tappable: !selectMode && g.key !== 'unknown' }"
+          @click="openMonth(g.key)"
+        >
+          <span>{{ g.label }}</span>
+          <ChevronRight v-if="!selectMode && g.key !== 'unknown'" :size="14" stroke-width="2.2" aria-hidden="true" />
+        </div>
         <div class="photo-grid">
           <div
             v-for="(m, i) in g.items"
@@ -107,10 +127,27 @@ function isSelected(id: number) {
 }
 
 .month-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 13px;
   font-weight: 600;
   color: var(--muted-ink);
   margin: 14px 0 8px;
+}
+
+/* 可点进该月详情：命中区只跟文字走（不铺满整行），多选模式下退回纯文本 */
+.month-label.tappable {
+  width: fit-content;
+  cursor: pointer;
+}
+
+.month-label.tappable:hover {
+  color: var(--ink);
+}
+
+.month-label.tappable:active {
+  opacity: 0.6;
 }
 
 .month-block:first-child .month-label {

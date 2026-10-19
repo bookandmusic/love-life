@@ -20,7 +20,7 @@ type albumsAPI struct {
 	dp *notify.Dispatcher
 }
 
-// monthKeyRe 月度分组路径参数：YYYY-MM。
+// monthKeyRe 按月分段路径参数：YYYY-MM。
 var monthKeyRe = regexp.MustCompile(`^\d{4}-\d{2}$`)
 
 type albumResponse struct {
@@ -59,31 +59,7 @@ func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
-// monthGroups 集合视图的按月分组（PRODUCT「相册（独立底部 tab）」月度相册：展示形态非实体）。
-type monthGroupResponse struct {
-	MonthKey  string `json:"month_key"`
-	ItemCount int    `json:"item_count"`
-	CoverURL  string `json:"cover_url,omitempty"`
-}
-
-func (a *albumsAPI) months(w http.ResponseWriter, r *http.Request) {
-	groups, err := a.db.ListMonthGroups(r.Context())
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
-		return
-	}
-	items := make([]monthGroupResponse, 0, len(groups))
-	for _, g := range groups {
-		item := monthGroupResponse{MonthKey: g.MonthKey, ItemCount: g.ItemCount}
-		if g.CoverMediaID.Valid {
-			item.CoverURL = a.mp.SignedURL(g.CoverMediaID.Int64, "thumb")
-		}
-		items = append(items, item)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
-}
-
-// monthMedia 某月未归属媒体的分页列表（月度分组详情，口径 = ListMonthlyMedia）。
+// monthMedia 某月未归属媒体的分页列表（按月分段详情，口径 = ListMonthlyMedia）。
 func (a *albumsAPI) monthMedia(w http.ResponseWriter, r *http.Request) {
 	monthKey := r.PathValue("month_key")
 	if !monthKeyRe.MatchString(monthKey) {
@@ -167,18 +143,30 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 // mediaItem mock timelineItemOut 契约：mediaOut + post_id/taken_at/author_id/album_id/album_name；
 // 归属字段供 APP 选图器区分「已在本相册/已归属他相册」；duration 为音视频时长（秒），解析不出则不下发。
 type mediaItem struct {
-	ID        int64    `json:"id"`
-	Kind      string   `json:"kind"`
-	Width     int      `json:"width"`
-	Height    int      `json:"height"`
-	URL       string   `json:"url"`
-	ThumbURL  string   `json:"thumb_url"`
-	PostID    int64    `json:"post_id"`
-	TakenAt   string   `json:"taken_at"`
+	ID       int64  `json:"id"`
+	Kind     string `json:"kind"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	URL      string `json:"url"`
+	ThumbURL string `json:"thumb_url"`
+	PostID   int64  `json:"post_id"`
+	TakenAt  string `json:"taken_at"`
+	// MonthKey 时间轴按月分组的键（YYYY-MM）。服务端按**与按月聚合同一份本地时区口径**算好下发，
+	// 客户端直接用它分组与跳详情——自己截 taken_at 前 7 位会在跨 UTC 月界的照片上错月。
+	MonthKey  string   `json:"month_key"`
 	AuthorID  int64    `json:"author_id"`
 	Duration  *float64 `json:"duration,omitempty"`
 	AlbumID   *int64   `json:"album_id"`
 	AlbumName *string  `json:"album_name,omitempty"`
+}
+
+// monthKeyOf 时间轴分组的月份键：taken_at 是 EXIF 墙钟时间（无时区）原样截取；
+// 回退到 created_at 时必须按本地时区换算——与按月聚合 SQL 的 'localtime' 口径一致。
+func monthKeyOf(m *store.MediaRow) string {
+	if m.TakenAt.Valid && len(m.TakenAt.String) >= 7 {
+		return m.TakenAt.String[:7]
+	}
+	return store.LocalMonth(m.CreatedAt)
 }
 
 // mediaItemsOut 统一媒体项输出（timeline 与相册详情共用，避免 Duplicated Code）；
@@ -198,7 +186,7 @@ func (a *albumsAPI) mediaItemsOut(ctx context.Context, medias []*store.MediaRow)
 			ID: m.ID, Kind: m.Kind, Width: m.Width, Height: m.Height,
 			URL:      a.mp.SignedURL(m.ID, "raw"),
 			ThumbURL: a.mp.SignedURL(m.ID, "thumb"),
-			PostID:   m.PostID, TakenAt: m.SortTime(), AuthorID: m.AuthorID,
+			PostID:   m.PostID, TakenAt: m.SortTime(), MonthKey: monthKeyOf(m), AuthorID: m.AuthorID,
 		}
 		if m.Duration.Valid {
 			d := m.Duration.Float64

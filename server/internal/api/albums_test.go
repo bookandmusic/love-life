@@ -151,39 +151,23 @@ func TestAlbums(t *testing.T) {
 		t.Fatalf("removed media must return to timeline: %+v", tlAfterRemove.Items)
 	}
 
-	// 月度分组：查询即时聚合（非实体）——该月未归属媒体归入月度组；
-	// 媒体加入手动相册后即时移出月度组；无照片的月份不出现。
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
-	var months struct {
-		Items []struct {
-			MonthKey  string `json:"month_key"`
-			ItemCount int    `json:"item_count"`
-		} `json:"items"`
-	}
-	_ = json.NewDecoder(res.Body).Decode(&months)
-	res.Body.Close()
-	if len(months.Items) == 0 {
-		t.Fatal("month groups must follow unfiled media")
-	}
+	// 按月分段（查询即时聚合，非实体）：该月详情含未归属媒体；入册后即时消失。
+	// 列表接口已随集合视图改口径删除（集合只列手动相册），时间轴月份标题落到的就是这里的详情。
 	cur := time.Now().Format("2006-01")
-	var g *struct {
-		MonthKey  string `json:"month_key"`
-		ItemCount int    `json:"item_count"`
+	var monthDetail struct {
+		MonthKey string `json:"month_key"`
+		Media    []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
 	}
-	for i := range months.Items {
-		if months.Items[i].MonthKey == cur {
-			g = &months.Items[i]
-		}
-	}
-	if g == nil || g.ItemCount != 1 {
-		t.Fatalf("current month group = %+v, want 本月 1 条未归属媒体", months.Items)
-	}
-
-	// 月度详情端点
 	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
-	res.Body.Close()
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("month media: %d", res.StatusCode)
+	}
+	_ = json.NewDecoder(res.Body).Decode(&monthDetail)
+	res.Body.Close()
+	if len(monthDetail.Media) != 1 || monthDetail.Media[0].ID != mediaID {
+		t.Fatalf("本月详情应含该未归属媒体: %+v", monthDetail.Media)
 	}
 
 	// 把媒体加入手动相册 → 本月分组即时消失（归档即移出月度组，无需任何任务）
@@ -192,13 +176,11 @@ func TestAlbums(t *testing.T) {
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("add to manual album: %d", res.StatusCode)
 	}
-	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months", adminToken, nil)
-	_ = json.NewDecoder(res.Body).Decode(&months)
+	res = doJSON(t, "GET", ts.URL+"/api/v1/albums/months/"+cur, adminToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&monthDetail)
 	res.Body.Close()
-	for _, item := range months.Items {
-		if item.MonthKey == cur {
-			t.Fatalf("archived media must leave month group immediately: %+v", months.Items)
-		}
+	if len(monthDetail.Media) != 0 {
+		t.Fatalf("归档后该月详情应立即清空: %+v", monthDetail.Media)
 	}
 
 	// 月度分组不是实体：无隐藏端点、不可删除（404 = 路由不存在）

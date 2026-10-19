@@ -144,7 +144,9 @@ function mediaAlbumName(m) {
 
 // 时间轴输出：对齐真实契约 + 分页后缀 + F2 album_name/album_id（前端区分「本相册/他相册」，向后兼容）
 function timelineItemOut(m) {
-  return { ...mediaOut(m), post_id: m.post_id, taken_at: m.taken_at, author_id: m.author_id, album_id: m.album_id ?? null, album_name: mediaAlbumName(m) }
+  // month_key：按月分组的键（真实后端按本地时区算好下发；mock 的 fixture 时间已是本地形态，直接截取）
+  const monthKey = String(m.taken_at ?? '').slice(0, 7) || String(m.created_at ?? '').slice(0, 7)
+  return { ...mediaOut(m), post_id: m.post_id, taken_at: m.taken_at, month_key: monthKey, author_id: m.author_id, album_id: m.album_id ?? null, album_name: mediaAlbumName(m) }
 }
 
 function postOut(p, viewerId) {
@@ -479,22 +481,6 @@ routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums$/, handler: () => {
     item_count: liveTimelineMedia().filter((m) => m.album_id === a.id).length,
   }))
   return ok({ items: list })
-}})
-
-// 月度分组：查询即时聚合（该月未归属媒体按月计数），非实体——与真实后端同口径
-routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums\/months$/, handler: () => {
-  const byMonth = new Map()
-  for (const m of liveTimelineMedia()) {
-    if (m.album_id != null) continue
-    const key = (m.taken_at || m.created_at || '').slice(0, 7)
-    if (!/^\d{4}-\d{2}$/.test(key)) continue
-    const g = byMonth.get(key) ?? { month_key: key, item_count: 0, cover_url: '' }
-    if (g.item_count === 0) g.cover_url = `/api/v1/media/file/${m.id}?v=thumb`
-    g.item_count += 1
-    byMonth.set(key, g)
-  }
-  const items = [...byMonth.values()].sort((x, y) => y.month_key.localeCompare(x.month_key))
-  return ok({ items })
 }})
 
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/albums\/months\/([\d-]{7})$/, handler: (url) => {

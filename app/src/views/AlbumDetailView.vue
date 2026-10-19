@@ -21,7 +21,7 @@ const route = useRoute()
 const router = useRouter()
 const albumID = computed(() => String(route.params.id))
 const albumIdNum = computed(() => Number(albumID.value))
-// 月度分组模式（/albums/month/:key）：查询即时聚合的展示形态——只读，无添加/移出/删除
+// 按月分段模式（/albums/month/:key）：查询即时聚合的展示形态——只读，无添加/移出/删除
 const isMonth = computed(() => route.name === 'album-month')
 const monthKey = computed(() => String(route.params.key ?? ''))
 const pageTitle = computed(() => {
@@ -153,7 +153,7 @@ async function confirmAdd() {
 
 // 长按 = 移出当前相册（与其它列表同一套手势：500ms、位移 >8px 取消、按住有反馈）
 function askRemovePhoto(m: MediaItem) {
-  if (isMonth.value) return // 月度分组只读：媒体随动态存在，归档去手动相册操作
+  if (isMonth.value) return // 按月分段只读：媒体随动态存在，归档去手动相册操作
   removingPhoto.value = m
   showRemovePhoto.value = true
 }
@@ -164,6 +164,7 @@ function onPhotoClick(index: number, e: MouseEvent) {
 }
 function onViewerRemove(id: string | number) {
   closeViewer()
+  if (isMonth.value) return // 按月分段页只读：没有可移出的相册（albumID 是月份键，DELETE 会打到 /albums/2026-10/photos）
   const m = media.value.find((x) => String(x.id) === String(id))
   if (m) {
     removingPhoto.value = m
@@ -191,13 +192,13 @@ async function confirmRemovePhoto() {
 // 卸载时清掉可能仍在计时的长按（否则 500ms 后回调会去改已销毁组件的状态）
 
 
-// 路由参数变化（相册间跳转 / 月度切换）必须重载：此前只在 setup 时取一次，切换后仍是旧数据
+// 路由参数变化（相册间跳转 / 按月分段切换）必须重载：此前只在 setup 时取一次，切换后仍是旧数据
 watch(() => [route.params.id, route.params.key], load)
 
 onMounted(async () => {
   await load()
   // 手势要教一次：长按是隐形手势，首次进入本页提示一次（与动态/相册/纪念日/地图四页同款）。
-  // 月度分组页只读（askRemovePhoto 直接返回），在那里教这个手势等于教一个无效操作，故跳过。
+  // 按月分段页只读（askRemovePhoto 直接返回），在那里教这个手势等于教一个无效操作，故跳过。
   if (!isMonth.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按照片可移出当前相册'
 })
 </script>
@@ -233,7 +234,7 @@ onMounted(async () => {
             <img v-else :src="fullUrl(mediaUrl(m).thumb)" class="thumb" loading="lazy" alt="" />
           </div>
         </template>
-        <!-- 添加入口：做成最后一个图片图标（仅手动相册，月度分组只读）；空相册时由 EmptyState 的 CTA 承担，避免重复入口 -->
+        <!-- 添加入口：做成最后一个图片图标（仅手动相册，按月分段只读）；空相册时由 EmptyState 的 CTA 承担，避免重复入口 -->
         <button v-if="!isMonth && media.length > 0" class="add-cell" aria-label="从时间轴添加照片" @click="openPick">
           <Plus :size="26" stroke-width="1.8" />
         </button>

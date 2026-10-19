@@ -3,14 +3,13 @@ import { FolderOpen, Images } from 'lucide-vue-next'
 import { useRouter } from 'vue-router'
 import { fullUrl } from '../../api/client'
 import EmptyState from '../EmptyState.vue'
-import type { AlbumItem, MonthRow } from '../../types/albums'
+import type { AlbumItem } from '../../types/albums'
 
 const router = useRouter()
 
 defineProps<{
+  // 只列**手动相册**：按月自动分组不是册子实体，只在时间轴视图呈现（PRODUCT「相册（独立底部 tab）」）
   albums: AlbumItem[]
-  // 月度分组（展示形态非实体）：无长按删除、无隐藏态，点进看该月未归属媒体
-  months: MonthRow[]
   // 与 useLongPress 的 ref<string | number | null> 对齐（点位用 number，动态用 string）
   pressing: string | number | null
 }>()
@@ -20,42 +19,18 @@ const emit = defineEmits<{
   (e: 'pointer-move', ev: PointerEvent): void
   (e: 'pointer-up'): void
   (e: 'open', album: AlbumItem, ev: MouseEvent): void
-  (e: 'open-month', month: MonthRow): void
   (e: 'request-delete', album: AlbumItem): void
 }>()
 
 function longPressDelete(a: AlbumItem, ev: PointerEvent) {
   emit('pointer-down', ev, a.id, () => emit('request-delete', a))
 }
-
-// YYYY-MM → 「YYYY年M月」
-function monthLabel(key: string): string {
-  const [y, m] = key.split('-')
-  return `${y}年${Number(m)}月`
-}
 </script>
 
 <template>
   <div class="album-collection">
-    <div v-if="albums.length === 0 && months.length === 0" class="ac-empty-wrap">
+    <div v-if="albums.length === 0" class="ac-empty-wrap">
       <EmptyState :icon="FolderOpen" title="相册集合还空着" sub="按旅行、日常或家人建一个，把照片归归类。" action="新建相册" @action="router.push('/albums?new=1')" />
-    </div>
-    <!-- 月度分组在前（按月倒序）：与手动相册同列，行标注「月度」 -->
-    <div
-      v-for="m in months"
-      :key="m.month_key"
-      class="album-col"
-      @click="emit('open-month', m)"
-    >
-      <div class="ac-cover-wrap">
-        <img v-if="m.cover_url" :src="fullUrl(m.cover_url)" class="ac-cover" alt="" />
-        <div v-else class="ac-cover ac-ph"><Images :size="22" stroke-width="1.6" /></div>
-        <span class="cnt">{{ m.item_count }}</span>
-      </div>
-      <div class="ac-meta">
-        <b>{{ monthLabel(m.month_key) }}</b>
-        <span>月度</span>
-      </div>
     </div>
     <div
       v-for="a in albums"
@@ -76,7 +51,6 @@ function monthLabel(key: string): string {
       </div>
       <div class="ac-meta">
         <b>{{ a.name }}</b>
-        <span>手动</span>
       </div>
     </div>
   </div>
