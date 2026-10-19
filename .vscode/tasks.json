@@ -20,14 +20,14 @@
     {
       "label": "admin: build",
       "type": "shell",
-      "command": "npm run build",
+      "command": "pnpm run build",
       "options": { "cwd": "${workspaceFolder}/admin" },
       "problemMatcher": []
     },
     {
       "label": "app: build",
       "type": "shell",
-      "command": "npm run build",
+      "command": "pnpm run build",
       "options": { "cwd": "${workspaceFolder}/app" },
       "problemMatcher": []
     }

@@ -19,7 +19,7 @@
       "name": "后台管理页 (vite)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run dev",
+      "command": "pnpm run dev",
       "cwd": "${workspaceFolder}/admin",
       "env": {
         "API_PROXY": "http://localhost:8080"
@@ -39,7 +39,7 @@
       "name": "APP 前端 (vite)",
       "type": "node-terminal",
       "request": "launch",
-      "command": "npm run dev --host",
+      "command": "pnpm run dev --host",
       "cwd": "${workspaceFolder}/app",
       "env": {
         "API_PROXY": "http://localhost:8787"

@@ -47,11 +47,11 @@ endif
 
 deps:
 	cd $(SERVER_DIR) && $(GO_ENV) go mod download
-	cd $(ADMIN_DIR) && npm install
+	cd $(ADMIN_DIR) && pnpm install
 	cd $(APP_DIR) && pnpm install
 
 mock:   # 离线开发辅助（:8787，MOCK_PORT 可改）
-	cd $(ADMIN_DIR) && npm run mock
+	cd $(ADMIN_DIR) && pnpm run mock
 
 reset:   # 清空 $(DATA_DIR)；交互确认，输 n 不动数据
 	@printf '将清空 %s（admin / token / 成员 / 配置全部丢失），确认？[y/N] ' '$(DATA_DIR)'; \
@@ -62,7 +62,7 @@ serve:   # 后端 go run 直跑：改了代码即生效，无需先构建（日�
 	cd $(SERVER_DIR) && $(GO_ENV) DATA_DIR=$(DATA_DIR) ADMIN_USER=$(ADMIN_USER) ADMIN_PASS=$(ADMIN_PASS) go run ./cmd/server
 
 admin-dev:   # 后台管理页 dev server（:5173）
-	cd $(ADMIN_DIR) && API_PROXY=$(API_PROXY) npm run dev
+	cd $(ADMIN_DIR) && API_PROXY=$(API_PROXY) pnpm run dev
 
 app-dev:   # APP 前端 dev server（:1420）；连 mock 时 make app-dev API_PROXY=http://127.0.0.1:8787
 	cd $(APP_DIR) && API_PROXY=$(API_PROXY) pnpm dev
@@ -81,10 +81,10 @@ verify-server:
 		fi
 
 verify-app:
-	cd $(APP_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0 && npm test
+	cd $(APP_DIR) && pnpm exec vue-tsc --noEmit && pnpm exec eslint src --max-warnings=0 && pnpm test
 
 verify-admin:
-	cd $(ADMIN_DIR) && npx vue-tsc --noEmit && npx eslint src --max-warnings=0
+	cd $(ADMIN_DIR) && pnpm exec vue-tsc --noEmit && pnpm exec eslint src --max-warnings=0
 
 # ============================================================
 # 构建（二进制 / 镜像 / APK）：三个发布产物，日常开发不碰
@@ -95,7 +95,7 @@ verify-admin:
 build: build-admin build-server   # copy-admin 由 build-server 依赖带入
 
 build-admin:
-	cd $(ADMIN_DIR) && npm ci && npm run build
+	cd $(ADMIN_DIR) && pnpm install --frozen-lockfile && pnpm run build
 
 # 将 admin/dist 拷入 server 内嵌目录；保留 .gitkeep 占位，清除其余历史产物以免旧资源残留。
 # 目标目录不存在时先建：.dockerignore 排除了 webui/dist，镜像构建时该目录不存在，find 会因起点缺失而失败。

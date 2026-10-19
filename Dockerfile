@@ -7,6 +7,9 @@
 # ===== Stage 1: 构建 admin 后台页面 =====
 FROM node:22-alpine AS admin-build
 RUN apk add --no-cache make
+# 前端统一 pnpm：镜像自带 npm 但没有 pnpm，而 make build-admin 走的已是 pnpm。
+# 版本口径与 CI 同源（package.json 的 packageManager 字段 + corepack）。
+RUN corepack enable && corepack prepare pnpm@11 --activate
 WORKDIR /app
 COPY Makefile ./
 COPY admin/ ./admin/
