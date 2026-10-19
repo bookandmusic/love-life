@@ -72,10 +72,10 @@ flowchart TB
 
 | 决策项 | 方案 |
 |:---|:---|
-| 事件源 | 业务写入瞬间（动态/评论/点赞/收藏/足迹/相册）+ 删除对方发布内容时（仅站内）+ 纪念日提醒检查（每小时，按「当日已发」幂等，故不会重复）。触发口径同 PRODUCT「通知中心」：足迹仅**手动建点 / AI 口语报点**产生（动态带地点自动生成的点位不另发，该次发布已有 `post_created`）；相册由用户**手动建册**产生（AI 代建同；月度分组不产生事件），只通知对方（自建静默）。**按月分组不是事件源**：它是查询视图，不生成、不通知 |
+| 事件源 | 业务写入瞬间（动态/评论/点赞/收藏/足迹/相册）+ 删除对方发布内容时（仅站内）+ 纪念日提醒检查（每小时，按「当日已发」幂等，故不会重复）。触发口径同 PRODUCT「通知中心」：足迹仅**手动建点 / AI 口语报点**产生（动态带地点自动生成的点位不另发，该次发布已有 `post_created`）；相册由用户**手动建册**产生（AI 代建同；按月分段不产生事件），只通知对方（自建静默）。**按月分段不是事件源**：它是查询视图，不生成、不通知 |
 | 事件类型 | 站内 **12** 类：`post_created` / `post_liked` / `post_commented` / `post_favorited` / `map_point_created` / `anniversary_reminder` / `album_created` / `post_deleted` / `comment_deleted` / `album_deleted` / `anniversary_deleted` / `map_point_deleted`。**无 `media_deleted`**：媒体不独立删除（删动态即删其媒体），删除语义由 `post_deleted` 表达（PRODUCT「相册（独立底部 tab）」）。产品侧触发口径见 PRODUCT「通知中心」。**动态带地点自动生成的点位不发 `map_point_created`**：那一点位是发布动作的副产品，该次发布已有 `post_created` |
 | 站内通知 | 写入通知表，APP 打开时同步显示红点；通知为**临时消费品**——点击即删，列表只存未消费通知，红点 = 剩余条数；不设站内通知开关 |
-| 外部渠道 | 空间级（admin 配置）的**通用 API Webhook**：请求方式 / 服务地址 / 请求头 / 请求体模板（`{{title}}`、`{{content}}`、`{{time}}`、`{{type}}` 占位符）；每渠道按事件订阅过滤（**7 类**：纪念日/新动态/评论/点赞/收藏/足迹/相册上新——相册均指**用户手动建册**，月度分组不产生事件）；内容删除 5 类**仅站内不进外部推送**；Bark / Server酱 / Qmsg / 企业微信为预设模板 |
+| 外部渠道 | 空间级（admin 配置）的**通用 API Webhook**：请求方式 / 服务地址 / 请求头 / 请求体模板（`{{title}}`、`{{content}}`、`{{time}}`、`{{type}}` 占位符）；每渠道按事件订阅过滤（**7 类**：纪念日/新动态/评论/点赞/收藏/足迹/相册上新——相册均指**用户手动建册**，按月分段不产生事件）；内容删除 5 类**仅站内不进外部推送**；Bark / Server酱 / Qmsg / 企业微信为预设模板 |
 | 快照字段读法 | `operator` 恒为真实发起人用户名；`via:"ai"` **仅在 AI 代操作时出现**，缺省即发起人本人操作（REST 直连与站内自操作均不带）——接收端据此判别来源；推送正文以「（AI）」后缀区分。**互动三类**（点赞/收藏/评论）另带 `author_id`（目标动态作者）：作者是收件人本人渲染「你的动态」，是操作者本人渲染「自己的动态」（PRODUCT「通知中心」）；外部推送正文同一规则 |
 | 操作者口径 | 外部推送与站内**同一触发条件**：站内通知的收件人恒为对方（操作者本人不收，即「自建静默」自动成立），外部推送随之在同样条件下触发；渠道为空间级，推送内容带操作者用户名，「是不是自己的动作」由接收端过滤。**无操作者的事件**（定时任务发的纪念日提醒）不适用「本人不收」，收件人为**情侣双方**（全部非 admin 用户）——admin 不在情侣里、且登录 APP 即 403（「统一登录与认证」），投给它永远无人读 |
 | 设计动机 | 规避 Android 后台存活限制（国产 ROM 杀后台）；服务端常驻进程无此问题，实时性优于一切端上方案 |
@@ -336,7 +336,7 @@ REST API Server 与 MCP Server 常驻**同一 Go 进程**：单二进制即最�
 | Comment | id, post_id, author_id, content, created_at, deleted_at, deleted_by, deleted_by_type | 记录内容，软删进回收站 |
 | Like | (post_id, user_id), created_at | 可撤销关系数据，复合主键，不进回收站 |
 | Favorite | (post_id, user_id), created_at | 同上；首版收藏对象仅动态 |
-| Album | id, name, description?, cover_media_id?, created_by?, created_at, deleted_at, deleted_by, deleted_by_type | 需求口径见 PRODUCT「相册（独立底部 tab）」。**只有手动相册是实体**：用户建册后从时间轴选入。**月度相册不是实体、不占行**：集合视图里的按月分组由查询即时聚合（该月未归属媒体的按月计数），故本表无 `monthly` 类型、无 `month_key`、无 `is_hidden` |
+| Album | id, name, description?, cover_media_id?, created_by?, created_at, deleted_at, deleted_by, deleted_by_type | 需求口径见 PRODUCT「相册（独立底部 tab）」。**只有手动相册是实体**：用户建册后从时间轴选入。**按月分段不是实体、不占行**：时间轴视图里的按月分组由客户端按媒体时间现场分组（接口下发 `month_key`，与月度详情查询同一本地时区口径），故本表无 `monthly` 类型、无 `month_key`、无 `is_hidden` |
 | AlbumItem | (album_id, media_id), added_by, added_at + **UNIQUE(media_id)** | 相册是媒体池之上的组织视图；UNIQUE(media_id) 承载「一文件一相册」全相册唯一约束 |
 | MapPoint | id, name, lat, lng, city?, visit_date?, description?, source(post/manual/ai), created_at, created_by, deleted_at, deleted_by, deleted_by_type | `city` 写时判定落库（见「地图服务」）；同名地点复用同一点位，坐标以先创建者为准；无合并链、无可见性开关。`source` 三值的判据是**发起通道**：REST 发布动态时随地点自动建点为 `post`，REST 手动建点为 `manual`，AI 通道建点（含动态带地点与口语报点）为 `ai` |
 | MapSource | id, type(public/tianditu), url_template, tianditu_key?, tianditu_layer?, enabled, created_at | 瓦片源配置（admin 域，无用户归属）：部分唯一索引保证**至多一个使用中**；`tianditu_key` 加密存储、永不下发 APP；机制见「地图服务」 |
