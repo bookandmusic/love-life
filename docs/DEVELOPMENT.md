@@ -190,6 +190,7 @@ make android-apk         构建 release 包，产物在 app/src-tauri/gen/androi
 - `keystore.properties` 由 CI 构建时写入，本地即由第二步生成；缺失时 release 用未签名/默认配置，debug 不受影响。
 - 本地与 CI 都经 `make android-apk` 调用（底层即 `pnpm tauri android build`）。用 `node_modules/.bin/tauri` 直调会让 CLI 把生成的 Gradle 任务写成 `executable="node"`，Gradle 阶段报 `Cannot find module '<路径>/tauri'`（CI 的 init 会自愈回 `pnpm`，本地需注意）。
 - 换图标：`make app-icon`——源图是 `app/src-tauri/icons/icon.png`（512×512 主图，在仓；README 顶部那张 `assets/images/logo.png` 是同款设计的 1254×1254 大图，但 tauri 命令只吃前者）。换图标 = 替换该文件后重跑，`src-tauri/icons/` 与 Android `res/` 整套重新生成，diff 较大属正常。
+- **浏览器标签页图标（favicon）**：两个前端各有 `public/favicon.png`（`admin/` 与 `app/` 一份），内容为同一张图，取自上面那次生成出的 `app/src-tauri/icons/128x128.png`。两处是各自构建根，Vite 无法共享同一份静态文件，故保留两份副本——**换 logo 时这三处要一起换**（`icons/icon.png` + 两个 `favicon.png`）。
 - **发布产物仍以 CI 为准**（见「CI 与发布」）；本地包只供自测。
 
 ## 4. CI 与发布
