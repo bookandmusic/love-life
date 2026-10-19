@@ -27,9 +27,11 @@ if (files.length === 0) {
 }
 
 // --test 必须在文件列表之前（见文件头注释②）
+// --test-reporter=spec 必须显式钉住：Node 默认报告器随版本变（22 走 TAP、24 走 spec），
+// 下面按「ℹ tests N」解析汇总行，不钉就会在 CI 的 Node 22 上解析成 null 而误报失败。
 const run = spawnSync(
   process.execPath,
-  ['--experimental-strip-types', '--test', ...files],
+  ['--experimental-strip-types', '--test', '--test-reporter=spec', ...files],
   { cwd: root, encoding: 'utf8' },
 )
 process.stdout.write(run.stdout)
