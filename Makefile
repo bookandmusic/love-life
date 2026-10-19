@@ -58,7 +58,7 @@ reset:   # 清空 $(DATA_DIR)；交互确认，输 n 不动数据
 	read a; case "$$a" in [yY]) ;; *) echo 已取消; exit 1;; esac; \
 	rm -rf '$(DATA_DIR)' && mkdir -p '$(DATA_DIR)'
 
-serve:   # 后端 go run 直跑：改了代码即生效，无需先构建（日常开发路径；发布产物见「构建」组）
+serve: copy-admin   # 后端 go run 直跑：改了代码即生效，无需先构建（日常开发路径；发布产物见「构建」组）
 	cd $(SERVER_DIR) && $(GO_ENV) DATA_DIR=$(DATA_DIR) ADMIN_USER=$(ADMIN_USER) ADMIN_PASS=$(ADMIN_PASS) go run ./cmd/server
 
 admin-dev:   # 后台管理页 dev server（:5173）
@@ -97,15 +97,30 @@ build: build-admin build-server   # copy-admin 由 build-server 依赖带入
 build-admin:
 	cd $(ADMIN_DIR) && pnpm install --frozen-lockfile && pnpm run build
 
+# 确保 admin/dist 是新鲜的：不存在、或比 admin 源码旧时先重建，否则直接放过。
+# 为什么是条件式而不是无条件：Docker 的 go-build 阶段没有 Node，`admin/` 下只有从上一阶段
+# 拷来的 dist/、没有 src/——条件判断会走到「不旧」分支跳过，因此无需为 Docker 另开旁路。
+ensure-admin-dist:
+	@stale=; \
+	if [ ! -f $(ADMIN_DIR)/dist/index.html ]; then stale="dist 不存在"; \
+	else newer=$$(find $(ADMIN_DIR)/src $(ADMIN_DIR)/index.html $(ADMIN_DIR)/package.json \
+		-newer $(ADMIN_DIR)/dist/index.html 2>/dev/null | head -1); \
+		[ -n "$$newer" ] && stale="源码比 dist 新（如 $$newer）"; fi; \
+	if [ -n "$$stale" ]; then \
+		echo "admin/dist 需要重建：$$stale"; \
+		$(MAKE) build-admin; \
+	fi
+
 # 将 admin/dist 拷入 server 内嵌目录；保留 .gitkeep 占位，清除其余历史产物以免旧资源残留。
 # 目标目录不存在时先建：.dockerignore 排除了 webui/dist，镜像构建时该目录不存在，find 会因起点缺失而失败。
-copy-admin:
+copy-admin: ensure-admin-dist
 	@mkdir -p $(WEBUI_DIST)
 	@find $(WEBUI_DIST) -mindepth 1 ! -name .gitkeep -delete
 	@cp -R $(ADMIN_DIR)/dist/. $(WEBUI_DIST)/
 
 # 依赖 copy-admin：webui/dist 被 go:embed 内嵌，不先刷新就会把上一次构建的后台页面打进二进制
-# （历史上出现过「源码已删的按钮仍在单二进制里」）。make serve 走裸 go run，不在此列。
+# （历史上出现过「源码已删的按钮仍在单二进制里」）。copy-admin 又依赖 ensure-admin-dist，
+# 故二进制里嵌的永远是当前源码构建出来的页面。
 build-server: copy-admin   # 发布产物：静态 linux 二进制（内嵌后台页面；modernc sqlite 纯 Go 无需 CGO）
 	mkdir -p $(BIN)
 	cd $(SERVER_DIR) && $(GO_ENV) CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o ../$(SERVER_BIN) ./cmd/server

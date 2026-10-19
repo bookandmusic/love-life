@@ -159,13 +159,15 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 | 目标 | 干什么 |
 |:--|:--|
 | `make build` | 全量构建：admin 构建 → 拷入 `server/internal/webui/dist/` → `go build`，产物 `bin/server` |
-| `make build-server` | 只重建二进制（发布前用）；**依赖 `copy-admin`**，会先把当前 `admin/dist` 拷进内嵌目录 |
+| `make build-server` | 只重建二进制（发布前用）；**依赖 `copy-admin`**（再依赖 `ensure-admin-dist`）：`admin/dist` 过期会先重建，再拷进内嵌目录 |
 | `make clean` | 清理构建产物 |
 
 > [!NOTE]
-> `server/internal/webui/dist/` 不入版本库，内容由 `make build` / `make build-server`（经 `copy-admin`）填充；裸 `go build` 与 `make serve` 用的是该目录**上一次**的内容，后台页面改完不重建就会跑旧页面。
+> `server/internal/webui/dist/` 不入版本库，内容由 `make build` / `make build-server` / `make serve`（经 `copy-admin`）填充。
+> **保新规则**：`copy-admin` 依赖 `ensure-admin-dist`——`admin/dist` 不存在、或比 `admin/src`、`admin/index.html`、`admin/package.json` 旧时先跑 `make build-admin` 重建，否则跳过。因此 `make serve`（`:8080` 内嵌页）与 `make build-server`（二进制）拿到的都是当前源码构建的页面；全新克隆第一次 `make serve` 也会自动补齐（代价是那次要多等一次 admin 构建，需本机有 Node/pnpm）。
+> 只有**裸 `go build` / 裸 `go run`**（不经 make）才用该目录上一次的内容——它们绕过了保新规则，改完后端页面请走 `make`。
 
-- **别为日常开发构建它**：`make serve` 是 `go run` 直跑，改了代码即生效；二进制只在要分发 / 部署裸机时才构建。
+- **别为日常开发构建它**：`make serve` 是 `go run` 直跑，改了后端代码即生效（前端页面按上面的保新规则自动重建）；二进制只在要分发 / 部署裸机时才构建。
 - go 的 `GOPROXY` / `GOMODCACHE` / `GOCACHE` **不设默认值，由 go env 与用户环境决定**——需要时命令行临时覆盖（`make build-server GOCACHE=$PWD/.gocache`）；受限环境（默认 `~/.cache/go-build` 不可写）一次性 `go env -w GOCACHE=<可写路径>` 更省事，make 与裸 go 命令都受益，别把环境特例固化成仓库默认。网络能直连时同理换 `GOPROXY=https://proxy.golang.org,direct`。
 
 ### 3.2 Docker 镜像
