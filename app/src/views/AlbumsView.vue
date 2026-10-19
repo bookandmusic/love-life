@@ -75,6 +75,8 @@ async function addToAlbum(albumId: number) {
     selectMode.value = false
     selectedIds.value = []
     await loadAlbums()
+    // 归档后这些媒体已不属于「未归档」，必须立刻从时间轴消失
+    await refreshTimeline()
     toast.value = `已加入 ${n} 个媒体`
   } catch (e) {
     pickErr.value = errText(e, '添加失败')
@@ -152,8 +154,9 @@ watch(
 
 onActivated(() => {
   void loadAlbums()
-  // 时间轴：冷启动或停在第一页时刷新（新增即时可）；已翻页则保留浏览位置
-  if (timeline.value.length === 0 || tlPage.value === 1) void loadTimeline()
+  // 时间轴：每次都重拉已加载的页——旧实现「已翻页就不刷」会让滚动过一次之后永不更新，
+  // 归档掉的媒体一直留在列表里（客户端没有刷新入口），详见 refreshTimeline 的说明
+  void refreshTimeline()
   // 以 query 为真源回写 sheet 开合（修复：经 TabBar 而非关闭离开时，回来不应停在 sheet 态）
   showCreate.value = route.query.new === '1'
   if (!showCreate.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按相册可移入回收站'
@@ -214,26 +217,51 @@ const tlLoading = ref(false)
 const tlLoadingMore = ref(false)
 const TL_SIZE = 40
 
-async function loadTimeline() {
+/** refreshTimeline 重拉「已加载的全部页」（page=1..tlPage），替换列表但**不改变已加载页数**。
+ *
+ *  为什么不直接复用「只拉第 1 页」：那会把翻到第 2 页的用户弹回顶部。而本函数的调用点
+ *  （回到本 tab、归档后）都属「数据可能变了、但用户位置该保留」。
+ *
+ *  为什么不像旧实现那样「已翻页就干脆不刷」：那会让滚动过一次之后**整个会话内时间轴永不再更新**，
+ *  已归档的媒体一直留在列表里，而客户端没有刷新入口（无刷新按钮 / 下拉刷新），用户无法自救。
+ *  代价是深翻页时多发几个请求——实测每页 40 条、总量 63 条，最多 2 页，可忽略。
+ *
+ *  中途某页失败时**不替换列表**：半截数据配上原有的 tlPage/tlHasMore 会让后续滚动重复加载同一页。 */
+async function refreshTimeline() {
   const cold = timeline.value.length === 0
   if (cold) {
     tlLoading.value = true
     error.value = ''
   }
   try {
-    const res = await api<{ items: TimelineItem[]; total: number; has_more: boolean }>(
-      `/api/v1/media/timeline?page=1&size=${TL_SIZE}`,
-    )
-    timeline.value = res.items
-    tlTotal.value = res.total ?? res.items.length
-    tlHasMore.value = res.has_more ?? false
-    tlPage.value = 1
+    const pages = Math.max(1, tlPage.value)
+    const items: TimelineItem[] = []
+    let total = 0
+    let hasMore = false
+    for (let page = 1; page <= pages; page++) {
+      const res = await api<{ items: TimelineItem[]; total: number; has_more: boolean }>(
+        `/api/v1/media/timeline?page=${page}&size=${TL_SIZE}`,
+      )
+      items.push(...res.items)
+      total = res.total ?? items.length
+      hasMore = res.has_more ?? false
+      if (!hasMore) break // 数据变少时总页数会缩，不必按旧页数死拉
+    }
+    timeline.value = items
+    tlTotal.value = total
+    tlHasMore.value = hasMore
     error.value = ''
   } catch (e) {
     if (cold) error.value = errText(e, '加载失败')
   } finally {
     tlLoading.value = false
   }
+}
+
+/** loadTimeline 回到第 1 页的刷新（错误态重试用）。 */
+async function loadTimeline() {
+  tlPage.value = 1
+  return refreshTimeline()
 }
 
 async function loadMoreTimeline() {

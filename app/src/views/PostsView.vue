@@ -75,8 +75,15 @@ const PAGE_SIZE = 20
 const FOCUS_MAX_PAGES = 10
 const FOCUS_MAX_POSTS = 500
 
-// 按 author_id 映射真实 role（girl/boy），替代昵称长度猜色
-async function load() {
+/** refreshPosts 重拉「已加载的全部页」（page=1..page），替换列表但**不改变已加载页数**。
+ *
+ *  为什么不像旧实现那样「已翻页就干脆不刷」：那会让滚动过一次之后**整个会话内动态列表永不再更新**
+ *  ——发布动态后 `router.replace('/posts')` 回到本页时，刚发的动态不出现（用户会以为发布失败），
+ *  对方发的新动态也永远看不到；而客户端没有刷新入口（无刷新按钮 / 下拉刷新），用户无法自救。
+ *  代价是深翻页时多发几个请求——实测每页 20 条、总量 109 条，可忽略。
+ *
+ *  中途某页失败时**不替换列表**：半截数据配上原有的 page/total 会让后续滚动重复加载同一页。 */
+async function refreshPosts() {
   // 静默刷新：仅冷启动（无数据）时亮骨架屏；已有数据时后台重取、失败不打扰旧内容
   const cold = posts.value.length === 0
   if (cold) {
@@ -84,16 +91,31 @@ async function load() {
     error.value = ''
   }
   try {
-    const res = await api<{ items: PostItem[]; total: number }>(listPath(1))
-    posts.value = res.items
-    total.value = res.total
-    page.value = 1
+    const pages = Math.max(1, page.value)
+    const items: PostItem[] = []
+    let tot = 0
+    for (let n = 1; n <= pages; n++) {
+      const res = await api<{ items: PostItem[]; total: number }>(listPath(n))
+      items.push(...res.items)
+      tot = res.total ?? items.length
+      // 数据变少时总页数会缩：到底了就不必按旧页数死拉
+      if (items.length >= tot || res.items.length < PAGE_SIZE) break
+    }
+    posts.value = items
+    total.value = tot
     await spaceStore.load()
+    error.value = ''
   } catch (e) {
     if (cold) error.value = errText(e, '加载失败')
   } finally {
     loading.value = false
   }
+}
+
+/** load 回到第 1 页的刷新（错误态重试、切换「那年今日」筛选时用）。 */
+async function load() {
+  page.value = 1
+  return refreshPosts()
 }
 
 // 滚动加载：接近底部时自动拉取下一页（服务端 /posts 支持 page/page_size）
@@ -276,9 +298,10 @@ onActivated(async () => {
     await applyFocus()
     // 长按是隐形手势：首次进入提示一次（本地记住后不再打扰）
     if (!toast.value && onceHint(KEYS.HINT_LONGPRESS)) toast.value = '长按动态或评论可移入回收站'
-  } else if (page.value === 1) {
-    // 停在顶部：静默重取第一页（发布新动态即时可），不亮骨架屏、不扰动已翻页的用户
-    void load()
+  } else {
+    // 已有数据：重拉已加载的全部页——发布新动态即时可见，且不把翻过页的用户弹回顶部
+    // （旧实现只在 page===1 时刷，翻过页就永不更新，详见 refreshPosts 的说明）
+    void refreshPosts()
   }
 })
 // 同一页面内切换过滤条件（首页「那年今日」入口）需重载，否则仍是上一份列表
