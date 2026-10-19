@@ -60,8 +60,8 @@ onMounted(load)
       <AppStatCard v-for="s in stats" :key="s.label" v-bind="s" />
     </div>
 
-    <div class="page-scroll">
-      <div class="grid-2">
+    <div class="page-scroll dash-area">
+      <div class="grid-2 dash-grid">
         <AppCard title="AI 调用统计（近 14 天）">
           <div class="usage-summary">
             <span>调用 <b>{{ totalCalls }}</b> 次</span>
@@ -80,7 +80,7 @@ onMounted(load)
           </div>
         </AppCard>
 
-        <AppCard title="最近活动">
+        <AppCard title="最近活动" class="card-fill">
           <template #actions>
             <AppButton variant="secondary" size="sm" icon="refresh-cw" @click="load">刷新</AppButton>
           </template>
@@ -121,6 +121,21 @@ onMounted(load)
 </template>
 
 <style scoped>
+/* 仪表盘专属：锁定内容区高度，让「最近活动」卡在自身内部滚动，
+   不再把整个内容区撑出滚动条（AI 统计卡与告警卡保持常驻可见）。
+   仅桌面（>1024px，.grid-2 单行）锁行；窄屏全局样式已塌成单列两行，1fr 约束会
+   把上一行的 AI 卡挤扁，故不锁，回退为内容区整体滚动的既有行为。 */
+.dash-area {
+  display: flex;
+  flex-direction: column;
+}
+@media (min-width: 1025px) {
+  .dash-grid {
+    flex: 1;
+    min-height: 0;
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
 .usage-summary {
   display: flex;
   gap: 24px;
