@@ -144,9 +144,12 @@ func (d *DB) ListPostsSampled(ctx context.Context, page, pageSize int, memories,
 	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM posts p`+where).Scan(&total); err != nil {
 		return nil, 0, err
 	}
+	// 排序按**内容时间**而非 id：id 只代表写入顺序，与内容时间不必同序——迁移回填历史时间，
+	// 或将来支持补记往事时，按 id 排会把刚导入的旧内容顶到时间轴最前（PRODUCT「动态」：按时间倒序）。
+	// id 作次序键只为同秒内稳定，不参与「谁更新」的判断。
 	// 随机抽样：ORDER BY RANDOM() 在候选集上取前 pageSize 条（单空间自用规模，代价可接受）。
 	// 抽样路径下 page 无意义（每次都重抽），故固定 offset=0，响应也回 page=1，不假装能翻页。
-	order, offset := ` ORDER BY p.id DESC LIMIT ? OFFSET ?`, (page-1)*pageSize
+	order, offset := ` ORDER BY p.created_at DESC, p.id DESC LIMIT ? OFFSET ?`, (page-1)*pageSize
 	if sample {
 		order, offset = ` ORDER BY RANDOM() LIMIT ? OFFSET ?`, 0
 	}
@@ -339,7 +342,7 @@ func (d *DB) ListPostsByPoint(ctx context.Context, pointID int64, limit int) ([]
 	rows, err := d.QueryContext(ctx, `SELECT `+postColumns+`
 		FROM posts p JOIN users u ON u.id = p.author_id
 		WHERE p.deleted_at IS NULL AND p.point_id = ?
-		ORDER BY p.id DESC LIMIT ?`, pointID, limit)
+		ORDER BY p.created_at DESC, p.id DESC LIMIT ?`, pointID, limit)
 	if err != nil {
 		return nil, err
 	}

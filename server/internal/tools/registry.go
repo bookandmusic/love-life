@@ -579,7 +579,7 @@ func (d *Deps) browsePosts(ctx context.Context, f postsFilter, viewerID int64, l
 	rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(`
 			SELECT %s FROM posts p JOIN users u ON u.id = p.author_id
 			WHERE p.deleted_at IS NULL%s
-			ORDER BY p.id DESC LIMIT %d OFFSET %d`, postHitColumns, where, limit, offset), args...)
+			ORDER BY p.created_at DESC, p.id DESC LIMIT %d OFFSET %d`, postHitColumns, where, limit, offset), args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -600,7 +600,7 @@ func (d *Deps) keywordPosts(ctx context.Context, query string, f postsFilter, vi
 	rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(`
 			SELECT %s FROM posts p JOIN users u ON u.id = p.author_id
 			WHERE p.deleted_at IS NULL AND p.content LIKE ?%s
-			ORDER BY p.id DESC LIMIT %d OFFSET %d`, postHitColumns, where, limit, offset), args...)
+			ORDER BY p.created_at DESC, p.id DESC LIMIT %d OFFSET %d`, postHitColumns, where, limit, offset), args...)
 	if err != nil {
 		return nil, 0, err
 	}
