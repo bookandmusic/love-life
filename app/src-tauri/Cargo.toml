@@ -1,6 +1,6 @@
 [package]
 name = "love-life-app"
-version = "0.1.0"
+version = "0.1.1"
 description = "情侣生活记录 APP"
 edition = "2021"
 
