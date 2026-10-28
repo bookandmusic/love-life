@@ -7,6 +7,7 @@
 import { ref } from 'vue'
 import { api } from '../api/client'
 import { mediaIdOf, needsResign, rawOrThumb } from './mediaSign'
+import { pickEvictions } from './lruEvict'
 
 interface MediaLike {
   id?: number | string
@@ -24,6 +25,20 @@ const registry = new Map<string, Entry>()
 const version = ref(0)
 const REFRESH_INTERVAL = 5 * 60 * 1000
 
+// 注册表上限：浏览过的媒体会一直留在表里，而每 5 分钟要对全表重签一轮。
+// 不设上限的话，翻过几千张照片后每小时会打出几十个 reurl 请求（纯浪费电与流量）。
+// 500 远大于任何一屏能同时展示的数量，淘汰最旧的对当前视图无感。
+// ponytail: 上限 500 条纯内存签名缓存、超出即淘汰最旧；单用户浏览量级或重签请求成本明显变化时再评估调大或落盘。
+export const MAX_REGISTRY = 500
+
+// evictOldest 按 lastSeen 淘汰最旧的若干条，直到回到上限内。
+// lastSeen 是该条最后一次被用到的时间（淘汰算法抽在 lruEvict.ts，可单测）。
+function evictOldest(): void {
+  for (const key of pickEvictions(registry.entries(), MAX_REGISTRY)) {
+    registry.delete(key)
+  }
+}
+
 function derive(m: MediaLike): { thumb: string; raw: string } {
   return { thumb: m.thumb_url ?? '', raw: rawOrThumb(m) }
 }
@@ -39,6 +54,8 @@ export function mediaUrl(m: MediaLike): { thumb: string; raw: string } {
   const e = registry.get(key)
   if (!e) {
     registry.set(key, { ...fallback, lastSeen: Date.now() })
+    // 上限在注册时就得成立，不等重签轮裁——两轮之间可能新进几百条。
+    evictOldest()
     // 注册即需重签（地址已过期 / 只有 thumb 换不出 raw）：立刻换一轮，
     // 不等下一个 5 分钟周期——否则这段时间里缩略图与查看器一直是黑屏。
     if (needsResign(m, Date.now())) void refreshNow()
@@ -64,12 +81,16 @@ export async function refreshMediaUrl(id: number | string): Promise<string> {
     e.lastSeen = Date.now()
   } else {
     registry.set(String(it.id), { thumb: it.thumb_url ?? '', raw: it.url, lastSeen: Date.now() })
+    evictOldest()
   }
   version.value++
   return it.url
 }
 
 async function refreshSignedUrls(): Promise<void> {
+  // 先淘汰再取键：表在上次注册后可能已超限，先裁到上限内再重签，
+  // 免得为马上要被丢掉的条目白打请求。
+  evictOldest()
   const all = [...registry.keys()]
   if (!all.length) return
   for (let i = 0; i < all.length; i += 200) {
