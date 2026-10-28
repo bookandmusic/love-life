@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onActivated, ref } from 'vue'
+import { computed, onActivated, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { Cake, ChevronRight, RefreshCw, CalendarDays, Heart, MapPin, Sparkles } from 'lucide-vue-next'
 import { api, errText, fullUrl } from '../api/client'
@@ -55,6 +55,14 @@ function shuffle<T>(arr: T[]): T[] {
 const coverMemory = computed(() => {
   const withImg = mediaPosts.value.filter((p) => p.media.length > 0)
   return withImg.length ? shuffle(withImg)[0] : null
+})
+// 封面占位淡入：src 变化立即回落占位层——不让旧位图顶着新文字（图文错位），
+// 新图 @load 后才淡入；src 未变（抽回同一张 / 同一地址回到首页）时 watch 不触发，天然不闪占位。
+// ponytail: 无 @error 兜底，加载失败占位常驻（thumb 缺失时服务端本就回落原图，error 极罕见）；出现真实裂图反馈再补失败态。
+const coverSrc = computed(() => (coverMemory.value ? mediaSrc(coverMemory.value.media[0], 'thumb') : ''))
+const coverLoaded = ref(false)
+watch(coverSrc, () => {
+  coverLoaded.value = false
 })
 const textMemories = computed(() => shuffle(textPosts.value).slice(0, 3))
 function refreshMemories() {
@@ -221,7 +229,9 @@ onActivated(() => {
           <!-- 杂志封面主图卡 -->
           <div v-if="coverMemory" class="cover-card" @click="router.push(`/posts?focus=${coverMemory.id}`)">
             <div class="cover-media">
-              <img :src="mediaSrc(coverMemory.media[0], 'thumb')" loading="lazy" alt="" />
+              <!-- 占位淡入：加载中显示 cover-ph，@load 后淡入，避免旧图顶着新文字 -->
+              <img :src="coverSrc" :class="{ on: coverLoaded }" loading="lazy" alt="" @load="coverLoaded = true" />
+              <div v-show="!coverLoaded" class="cover-ph"></div>
               <div class="cover-mask">
                 <div class="cover-tags">
                   <span v-if="coverMemory.mood" class="cover-tag"><Sparkles :size="12" stroke-width="2" />{{ coverMemory.mood }}</span>
@@ -489,6 +499,25 @@ onActivated(() => {
   height: 100%;
   object-fit: cover;
   display: block;
+  opacity: 0;
+}
+/* 淡入过渡只写在 .on 上：src 变化撤掉 .on 的瞬间无过渡，旧图立即让位给占位层 */
+.cover-media img.on {
+  opacity: 1;
+  transition: opacity 0.3s;
+}
+/* 占位底：沿用骨架屏（SkeletonState）的 shimmer 渐变与节奏 */
+.cover-ph {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, rgba(120, 120, 128, 0.09) 40%, rgba(120, 120, 128, 0.2) 50%, rgba(120, 120, 128, 0.09) 60%);
+  background-size: 200% 100%;
+  animation: coverph 1.2s linear infinite;
+}
+@keyframes coverph {
+  to {
+    background-position: -200% 0;
+  }
 }
 .cover-mask {
   position: absolute;
