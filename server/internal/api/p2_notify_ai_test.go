@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // P2-10 / P2-11：AI 代操作的通知口径。
@@ -67,8 +68,13 @@ func TestAINotifyMarksAIAndSkipsAutoCreatedPoint(t *testing.T) {
 	if mapNotifs != 0 {
 		t.Fatalf("动态自动建点不得另发足迹通知，实得 %d 条", mapNotifs)
 	}
-	if rc.hits != 1 || !strings.Contains(rc.body, "（AI）") {
-		t.Fatalf("AI 发动态应只外推一次且正文带（AI）：hits=%d bodies=%v", rc.hits, rc.bodies)
+	// 外部推送自 B1 起异步：等它到达
+	if !rc.waitHits(1, 2*time.Second) {
+		hits, _, _, _ := rc.snapshot()
+		t.Fatalf("AI 发动态外推未在 2s 内到达：hits=%d", hits)
+	}
+	if hits, _, _, body := rc.snapshot(); hits != 1 || !strings.Contains(body, "（AI）") {
+		t.Fatalf("AI 发动态应只外推一次且正文带（AI）：hits=%d body=%s", hits, body)
 	}
 	var postSnap string
 	_ = ts.db.QueryRow(`SELECT snapshot_json FROM notifications WHERE event_type='post_created'`).Scan(&postSnap)
@@ -99,10 +105,14 @@ func TestAINotifyMarksAIAndSkipsAutoCreatedPoint(t *testing.T) {
 		t.Fatalf("AI 评论快照应带 via=ai：%s", cmtSnap)
 	}
 	// 评论外推必须自己到达（不能只看「最后一次 body」——那可能是上一步动态的正文）
-	if rc.hits != 2 {
-		t.Fatalf("AI 评论应新增一次外推：hits=%d bodies=%v", rc.hits, rc.bodies)
+	if !rc.waitHits(2, 2*time.Second) {
+		hits, _, _, _ := rc.snapshot()
+		t.Fatalf("AI 评论外推未在 2s 内到达：hits=%d", hits)
 	}
-	last := rc.bodies[len(rc.bodies)-1]
+	hits, _, _, last := rc.snapshot()
+	if hits != 2 {
+		t.Fatalf("AI 评论应新增一次外推：hits=%d", hits)
+	}
 	if !strings.Contains(last, "（AI）") || !strings.Contains(last, "admin") || !strings.Contains(last, "拍得真好") {
 		t.Fatalf("AI 评论推送正文应含操作者与（AI）与内容：%s", last)
 	}

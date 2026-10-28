@@ -25,6 +25,10 @@ var externalEventKey = map[string]string{
 	"album_created":        "album",
 }
 
+// pushBudget 一次异步推送的总预算（覆盖所有渠道串行）。
+// 比单渠道 10s 的 client 超时宽裕：多配几个渠道时不应被第一个卡死整批。
+const pushBudget = 30 * time.Second
+
 type Dispatcher struct {
 	db     *store.DB
 	client *http.Client
@@ -45,6 +49,16 @@ func PossessivePost(authorID, operatorID int64) string {
 }
 
 // Dispatch 站内通知 recipientIDs（全量）+ 外部推送（订阅对应事件的渠道）。
+//
+// 站内通知同步写库（廉价、且失败不影响主流程）；外部推送**异步**——它是副作用，
+// 不该出现在业务请求的关键路径上。渠道故障时同步推送会让每次发布都多等一个
+// http.Client.Timeout（10s）× 渠道数，而用户只是发了一条动态。
+//
+// 用 context.WithoutCancel：请求结束后 r.Context() 立刻取消，直接沿用会让推送
+// 全部变成 context canceled。独立超时兜住「上游挂着不返回」。
+//
+// ponytail: 推送不落盘、失败不重试（仅记日志），30s 总预算覆盖全部渠道串行；
+// 要求必达投递时升级为持久化队列（见 ARCHITECTURE「通知分发器」的「推送时机」行）。
 func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventType, targetType string, targetID int64, snapshot string, title, content string) {
 	for _, uid := range recipientIDs {
 		_ = d.db.InsertNotification(ctx, uid, eventType, targetType, targetID, snapshot)
@@ -53,14 +67,19 @@ func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventTy
 	if !ok {
 		return
 	}
-	channels, err := d.db.ListWebhookChannelsByEvent(ctx, key)
-	if err != nil {
-		slog.Warn("list webhook channels failed", "err", err)
-		return
-	}
-	for _, ch := range channels {
-		d.push(ctx, ch, key, title, content)
-	}
+	base := context.WithoutCancel(ctx)
+	go func() {
+		ctx, cancel := context.WithTimeout(base, pushBudget)
+		defer cancel()
+		channels, err := d.db.ListWebhookChannelsByEvent(ctx, key)
+		if err != nil {
+			slog.Warn("list webhook channels failed", "err", err)
+			return
+		}
+		for _, ch := range channels {
+			d.push(ctx, ch, key, title, content)
+		}
+	}()
 }
 
 // PushTest 「发送测试」按钮：不订阅过滤，直接推测试事件。

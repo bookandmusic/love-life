@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,8 +16,12 @@ import (
 )
 
 // webhookReceiver 起一个真实 HTTP 接收端，记录收到的推送请求。
+//
+// 加锁：外部推送自 B1 起是异步的（goroutine 里发），接收端 handler 跑在
+// httptest 的 serve goroutine 上，测试主体读 hits/body 与之并发——不加锁就是数据竞争。
 type webhookReceiver struct {
 	server *httptest.Server
+	mu     sync.Mutex
 	method string
 	body   string
 	query  string
@@ -24,16 +29,38 @@ type webhookReceiver struct {
 	bodies []string // 全部请求体，便于断言「不该推的没推」
 }
 
+// snapshot 取一份加锁副本，供断言使用。
+func (rc *webhookReceiver) snapshot() (hits int, method, query, body string) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	return rc.hits, rc.method, rc.query, rc.body
+}
+
+// waitHits 等异步推送到达（最多 timeout）；返回是否达到 want。
+func (rc *webhookReceiver) waitHits(want int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if hits, _, _, _ := rc.snapshot(); hits >= want {
+			return true
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	hits, _, _, _ := rc.snapshot()
+	return hits >= want
+}
+
 func newWebhookReceiver(t *testing.T) *webhookReceiver {
 	t.Helper()
 	rc := &webhookReceiver{}
 	rc.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		rc.mu.Lock()
 		rc.hits++
 		rc.method = r.Method
 		rc.query = r.URL.RawQuery
-		b, _ := io.ReadAll(r.Body)
 		rc.body = string(b)
 		rc.bodies = append(rc.bodies, rc.body)
+		rc.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(rc.server.Close)
@@ -228,14 +255,19 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	// admin 发动态 → 渠道收到外部推送（模板占位符已渲染）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/posts", adminToken, map[string]any{"content": "纪念日测试动态"})
 	res.Body.Close()
-	if rc.hits != 1 || rc.method != "POST" {
-		t.Fatalf("webhook push: hits=%d method=%s", rc.hits, rc.method)
+	if !rc.waitHits(1, 2*time.Second) {
+		hits, method, _, _ := rc.snapshot()
+		t.Fatalf("webhook push 未在 2s 内到达：hits=%d method=%s", hits, method)
 	}
-	if !strings.Contains(rc.body, `"t":"新动态"`) || !strings.Contains(rc.body, `"ty":"new_post"`) {
-		t.Fatalf("template render: %s", rc.body)
+	hits, method, _, body := rc.snapshot()
+	if hits != 1 || method != "POST" {
+		t.Fatalf("webhook push: hits=%d method=%s", hits, method)
 	}
-	if strings.Contains(rc.body, "{{") {
-		t.Fatalf("unrendered placeholder: %s", rc.body)
+	if !strings.Contains(body, `"t":"新动态"`) || !strings.Contains(body, `"ty":"new_post"`) {
+		t.Fatalf("template render: %s", body)
+	}
+	if strings.Contains(body, "{{") {
+		t.Fatalf("unrendered placeholder: %s", body)
 	}
 
 	// 创建一个「3 天后」的纪念日，提醒提前 3 天 → 今天就该提醒
@@ -253,8 +285,12 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	dp.CheckAnniversaries(t.Context(), time.Now())
 	dp.CheckAnniversaries(t.Context(), time.Now())
 
-	if rc.hits != 2 || !strings.Contains(rc.body, "在一起纪念日") {
-		t.Fatalf("anniversary push: hits=%d body=%s", rc.hits, rc.body)
+	if !rc.waitHits(2, 2*time.Second) {
+		hits, _, _, body := rc.snapshot()
+		t.Fatalf("anniversary push 未在 2s 内到达：hits=%d body=%s", hits, body)
+	}
+	if hits, _, _, body := rc.snapshot(); !strings.Contains(body, "在一起纪念日") {
+		t.Fatalf("anniversary push 内容不符：hits=%d body=%s", hits, body)
 	}
 	// 站内提醒只发非 admin 用户：admin 不在情侣里、且不走 APP（投给它永远无人读）
 	var count, adminCount int
@@ -298,8 +334,12 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 	// 发送测试（admin；不订阅过滤直接推）
 	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks/1/test", adminToken, nil)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || rc.hits != 3 {
-		t.Fatalf("webhook test: status=%d hits=%d", res.StatusCode, rc.hits)
+	if !rc.waitHits(3, 2*time.Second) {
+		hits, _, _, _ := rc.snapshot()
+		t.Fatalf("测试推送未在 2s 内到达：hits=%d", hits)
+	}
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("webhook test: status=%d", res.StatusCode)
 	}
 
 	// admin 删除渠道
