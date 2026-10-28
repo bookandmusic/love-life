@@ -226,7 +226,10 @@ const TL_SIZE = 40
  *  已归档的媒体一直留在列表里，而客户端没有刷新入口（无刷新按钮 / 下拉刷新），用户无法自救。
  *  代价是深翻页时多发几个请求——实测每页 40 条、总量 63 条，最多 2 页，可忽略。
  *
- *  中途某页失败时**不替换列表**：半截数据配上原有的 tlPage/tlHasMore 会让后续滚动重复加载同一页。 */
+ *  中途某页失败时**不替换列表**：半截数据配上原有的 tlPage/tlHasMore 会让后续滚动重复加载同一页。
+ *
+ *  页与页之间没有依赖，故并发拉取：串行时每页一个来回，切回 tab 会明显卡顿。
+ *  先取第 1 页拿 total/has_more，才能知道实际要几页。 */
 async function refreshTimeline() {
   const cold = timeline.value.length === 0
   if (cold) {
@@ -234,22 +237,21 @@ async function refreshTimeline() {
     error.value = ''
   }
   try {
-    const pages = Math.max(1, tlPage.value)
-    const items: TimelineItem[] = []
-    let total = 0
-    let hasMore = false
-    for (let page = 1; page <= pages; page++) {
-      const res = await api<{ items: TimelineItem[]; total: number; has_more: boolean }>(
-        `/api/v1/media/timeline?page=${page}&size=${TL_SIZE}`,
+    type PageRes = { items: TimelineItem[]; total: number; has_more: boolean }
+    const first = await api<PageRes>(`/api/v1/media/timeline?page=1&size=${TL_SIZE}`)
+    const total = first.total ?? first.items.length
+    const need = !first.has_more
+      ? 1
+      : Math.min(Math.max(1, tlPage.value), Math.max(1, Math.ceil(total / TL_SIZE)))
+    const rest = need > 1
+      ? await Promise.all(
+        Array.from({ length: need - 1 }, (_, i) =>
+          api<PageRes>(`/api/v1/media/timeline?page=${i + 2}&size=${TL_SIZE}`)),
       )
-      items.push(...res.items)
-      total = res.total ?? items.length
-      hasMore = res.has_more ?? false
-      if (!hasMore) break // 数据变少时总页数会缩，不必按旧页数死拉
-    }
-    timeline.value = items
+      : []
+    timeline.value = [...first.items, ...rest.flatMap((r) => r.items)]
     tlTotal.value = total
-    tlHasMore.value = hasMore
+    tlHasMore.value = rest.length ? (rest[rest.length - 1].has_more ?? false) : (first.has_more ?? false)
     error.value = ''
   } catch (e) {
     if (cold) error.value = errText(e, '加载失败')

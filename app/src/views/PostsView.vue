@@ -82,7 +82,10 @@ const FOCUS_MAX_POSTS = 500
  *  对方发的新动态也永远看不到；而客户端没有刷新入口（无刷新按钮 / 下拉刷新），用户无法自救。
  *  代价是深翻页时多发几个请求——实测每页 20 条、总量 109 条，可忽略。
  *
- *  中途某页失败时**不替换列表**：半截数据配上原有的 page/total 会让后续滚动重复加载同一页。 */
+ *  中途某页失败时**不替换列表**：半截数据配上原有的 page/total 会让后续滚动重复加载同一页。
+ *
+ *  页与页之间没有依赖，故并发拉取：串行时深翻 20 页就是 20 个来回，切回 tab 明显卡顿。
+ *  先取第 1 页拿 total，才能知道实际要几页（数据变少时总页数会缩，不必按旧页数死拉）。 */
 async function refreshPosts() {
   // 静默刷新：仅冷启动（无数据）时亮骨架屏；已有数据时后台重取、失败不打扰旧内容
   const cold = posts.value.length === 0
@@ -92,16 +95,19 @@ async function refreshPosts() {
   }
   try {
     const pages = Math.max(1, page.value)
-    const items: PostItem[] = []
-    let tot = 0
-    for (let n = 1; n <= pages; n++) {
-      const res = await api<{ items: PostItem[]; total: number }>(listPath(n))
-      items.push(...res.items)
-      tot = res.total ?? items.length
-      // 数据变少时总页数会缩：到底了就不必按旧页数死拉
-      if (items.length >= tot || res.items.length < PAGE_SIZE) break
-    }
-    posts.value = items
+    type PageRes = { items: PostItem[]; total: number }
+    const first = await api<PageRes>(listPath(1))
+    const tot = first.total ?? first.items.length
+    // 第 1 页不足一页 = 已经到底，不再发后续请求
+    const need = first.items.length < PAGE_SIZE
+      ? 1
+      : Math.min(pages, Math.max(1, Math.ceil(tot / PAGE_SIZE)))
+    const rest = need > 1
+      ? await Promise.all(
+        Array.from({ length: need - 1 }, (_, i) => api<PageRes>(listPath(i + 2))),
+      )
+      : []
+    posts.value = [...first.items, ...rest.flatMap((r) => r.items)]
     total.value = tot
     await spaceStore.load()
     error.value = ''
