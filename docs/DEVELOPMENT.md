@@ -192,6 +192,7 @@ make android-apk         构建 release 包，产物在 app/src-tauri/gen/androi
 - 换图标：`make app-icon`——源图是 `app/src-tauri/icons/icon.png`（512×512 主图，在仓；README 顶部那张 `assets/images/logo.png` 是同款设计的 1254×1254 大图，但 tauri 命令只吃前者）。换图标 = 替换该文件后重跑，`src-tauri/icons/` 与 Android `res/` 整套重新生成，diff 较大属正常。
 - **浏览器标签页图标（favicon）**：两个前端各有 `public/favicon.png`（`admin/` 与 `app/` 一份），内容为同一张图，取自上面那次生成出的 `app/src-tauri/icons/128x128.png`。两处是各自构建根，Vite 无法共享同一份静态文件，故保留两份副本——**换 logo 时这三处要一起换**（`icons/icon.png` + 两个 `favicon.png`）。
 - **发布产物仍以 CI 为准**（见「CI 与发布」）；本地包只供自测。
+- **发布与应用内更新**：发布 = 推 `v<version>` tag（与 `tauri.conf.json` version 一致性由 workflow 校验）→ CI 构建并发布正式 Release；APP 从 GitHub Releases 检查 / 下载 / 安装（链路与清单推导见客户端设计「应用内更新」）。**需要强制更新时**，发布后编辑 release body 加一行 `min-version-code: <最低可用 versionCode>`（versionCode 换算见客户端设计「应用内更新」）；**回滚** = 删除最新 release，latest 自动回退上一版。
 
 ## 4. CI 与发布
 
@@ -242,7 +243,7 @@ git push origin v0.1.0
 
 ### 4.4 维护事项
 
-- **〔两端〕**`app/src-tauri/gen/android/` 纳入版本管理（Tauri 官方约定，工程自带 `.gitignore`，构建产物与 `keystore.properties` 不会入库）。签名配置与 release 明文开关写在 `app/build.gradle.kts`。
+- **〔两端〕**`app/src-tauri/gen/android/` 纳入版本管理（Tauri 官方约定，工程自带 `.gitignore`，构建产物与 `keystore.properties` 不会入库）。签名配置与 release 明文开关写在 `app/src-tauri/gen/android/app/build.gradle.kts`。
 
 ## 5. 发布前检查清单
 
@@ -253,3 +254,4 @@ git push origin v0.1.0
 - [ ] **三项签名 secrets 已录入**：见「CI 与发布」，名称须完全一致；未录入时 workflow 会在签名步骤直接失败。
 - [ ] **密钥库已离线备份**：丢失后无法为已安装的 App 发布更新。
 - [ ] **CI 产出的 release APK 安装并启动一次**：确认签名与打包链路产物可用；功能验收以浏览器手机视口实测为准（见「健康检查（全链路）」）。
+- [ ] **确认 `.env` 的 keystore 备份仍在**：密钥不可再生，丢失 = 应用内更新全线失效，所有存量用户只能卸载重装（见客户端设计「应用内更新 · 发布约定」）。

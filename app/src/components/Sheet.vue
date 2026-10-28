@@ -10,6 +10,8 @@ const props = defineProps<{
   cancelText?: string
   confirmDisabled?: boolean
   confirmDanger?: boolean
+  /** 隐藏取消按钮且禁用蒙层点击关闭（强更弹窗等不可关闭场景） */
+  hideCancel?: boolean
 }>()
 const emit = defineEmits<{
   'update:show': [v: boolean]
@@ -30,14 +32,16 @@ watch(() => props.show, (v) => {
 <template>
   <Teleport to="body">
     <Transition name="sheet">
-      <div v-if="show" class="sheet-mask" @click.self="onCancel">
+      <div v-if="show" class="sheet-mask" @click.self="props.hideCancel ? undefined : onCancel()">
         <div class="sheet-card" role="dialog" aria-modal="true">
           <header v-if="title" class="sheet-title">{{ title }}</header>
           <div class="sheet-body">
             <slot />
           </div>
           <footer class="sheet-foot">
-            <button class="btn ghost" @click="onCancel">{{ cancelText || '取消' }}</button>
+            <button v-if="!props.hideCancel" class="btn ghost" @click="onCancel">
+              {{ cancelText || '取消' }}
+            </button>
             <button
               class="btn"
               :class="confirmDanger ? 'danger' : 'primary'"

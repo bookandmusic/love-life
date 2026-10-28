@@ -7,6 +7,8 @@ import { ACCENTS } from './utils/accents'
 import { probeAndSelect } from './utils/netProbe'
 import { startMediaRefresh } from './utils/mediaUrls'
 import { startTileGrantRefresh } from './utils/mapTiles'
+import AppUpdateSheet from './components/AppUpdateSheet.vue'
+import { useAppUpdate, CHECK_DELAY_MS } from './composables/useAppUpdate'
 
 const router = useRouter()
 
@@ -20,11 +22,15 @@ function applyStoredAppearance() {
 }
 
 let probeTimer: number | undefined
+let updateCheckTimer: number | undefined
 // 具名引用才能解绑：此前匿名回调无法移除，卸载后仍会监听系统主题变化
 const media = window.matchMedia('(prefers-color-scheme: dark)')
 function onSystemThemeChange() {
   if ((localStorage.getItem(KEYS.THEME) || 'light') === 'system') applyStoredAppearance()
 }
+
+// 应用内更新：启动后延迟 3s 静默检查（仅 Tauri 环境，见 useAppUpdate 内判断）
+const { check: checkAppUpdate } = useAppUpdate()
 
 onMounted(() => {
   applyStoredAppearance()
@@ -38,10 +44,12 @@ onMounted(() => {
   startMediaRefresh()
   // 地图瓦片短时签名定时换新（DB3）：30 分钟 TTL，每 10 分钟静默重取
   startTileGrantRefresh()
+  updateCheckTimer = window.setTimeout(() => void checkAppUpdate(), CHECK_DELAY_MS)
 })
 
 onUnmounted(() => {
   if (probeTimer !== undefined) clearInterval(probeTimer)
+  if (updateCheckTimer !== undefined) clearTimeout(updateCheckTimer)
   media.removeEventListener('change', onSystemThemeChange)
 })
 </script>
@@ -52,6 +60,8 @@ onUnmounted(() => {
       <component :is="Component" />
     </Transition>
   </router-view>
+  <!-- 应用内更新弹窗（全局单例，状态机驱动显隐） -->
+  <AppUpdateSheet />
 </template>
 
 <style>

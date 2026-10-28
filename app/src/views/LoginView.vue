@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { Eye, EyeOff, Heart, PenLine } from 'lucide-vue-next'
 import Sheet from '../components/Sheet.vue'
@@ -7,9 +7,20 @@ import { useAuth } from '../stores/auth'
 import { errText, getLanBase, getWanBase, setDualBase } from '../api/client'
 import { landingRoute } from '../router'
 import { probeAndSelect, type ProbeStatus } from '../utils/netProbe'
+import { useAppUpdate, CHECK_DELAY_MS } from '../composables/useAppUpdate'
 
 const router = useRouter()
 const auth = useAuth()
+
+// 登录前也静默检查更新（更新链路走 GitHub，不依赖已配置的服务端地址）
+const { check: checkAppUpdate } = useAppUpdate()
+let updateCheckTimer: number | undefined
+onMounted(() => {
+  updateCheckTimer = window.setTimeout(() => void checkAppUpdate(), CHECK_DELAY_MS)
+})
+onUnmounted(() => {
+  if (updateCheckTimer !== undefined) clearTimeout(updateCheckTimer)
+})
 
 // 服务端地址（AP1 双通道）：内网（在家直连）/ 公网（在外 HTTPS），
 // 各自可空——只填一个时直接用该地址；双地址探测优选内网。

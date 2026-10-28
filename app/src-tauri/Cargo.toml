@@ -18,3 +18,5 @@ tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 应用内更新：Rust 只做薄转发（命令 → Kotlin），下载引擎/前台服务/安装全在 Kotlin
+# （避免 reqwest+ring 的交叉 C 编译依赖；sha256/Range 用平台 MessageDigest/HttpURLConnection，见 src/appupdate.rs）

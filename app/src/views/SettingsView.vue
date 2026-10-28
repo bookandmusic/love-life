@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { LogOut, ExternalLink } from 'lucide-vue-next'
+import { LogOut, ExternalLink, RefreshCw } from 'lucide-vue-next'
 import { api, errText, getBase } from '../api/client'
 import PageLayout from '../components/PageLayout.vue'
 import { useAuth } from '../stores/auth'
@@ -9,6 +9,8 @@ import { useMode, type AppMode } from '../stores/mode'
 import { KEYS } from '../utils/storage'
 import { ACCENTS, ACCENT_IDS } from '../utils/accents'
 import { aiReasonText, AI_STATUS_OFFLINE, type AIStatus } from '../utils/aiStatus'
+import { addProxy, buildApiUrl, getProxies, isBuiltinProxy, removeProxy } from '../utils/appUpdate'
+import { useAppUpdate } from '../composables/useAppUpdate'
 
 const PROJECT_HOME = 'https://github.com/bookandmusic/love-life'
 // 版本号来自构建期注入（vite.config.ts 读 src-tauri/tauri.conf.json），不硬编码
@@ -29,6 +31,84 @@ const aiPrefToast = ref('')
 let aiPrefTimer: number | undefined // 「已保存」标签的自动隐藏计时（卸载时清理）
 const styleOpts = ref<string[]>(['文艺', '幽默', '简洁'])
 const stylesLoaded = ref(false)
+
+// 应用内更新（关于段）：手动检查 + 后台下载状态 + GitHub 代理配置（逻辑见 utils/appUpdate.ts 与 useAppUpdate）
+const {
+  state: updateState,
+  progress: updateProgress,
+  manualNotice,
+  check: checkUpdate,
+} = useAppUpdate()
+const updateToast = ref('')
+let updateToastTimer: number | undefined
+watch(manualNotice, (m) => {
+  if (!m) return
+  updateToast.value = m
+  if (updateToastTimer) clearTimeout(updateToastTimer)
+  updateToastTimer = window.setTimeout(() => (updateToast.value = ''), 2600)
+})
+const updatePct = computed(() => {
+  const { received, total } = updateProgress.value
+  return total > 0 ? Math.min(100, Math.round((received / total) * 100)) : 0
+})
+const updateStateText = computed(() => {
+  switch (updateState.value) {
+    case 'checking':
+      return '检查中…'
+    case 'downloading':
+      return `下载中 ${updatePct.value}%`
+    case 'ready':
+      return '待安装'
+    case 'handoff':
+      return '安装中'
+    default:
+      return ''
+  }
+})
+function flashUpdateToast(text: string) {
+  updateToast.value = text
+  if (updateToastTimer) clearTimeout(updateToastTimer)
+  updateToastTimer = window.setTimeout(() => (updateToast.value = ''), 2600)
+}
+function onCheckUpdate() {
+  void checkUpdate(true)
+}
+// GitHub 代理（内置 + 自定义列表；检查更新时并发竞速取最快，见客户端设计「应用内更新」）
+const ghProxies = ref(getProxies())
+const ghProxyDraft = ref('')
+const proxyTesting = ref(false)
+function addGhProxy() {
+  if (!ghProxyDraft.value.trim()) return
+  const before = getProxies()
+  addProxy(ghProxyDraft.value)
+  const after = getProxies()
+  ghProxyDraft.value = ''
+  ghProxies.value = after
+  // addProxy 对重复/与内置同值静默忽略，提示要跟实际结果一致
+  flashUpdateToast(after.length > before.length ? '代理已添加' : '该代理已在列表中')
+}
+function removeGhProxy(p: string) {
+  removeProxy(p)
+  ghProxies.value = getProxies()
+  flashUpdateToast('代理已移除')
+}
+async function testProxy() {
+  proxyTesting.value = true
+  const proxies = ghProxies.value
+  try {
+    const results = await Promise.allSettled(
+      proxies.map((p) =>
+        fetch(buildApiUrl(p), { signal: AbortSignal.timeout(8_000) }).then((res) => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        })
+      )
+    )
+    const ok = results.filter((r) => r.status === 'fulfilled').length
+    flashUpdateToast(ok ? `连通 ${ok}/${proxies.length}` : '全部不可连通')
+  } finally {
+    proxyTesting.value = false
+  }
+}
 function syncAIPref() {
   aiStyle.value = auth.user?.ai_style || defaultStyleName.value || '文艺'
 }
@@ -102,9 +182,10 @@ function applyMode(m: AppMode) {
   router.replace(m === 'ai' ? '/chat' : '/home')
 }
 
-function logout() {
-  auth.logout()
-  router.replace('/login')
+async function logout() {
+  // 先吊销服务端 token 再跳转：logout() 内部保证本地凭证一定被清（失败也清）
+  await auth.logout()
+  await router.replace('/login')
 }
 
 // 风格清单按需加载：切到 AI 模式且未加载过时补拉一次，避免空选项
@@ -177,10 +258,46 @@ onMounted(() => {
           <span class="label">服务端</span>
           <span class="value server-url">{{ getBase() || '（未配置）' }}</span>
         </div>
+        <button
+          class="row row-link"
+          :disabled="updateState === 'checking'"
+          @click="onCheckUpdate"
+        >
+          <span class="label">检查更新</span>
+          <span v-if="updateStateText" class="value num">{{ updateStateText }}</span>
+          <RefreshCw
+            v-else
+            :size="14"
+            stroke-width="1.8"
+            class="value-link"
+          />
+        </button>
+        <!-- GitHub 代理：内置 + 自定义，检查更新时竞速取最快；内置项不可删 -->
+        <button class="row row-link" :disabled="proxyTesting" @click="testProxy">
+          <span class="label">更新代理（{{ ghProxies.length }}）</span>
+          <span class="value">{{ proxyTesting ? '测试中…' : '测试连通' }}</span>
+        </button>
+        <div v-for="p in ghProxies" :key="p" class="row">
+          <span class="label proxy-url">{{ p }}</span>
+          <span v-if="isBuiltinProxy(p)" class="value num">内置</span>
+          <button v-else class="proxy-del" @click="removeGhProxy(p)">删除</button>
+        </div>
+        <div class="row">
+          <input
+            v-model="ghProxyDraft"
+            class="value proxy-input"
+            type="text"
+            inputmode="url"
+            placeholder="添加自定义代理，如 https://gh-proxy.net"
+            spellcheck="false"
+            @change="addGhProxy"
+          />
+        </div>
         <a class="row row-link" :href="PROJECT_HOME" target="_blank" rel="noopener">
           <span class="label">项目主页</span>
           <ExternalLink :size="14" stroke-width="1.8" class="value-link" />
         </a>
+        <p v-if="updateToast" class="update-toast">{{ updateToast }}</p>
       </div>
 
       <!-- 退出登录（通用项） -->
@@ -323,6 +440,39 @@ onMounted(() => {
 .row-link {
   text-decoration: none;
   color: var(--ink);
+}
+/* 应用内更新：代理输入（右侧对齐，占满 value 位）与结果提示 */
+.proxy-input {
+  border: none;
+  outline: none;
+  background: transparent;
+  text-align: right;
+  font-size: 13px;
+  color: var(--ink);
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+}
+.proxy-input::placeholder { color: var(--muted-ink); }
+.proxy-url {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.proxy-del {
+  border: none;
+  background: transparent;
+  color: var(--danger, #e0494b);
+  font-size: 13px;
+  padding: 0;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.update-toast {
+  font-size: 13px;
+  color: var(--muted-ink);
+  text-align: center;
+  margin: 2px 0 0;
 }
 .value-link {
   color: var(--muted-ink);
