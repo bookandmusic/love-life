@@ -1694,7 +1694,13 @@ routes.push({ method: 'PUT', pattern: /^\/api\/v1\/admin\/security$/, handler: (
   return ok(security)
 } })
 
-routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/audit$/, handler: () => ok(audit) })
+// 审计日志分页（真实后端同款：默认 20、上限 100、响应带 total）
+routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/audit$/, handler: (url) => {
+  const page = Math.max(1, Number(url.searchParams.get('page') || 1))
+  const size = Math.min(100, Math.max(1, Number(url.searchParams.get('page_size') || 20)))
+  const start = (page - 1) * size
+  return ok({ items: audit.slice(start, start + size), total: audit.length, page, page_size: size })
+} })
 
 // 个人访问令牌（PAT）：生成/吊销；明文 token 仅在生成响应中出现一次
 routes.push({ method: 'GET', pattern: /^\/api\/v1\/admin\/tokens$/, handler: () => ok(tokens) })

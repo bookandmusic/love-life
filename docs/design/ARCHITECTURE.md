@@ -211,8 +211,8 @@ flowchart TD
   - **通知渠道（/integrations/webhooks）**：渠道 CRUD + `[发送测试]`。接口：`GET/POST /api/v1/admin/webhooks`、`PUT/DELETE /{id}`、`POST /{id}/test`
   - **地图配置（/integrations/map）**：瓦片源卡片网格（等高），末尾固定「添加瓦片源」卡；支持启用（全局至多一个使用中）、删除（两步确认，使用中的源不可删），**不提供编辑**——配置有误删除后重加。接口 `GET/POST /admin/map-config`、`DELETE /{id}`、`PUT /{id}/enable`
 - **回收站管理**（页内 2 个 tab：已删除内容 / 操作日志）：列表按删除时间排序、按类型筛选（动态/评论/相册/纪念日/地图点位）、显示删除者（用户/AI）；**照片不单列为类型**——媒体无独立生命周期，随所属动态一并进入回收站、随动态恢复，不做单独恢复（PRODUCT「相册（独立底部 tab）」）；单条与批量恢复（二次确认）；操作日志（恢复 + 系统超期永久删除，不可删除、永久保留）
-- **审计日志**：操作者筛选（user/ai/pat）+ 单条耗时列；模型响应延迟与用量报表归仪表盘
-- **服务日志**：服务端运行日志的实时视图（slog 全量，含 AI 调用失败原因）。数据源是**进程内环形缓冲**（`server/internal/logbuf`，定长 2000 条、满则覆盖最旧），**不落盘**——日志本就进 stdout（容器 `make logs`、裸跑看终端），落盘会与「单一数据目录只存业务数据」冲突，重启丢历史属已知取舍。写入缓冲前按**键名**脱敏（`api_key` / `token` / `password` / `signature` 等替换为 `••••`；`max_tokens`、`prompt_tokens` 等 token **计数**不打码，那是排障与仪表盘指标）。匹配只认整名与下划线后缀，不用子串。页面按 `seq` 增量轮询（2s）；密钥不因此进入浏览器。接口 `GET /api/v1/admin/logs?since=<seq>`（仅 admin）。
+- **审计日志**：操作者筛选（user/ai/pat）+ 单条耗时列；模型响应延迟与用量报表归仪表盘。**分页读**（`GET /admin/audit?page=&page_size=`，默认 20、上限 100，响应带 `total`）：`audit_logs` 永久保留且每次 AI / PAT 工具调用一条，是全库唯一无界增长的表，全量返回会把几万条记录一次性塞进浏览器；页面用「加载更多」分批取
+- **服务日志**：服务端运行日志的实时视图（slog 全量，含 AI 调用失败原因）。数据源是**进程内环形缓冲**（`server/internal/logbuf`，定长 2000 条、满则覆盖最旧），**不落盘**——日志本就进 stdout（容器 `make logs`、裸跑看终端），落盘会与「单一数据目录只存业务数据」冲突，重启丢历史属已知取舍。写入缓冲前按**键名**脱敏（`api_key` / `token` / `password` / `signature` 等替换为 `••••`；`max_tokens`、`prompt_tokens` 等 token **计数**不打码，那是排障与仪表盘指标）。匹配只认整名与下划线后缀，不用子串。页面按 `seq` 增量轮询（2s）；密钥不因此进入浏览器。接口 `GET /api/v1/admin/logs?since=<seq>`（仅 admin）。**5xx 一律落日志**：`api.writeErrorf` 对 `status >= 500` 记 `method` / `path` / `err`，4xx 不记（业务拒绝是常态，记下来会淹掉真正的故障）；`http.Server.ErrorLog` 也指向同一 handler，handler panic 的栈因此同样可见。原始错误只进日志、不进响应体
 - **交互约定（实现侧）**：全局反馈统一用 `AppToast`（不用原生 `alert`/`confirm`/`prompt`，避免布局跳动）；危险操作确认用应用内 `ConfirmDialog`。**需要哪些确认、按钮用什么色档**见 PRODUCT「后台管理页面功能范围（admin）」
 
 ---

@@ -19,6 +19,17 @@ export interface AuditEntry {
   latencyMs: number | null
 }
 
-export function listAudit(): Promise<AuditEntry[]> {
-  return http<AuditEntry[]>('/api/v1/admin/audit')
+export interface AuditPage {
+  items: AuditEntry[]
+  total: number
+  page: number
+  page_size: number
+}
+
+/**
+ * 审计日志分页读取。audit_logs 永久保留、每次 AI/PAT 工具调用一条，
+ * 不分页会随使用年限线性变慢（一年约 1.8 万条），故后端强制分页。
+ */
+export function listAudit(page = 1, pageSize = 20): Promise<AuditPage> {
+  return http<AuditPage>(`/api/v1/admin/audit?page=${page}&page_size=${pageSize}`)
 }

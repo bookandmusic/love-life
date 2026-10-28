@@ -5,11 +5,18 @@ import type { AuditEntry, AuditActorType } from '../api/audit'
 import AppCard from '../components/AppCard.vue'
 import AppBadge from '../components/AppBadge.vue'
 import AppIcon from '../components/AppIcon.vue'
+import AppButton from '../components/AppButton.vue'
 import { errMsg } from '../lib/http'
 import { toast } from '../lib/toast'
 
 const entries = ref<AuditEntry[]>([])
 const filterType = ref<'全部' | AuditActorType>('全部')
+// 分页状态：audit_logs 永久保留、随时间线性增长，全量拉取会越来越慢
+const total = ref(0)
+const page = ref(1)
+const PAGE_SIZE = 20
+const loadingMore = ref(false)
+const hasMore = computed(() => entries.value.length < total.value)
 
 const filters: Array<'全部' | AuditActorType> = ['全部', 'user', 'ai', 'pat']
 const actorMeta: Record<AuditActorType, { label: string; variant: 'info' | 'warning' | 'neutral' }> = {
@@ -18,13 +25,32 @@ const actorMeta: Record<AuditActorType, { label: string; variant: 'info' | 'warn
   pat: { label: 'PAT', variant: 'neutral' },
 }
 
+async function loadPage(p: number): Promise<void> {
+  const res = await auditApi.listAudit(p, PAGE_SIZE)
+  entries.value = p === 1 ? res.items : [...entries.value, ...res.items]
+  total.value = res.total
+  page.value = res.page
+}
+
 onMounted(async () => {
   try {
-    entries.value = await auditApi.listAudit()
+    await loadPage(1)
   } catch (e) {
     toast.error(errMsg(e, '审计日志加载失败'))
   }
 })
+
+async function loadMore(): Promise<void> {
+  if (loadingMore.value || !hasMore.value) return
+  loadingMore.value = true
+  try {
+    await loadPage(page.value + 1)
+  } catch (e) {
+    toast.error(errMsg(e, '加载更多失败'))
+  } finally {
+    loadingMore.value = false
+  }
+}
 
 const filtered = computed(() =>
   entries.value.filter((e) => filterType.value === '全部' || e.actorType === filterType.value),
@@ -96,6 +122,13 @@ const resultMeta = (raw: string) => {
             </tr>
           </tbody>
         </table>
+      </div>
+      <!-- 加载更多：全量永久保留，只能分批取；同时给出「已载/总数」让管理员知道还有多少 -->
+      <div v-if="entries.length > 0" class="flex gap-3 items-center" style="margin-top: 12px; justify-content: center;">
+        <span class="text-secondary">已载 {{ entries.length }} / {{ total }} 条</span>
+        <AppButton v-if="hasMore" variant="secondary" size="sm" :disabled="loadingMore" @click="loadMore">
+          {{ loadingMore ? '加载中…' : '加载更多' }}
+        </AppButton>
       </div>
     </AppCard>
   </div>

@@ -87,7 +87,14 @@ type AuditEntry struct {
 // （刻意修正：读工具丢失发起人关联），pat 存的是令牌 ID。
 // 故 ai 行解析为发起人显示名并前置「AI ·」以区分通道，不能拿它去 JOIN
 // model_providers——用户 ID 与供应商 ID 数值空间重叠，会串出错误的供应商名。
-func (d *DB) ListAuditLogs(ctx context.Context) ([]*AuditEntry, error) {
+//
+// 分页：audit_logs 永久保留（每次 AI/PAT 工具调用一条），是全库唯一会无限增长的表，
+// 必须分页读。limit/offset 由调用方夹紧，此处不再校验。
+func (d *DB) ListAuditLogs(ctx context.Context, limit, offset int) ([]*AuditEntry, int, error) {
+	var total int
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM audit_logs`).Scan(&total); err != nil {
+		return nil, 0, err
+	}
 	rows, err := d.QueryContext(ctx, `
 		SELECT a.created_at, a.actor_type,
 		       CASE a.actor_type
@@ -101,19 +108,20 @@ func (d *DB) ListAuditLogs(ctx context.Context) ([]*AuditEntry, error) {
 		FROM audit_logs a
 		LEFT JOIN users u ON a.actor_type IN ('user', 'ai') AND u.id = a.actor_id
 		LEFT JOIN personal_access_tokens p ON a.actor_type = 'pat' AND p.id = a.actor_id
-		ORDER BY a.id DESC`)
+		ORDER BY a.id DESC
+		LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
-	out := make([]*AuditEntry, 0)
+	out := make([]*AuditEntry, 0, limit)
 	for rows.Next() {
 		e := &AuditEntry{}
 		if err := rows.Scan(&e.Time, &e.ActorType, &e.Actor, &e.Action, &e.Params, &e.Result, &e.LatencyMs); err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	return out, total, rows.Err()
 }

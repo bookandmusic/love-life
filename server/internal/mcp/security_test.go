@@ -110,7 +110,7 @@ func TestMCPAuditAttributesToTokenID(t *testing.T) {
 		t.Fatalf("actor_id=%d want token id %d", actorID, tok.ID)
 	}
 	// 且列表解析出令牌名
-	list, err := db.ListAuditLogs(t.Context())
+	list, _, err := db.ListAuditLogs(t.Context(), 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

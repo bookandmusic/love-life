@@ -117,12 +117,17 @@ func TestAIUsageFeedsDashboardAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 审计接口自 B2 起分页：响应是 {items, total, page, page_size}
 	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/audit", adminToken, nil)
-	var audit []map[string]any
-	_ = json.NewDecoder(res.Body).Decode(&audit)
+	var auditPage struct {
+		Items []map[string]any `json:"items"`
+		Total int              `json:"total"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&auditPage)
 	res.Body.Close()
-	if res.StatusCode != http.StatusOK || len(audit) != 3 {
-		t.Fatalf("audit: %d len=%d", res.StatusCode, len(audit))
+	audit := auditPage.Items
+	if res.StatusCode != http.StatusOK || len(audit) != 3 || auditPage.Total != 3 {
+		t.Fatalf("audit: %d len=%d total=%d", res.StatusCode, len(audit), auditPage.Total)
 	}
 	byAction := map[string]map[string]any{}
 	for _, e := range audit {

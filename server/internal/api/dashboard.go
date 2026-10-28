@@ -233,13 +233,34 @@ type auditAPI struct {
 	db *store.DB
 }
 
-// list GET /api/v1/admin/audit
-// 契约：[{time, actorType, actor, action, params, result, latencyMs}]，最新在前。
+// 审计日志分页的默认值与上限（admin 页「加载更多」用）。
+// 上限 100 而非更大：单页过大时后台那 4 万行的表格会卡住渲染。
+const (
+	auditPageSizeDefault = 20
+	auditPageSizeMax     = 100
+)
+
+// list GET /api/v1/admin/audit?page=&page_size=
+// 契约：{items: [{time, actorType, actor, action, params, result, latencyMs}], total, page, page_size}，最新在前。
 // latencyMs 仅 ai/pat 调用有值，user 直接写库为 null。
+//
+// 分页是必需的：audit_logs 永久保留、每次 AI/PAT 工具调用一条，全量返回会把
+// 几万条记录一次性塞进浏览器（约 3.6MB / 年，且逐年累加）。
 func (a *auditAPI) list(w http.ResponseWriter, r *http.Request) {
-	entries, err := a.db.ListAuditLogs(r.Context())
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = auditPageSizeDefault
+	}
+	if pageSize > auditPageSizeMax {
+		pageSize = auditPageSizeMax
+	}
+	entries, total, err := a.db.ListAuditLogs(r.Context(), pageSize, (page-1)*pageSize)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 
@@ -259,5 +280,7 @@ func (a *auditAPI) list(w http.ResponseWriter, r *http.Request) {
 			Params: e.Params, Result: e.Result, LatencyMs: e.LatencyMs,
 		})
 	}
-	writeJSON(w, http.StatusOK, out)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": out, "total": total, "page": page, "page_size": pageSize,
+	})
 }
