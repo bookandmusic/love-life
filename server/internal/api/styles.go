@@ -51,7 +51,7 @@ func (a *stylesAPI) listData(r *http.Request) (stylesData, error) {
 func (a *stylesAPI) list(w http.ResponseWriter, r *http.Request) {
 	data, err := a.listData(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
@@ -82,12 +82,12 @@ func (a *stylesAPI) create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	s, err := a.db.GetStyle(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, styleOut{ID: s.ID, Name: s.Name, Prompt: s.Prompt, Builtin: s.Builtin})
@@ -110,12 +110,12 @@ func (a *stylesAPI) setDefault(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "风格不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	data, err := a.listData(r)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, data)
@@ -154,12 +154,12 @@ func (a *stylesAPI) update(w http.ResponseWriter, r *http.Request) {
 		prompt = &v
 	}
 	if err := a.db.UpdateStyle(r.Context(), id, name, prompt); err != nil {
-		a.writeStyleErr(w, err)
+		a.writeStyleErr(w, r, err)
 		return
 	}
 	s, err := a.db.GetStyle(r.Context(), id)
 	if err != nil {
-		a.writeStyleErr(w, err)
+		a.writeStyleErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, styleOut{ID: s.ID, Name: s.Name, Prompt: s.Prompt, Builtin: s.Builtin})
@@ -174,7 +174,7 @@ func (a *stylesAPI) remove(w http.ResponseWriter, r *http.Request) {
 	// 检查顺序对齐 mock：builtin 先于默认（内置「文艺」同时是默认时文案为「内置风格不可删除」）
 	s, err := a.db.GetStyle(r.Context(), id)
 	if err != nil {
-		a.writeStyleErr(w, err)
+		a.writeStyleErr(w, r, err)
 		return
 	}
 	if s.Builtin {
@@ -183,7 +183,7 @@ func (a *stylesAPI) remove(w http.ResponseWriter, r *http.Request) {
 	}
 	def, err := a.db.DefaultStyleID(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if def == id {
@@ -191,14 +191,14 @@ func (a *stylesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.DeleteStyle(r.Context(), id); err != nil {
-		a.writeStyleErr(w, err)
+		a.writeStyleErr(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
 // writeStyleErr store 层风格错误的统一映射。
-func (a *stylesAPI) writeStyleErr(w http.ResponseWriter, err error) {
+func (a *stylesAPI) writeStyleErr(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		writeError(w, http.StatusNotFound, "风格不存在")
@@ -207,7 +207,7 @@ func (a *stylesAPI) writeStyleErr(w http.ResponseWriter, err error) {
 	case errors.Is(err, store.ErrStyleNameTaken):
 		writeError(w, http.StatusBadRequest, "风格名称已存在")
 	default:
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 	}
 }
 
@@ -246,7 +246,7 @@ func (a *stylesAPI) setPrompt(w http.ResponseWriter, r *http.Request) {
 	// 快照仅含字符串，必然可序列化。
 	saved, _ := json.Marshal(map[string]string{"content": req.Content, "updated_at": now})
 	if err := a.db.SetSetting(r.Context(), "system_prompt", string(saved)); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, systemPromptOut{Content: req.Content, UpdatedAt: now})

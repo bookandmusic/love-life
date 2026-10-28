@@ -66,7 +66,7 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := a.db.CreateAnniversary(r.Context(), req.Name, req.Date, annivType, isLeap, remindDays, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -75,7 +75,7 @@ func (a *anniversariesAPI) create(w http.ResponseWriter, r *http.Request) {
 func (a *anniversariesAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListAnniversaries(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	now := time.Now()
@@ -118,7 +118,7 @@ func (a *anniversariesAPI) updateReminder(w http.ResponseWriter, r *http.Request
 			writeError(w, http.StatusNotFound, "纪念日不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -138,7 +138,7 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if err := a.db.SoftDeleteAnniversary(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
@@ -146,7 +146,7 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "纪念日不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	// 删除对方创建的纪念日 → 站内通知创建者（自删静默；内容删除仅站内）
@@ -218,7 +218,7 @@ func (a *webhooksAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := a.db.CreateWebhookChannel(r.Context(), ch)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"id": id})
@@ -227,7 +227,7 @@ func (a *webhooksAPI) create(w http.ResponseWriter, r *http.Request) {
 func (a *webhooksAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListWebhookChannels(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	type item struct {
@@ -263,7 +263,7 @@ func (a *webhooksAPI) update(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "渠道不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -280,7 +280,7 @@ func (a *webhooksAPI) remove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "渠道不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -298,7 +298,7 @@ func (a *webhooksAPI) test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if err := a.dp.PushTest(r.Context(), ch); err != nil {

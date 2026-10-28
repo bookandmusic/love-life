@@ -62,7 +62,7 @@ func validSourceType(t string) bool { return t == "public" || t == "tianditu" }
 func (a *mapConfigAPI) list(w http.ResponseWriter, r *http.Request) {
 	sources, err := a.db.ListSources(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	items := make([]mapSourceItem, 0, len(sources))
@@ -101,7 +101,7 @@ func (a *mapConfigAPI) create(w http.ResponseWriter, r *http.Request) {
 	if req.TiandituKey != "" {
 		var err error
 		if enc, err = crypto.Encrypt(a.key, req.TiandituKey); err != nil {
-			writeError(w, http.StatusInternalServerError, "加密失败")
+			writeErrorf(w, r, http.StatusInternalServerError, "加密失败", err)
 			return
 		}
 	}
@@ -110,12 +110,12 @@ func (a *mapConfigAPI) create(w http.ResponseWriter, r *http.Request) {
 		TiandituKey: enc, TiandituLayer: req.TiandituLayer,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	s, err := a.db.GetSource(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, a.item(s))
@@ -134,7 +134,7 @@ func (a *mapConfigAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if s.Enabled {
@@ -142,7 +142,7 @@ func (a *mapConfigAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.DeleteSource(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -162,7 +162,7 @@ func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	switch s.Type {
@@ -182,12 +182,12 @@ func (a *mapConfigAPI) enable(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.db.EnableSource(r.Context(), id); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	s, err = a.db.GetSource(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, a.item(s))
@@ -225,7 +225,7 @@ func (a *mapConfigAPI) config(w http.ResponseWriter, r *http.Request) {
 	s, err := a.db.GetEnabledSource(r.Context())
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		// DB 故障与「未启用任何源」必须区分：前者是服务器错误，后者才是正常空态
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	exp, sig := a.tileGrant()
@@ -300,7 +300,7 @@ func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	upstream := ""
@@ -333,7 +333,7 @@ func (a *mapConfigAPI) tile(w http.ResponseWriter, r *http.Request) {
 	// 用请求 context：客户端断开时取消上游请求
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstream, nil)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	applyUpstreamHeaders(req, s.Type, r.Header.Get("Referer"))

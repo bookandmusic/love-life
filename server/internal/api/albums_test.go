@@ -28,12 +28,15 @@ func TestAlbumCreatedWebhook(t *testing.T) {
 	if res.StatusCode != http.StatusCreated {
 		t.Fatalf("create album: %d", res.StatusCode)
 	}
-	if rc.hits != 1 {
-		t.Fatalf("manual album webhook hits: %d", rc.hits)
+	// 外部推送自 B1 起是异步的：等它到达再断言
+	if !rc.waitHits(1, 2*time.Second) {
+		hits, _, _, _ := rc.snapshot()
+		t.Fatalf("manual album webhook 未在 2s 内到达，hits=%d", hits)
 	}
+	_, _, _, body := rc.snapshot()
 	albumPush := "\"type\":\"album\""
-	if !strings.Contains(rc.body, albumPush) || !strings.Contains(rc.body, "海边合集") {
-		t.Fatalf("webhook body: %s", rc.body)
+	if !strings.Contains(body, albumPush) || !strings.Contains(body, "海边合集") {
+		t.Fatalf("webhook body: %s", body)
 	}
 
 }

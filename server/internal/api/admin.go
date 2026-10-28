@@ -23,7 +23,7 @@ type adminAPI struct {
 func (a *adminAPI) listUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := a.db.ListUsers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	type item struct {
@@ -90,7 +90,7 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	}
 	users, err := a.db.ListUsers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	for _, u := range users {
@@ -107,12 +107,12 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 	}
 	girlHash, err := auth.HashPassword(req.Girl.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	boyHash, err := auth.HashPassword(req.Boy.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	girlID, boyID, err := a.db.CreateCouple(r.Context(),
@@ -123,7 +123,7 @@ func (a *adminAPI) createCouple(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "用户名已存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -148,7 +148,7 @@ func (a *adminAPI) updateUser(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if u.Role == "admin" {
@@ -179,18 +179,18 @@ func (a *adminAPI) updateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := a.db.UpdateUserNickname(r.Context(), id, strings.TrimSpace(req.Nickname)); err != nil {
-		a.writeUserUpdateErr(w, err)
+		a.writeUserUpdateErr(w, r, err)
 		return
 	}
 	if hasBD {
 		if err := a.db.UpdateUserBirthday(r.Context(), id, bd); err != nil {
-			a.writeUserUpdateErr(w, err)
+			a.writeUserUpdateErr(w, r, err)
 			return
 		}
 	}
 	got, err := a.db.GetUserByID(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -204,12 +204,12 @@ func (a *adminAPI) updateUser(w http.ResponseWriter, r *http.Request) {
 // 拦下了 admin 行（正常情况下 handler 已先返回 403，这里是纵深防御）。
 // 两种都用同一条「只读 / 不可改」文案：对本接口的可达路径而言，提示「不存在」会把
 // 管理员只读误导成数据缺失；真正的并发删除在自部署单空间场景下几乎不可能出现。
-func (a *adminAPI) writeUserUpdateErr(w http.ResponseWriter, err error) {
+func (a *adminAPI) writeUserUpdateErr(w http.ResponseWriter, r *http.Request, err error) {
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusForbidden, "管理员账号只读，由部署环境管理")
 		return
 	}
-	writeError(w, http.StatusInternalServerError, errInternal)
+	writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 }
 
 func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
@@ -225,7 +225,7 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if target.Role == "admin" {
@@ -245,11 +245,11 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if err := a.db.UpdateUserPassword(r.Context(), id, hash); err != nil {
-		a.writeUserUpdateErr(w, err)
+		a.writeUserUpdateErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -282,7 +282,7 @@ func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if u.Role == "admin" {
@@ -295,7 +295,7 @@ func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "头像仅支持 jpg/png/webp")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if err := a.db.UpdateUserAvatar(r.Context(), id, rel); err != nil {
@@ -304,7 +304,7 @@ func (a *adminAPI) uploadAvatar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if u.AvatarPath.Valid && u.AvatarPath.String != "" && u.AvatarPath.String != rel {
@@ -338,7 +338,7 @@ func (a *adminAPI) updateBirthday(w http.ResponseWriter, r *http.Request) {
 	}
 	// 与主端点同口径：admin 行匹配不到时给「只读」而非「不存在」
 	if err := a.db.UpdateUserBirthday(r.Context(), id, req.Birthday); err != nil {
-		a.writeUserUpdateErr(w, err)
+		a.writeUserUpdateErr(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -362,7 +362,7 @@ func (a *adminAPI) serveAvatar(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if !u.AvatarPath.Valid || u.AvatarPath.String == "" {
@@ -380,7 +380,7 @@ func (a *adminAPI) serveAvatar(w http.ResponseWriter, r *http.Request) {
 	n, _ := io.ReadFull(f, header)
 	ct := http.DetectContentType(header[:n])
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	w.Header().Set("Content-Type", ct)

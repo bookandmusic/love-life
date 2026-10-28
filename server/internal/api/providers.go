@@ -133,7 +133,7 @@ func sqlNullInt(i int64) sql.NullInt64 { return sql.NullInt64{Int64: i, Valid: t
 func (a *providersAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListProviders(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	out := make([]providerOut, 0, len(list))
@@ -305,7 +305,7 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, err := crypto.Encrypt(a.key, req.APIKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	headerTimeout, terr := normalizeHeaderTimeout(req.HeaderTimeoutSec)
@@ -322,12 +322,12 @@ func (a *providersAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := a.db.CreateProvider(r.Context(), p, models)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	fresh, err := a.db.GetProvider(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, toProviderOut(fresh))
@@ -345,7 +345,7 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	var req struct {
@@ -418,12 +418,12 @@ func (a *providersAPI) update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.UpdateProvider(r.Context(), id, p.APIType, p.Name, p.BaseURL, p.HeaderTimeoutSec, models, replaceModels); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	fresh, err := a.db.GetProvider(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProviderOut(fresh))
@@ -444,7 +444,7 @@ func (a *providersAPI) updateKey(w http.ResponseWriter, r *http.Request) {
 	}
 	enc, err := crypto.Encrypt(a.key, req.APIKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if err := a.db.UpdateProviderKey(r.Context(), id, enc); err != nil {
@@ -452,12 +452,12 @@ func (a *providersAPI) updateKey(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "供应商不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	p, err := a.db.GetProvider(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, toProviderOut(p))
@@ -468,7 +468,7 @@ func (a *providersAPI) updateKey(w http.ResponseWriter, r *http.Request) {
 func (a *providersAPI) modelsList(w http.ResponseWriter, r *http.Request) {
 	out, err := a.modelsOut(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -502,7 +502,7 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	// 嵌入守卫放在归一之前：与 mock 的判定顺序一致（两处都先拒协议不符，再报字段错误）。
@@ -521,12 +521,12 @@ func (a *providersAPI) modelsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	m.ProviderID = p.ID
 	if _, err := a.db.CreateModel(r.Context(), &m); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	out, err := a.modelsOut(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, out)
@@ -565,12 +565,12 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 	// 因为这两个字段要支持「清掉已配的上限」；前端表单每次提交都带全量字段。
 	chain, err := a.db.ListModels(r.Context(), "chat")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	chainE, err := a.db.ListModels(r.Context(), "embedding")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	chain = append(chain, chainE...)
@@ -623,12 +623,12 @@ func (a *providersAPI) modelsUpdate(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "模型条目不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	out, err := a.modelsOut(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -645,7 +645,7 @@ func (a *providersAPI) modelsRemove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "模型条目不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -667,7 +667,7 @@ func (a *providersAPI) modelsOrder(w http.ResponseWriter, r *http.Request) {
 	}
 	chain, err := a.db.ListModels(r.Context(), req.Kind)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if len(req.IDs) != len(chain) {
@@ -687,12 +687,12 @@ func (a *providersAPI) modelsOrder(w http.ResponseWriter, r *http.Request) {
 		seen[id] = true
 	}
 	if err := a.db.ReorderModels(r.Context(), req.Kind, req.IDs); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	out, err := a.modelsOut(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -709,7 +709,7 @@ func (a *providersAPI) remove(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "供应商不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -748,7 +748,7 @@ func (a *providersAPI) fetchModels(w http.ResponseWriter, r *http.Request) {
 		}
 		plain, err := crypto.Decrypt(a.key, p.APIKeyEnc)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "模型 Key 解密失败，请管理员检查配置")
+			writeErrorf(w, r, http.StatusInternalServerError, "模型 Key 解密失败，请管理员检查配置", err)
 			return
 		}
 		apiKey = plain

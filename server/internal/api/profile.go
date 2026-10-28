@@ -21,12 +21,12 @@ type profileAPI struct {
 func (a *profileAPI) getSpace(w http.ResponseWriter, r *http.Request) {
 	space, err := a.db.GetSpace(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	users, err := a.db.ListUsers(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	type member struct {
@@ -117,7 +117,7 @@ func (a *profileAPI) updateSpace(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.UpdateSpace(r.Context(), &store.Space{
 		Name: req.Name, Signature: req.Signature, LoveStartDate: nullStr(req.LoveStartDate),
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -139,7 +139,7 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 		if name := strings.TrimSpace(*req.AIStyle); name != "" {
 			styles, err := a.db.ListStyles(r.Context())
 			if err != nil {
-				writeError(w, http.StatusInternalServerError, errInternal)
+				writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 				return
 			}
 			found := false
@@ -161,7 +161,7 @@ func (a *profileAPI) updateMe(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "用户不存在")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

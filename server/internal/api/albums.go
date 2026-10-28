@@ -49,7 +49,7 @@ func (a *albumsAPI) toResponse(ctx context.Context, al *store.Album) albumRespon
 func (a *albumsAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListAlbums(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	items := make([]albumResponse, 0, len(list))
@@ -68,12 +68,12 @@ func (a *albumsAPI) monthMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	medias, err := a.db.ListMonthlyMedia(r.Context(), monthKey)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	items, err := a.mediaItemsOut(r.Context(), medias)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"month_key": monthKey, "media": items})
@@ -91,7 +91,7 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	id, err := a.db.CreateAlbum(r.Context(), req.Name, req.Description, claims.UserID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 
@@ -122,17 +122,17 @@ func (a *albumsAPI) get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	medias, err := a.db.ListAlbumMedia(r.Context(), id)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	items, err := a.mediaItemsOut(r.Context(), medias)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	resp := a.toResponse(r.Context(), al)
@@ -213,11 +213,11 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if err := a.db.SoftDeleteAlbum(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	// 删除对方创建的手动相册 → 站内通知创建者（自删静默）。内容删除仅站内，
@@ -258,7 +258,7 @@ func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, owned.Error())
 			return
 		}
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	itemCount, _ := a.db.CountAlbumItems(r.Context(), id)
@@ -279,7 +279,7 @@ func (a *albumsAPI) removePhotos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.db.RemoveAlbumItems(r.Context(), id, req.MediaIDs); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	itemCount, _ := a.db.CountAlbumItems(r.Context(), id)
@@ -303,12 +303,12 @@ func (a *albumsAPI) timeline(w http.ResponseWriter, r *http.Request) {
 	}
 	medias, total, err := a.db.ListTimelineMediaPaged(r.Context(), page, size, r.URL.Query().Get("scope") == "all")
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	items, err := a.mediaItemsOut(r.Context(), medias)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

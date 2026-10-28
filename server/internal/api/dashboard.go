@@ -114,7 +114,7 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 			SELECT 'heart', '点赞了动态', created_at, post_id FROM likes
 		) ORDER BY time DESC LIMIT 8`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	defer rows.Close()
@@ -128,14 +128,14 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var x act
 		if err := rows.Scan(&x.Icon, &x.Text, &x.Time); err != nil {
-			writeError(w, http.StatusInternalServerError, errInternal)
+			writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 			return
 		}
 		x.Time = humanizeTime(x.Time)
 		out = append(out, x)
 	}
 	if err := rows.Err(); err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -146,7 +146,7 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 func (a *dashboardAPI) aiUsage(w http.ResponseWriter, r *http.Request) {
 	points, err := a.db.AIUsageSince(r.Context(), 14)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 
@@ -190,14 +190,14 @@ func (a *dashboardAPI) alerts(w http.ResponseWriter, r *http.Request) {
 		FROM ai_usage_logs WHERE status = 'failed'
 		ORDER BY id DESC LIMIT 10`)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	for rows.Next() {
 		var x alert
 		if err := rows.Scan(&x.ID, &x.Message, &x.Time); err != nil {
 			rows.Close()
-			writeError(w, http.StatusInternalServerError, errInternal)
+			writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 			return
 		}
 		x.Level = "error"

@@ -168,6 +168,9 @@ func main() {
 		Addr:              cfg.Listen,
 		Handler:           api.NewRouter(cfg, db, tm, mp, dp, webuiFS, searchPort, logs),
 		ReadHeaderTimeout: 10 * time.Second,
+		// 把 net/http 自己的错误（含 handler panic 的栈）导向 slog：
+		// 默认只写 stderr，进不了 logbuf，「服务日志」页就看不到 panic。
+		ErrorLog: slog.NewLogLogger(slog.Default().Handler(), slog.LevelError),
 	}
 
 	go func() {

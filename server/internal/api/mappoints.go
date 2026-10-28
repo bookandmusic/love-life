@@ -50,7 +50,7 @@ func toMapPointItem(p *store.MapPoint) mapPointItem {
 func (a *mapPointsAPI) list(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.ListPoints(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	items := make([]mapPointItem, 0, len(list))
@@ -79,7 +79,7 @@ func (a *mapPointsAPI) create(w http.ResponseWriter, r *http.Request) {
 		Source: "manual", UserID: claims.UserID,
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if created {
@@ -111,7 +111,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	err = a.db.SoftDeletePoint(r.Context(), id, store.ActorTypeUser, claims.UserID)
@@ -120,7 +120,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	// 删除对方创建的足迹 → 站内通知创建者（自删静默；内容删除仅站内）
@@ -136,7 +136,7 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 func (a *mapPointsAPI) cities(w http.ResponseWriter, r *http.Request) {
 	list, err := a.db.PointCities(r.Context())
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, errInternal)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	if list == nil {
