@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api, clearAuth, getToken, setTokens } from '../api/client'
+import { api, clearAuth, getToken, getRefreshToken, setTokens } from '../api/client'
 
 export interface UserInfo {
   id: number
@@ -35,9 +35,26 @@ export const useAuth = defineStore('auth', () => {
     }
   }
 
-  function logout() {
-    clearAuth()
-    user.value = null
+  /**
+   * 退出登录：先吊销服务端 refresh token，再清本地。
+   * 服务端调用失败不阻断登出——本地必须清干净，否则用户以为退出了其实还在；
+   * 极端情况（断网）下残留 token 会在 30 天内自然过期。
+   */
+  async function logout() {
+    const rt = getRefreshToken()
+    try {
+      if (rt) {
+        await api('/api/v1/auth/logout', {
+          method: 'POST',
+          body: JSON.stringify({ refresh_token: rt }),
+        })
+      }
+    } catch {
+      // 忽略：本地清理在 finally 里保证执行
+    } finally {
+      clearAuth()
+      user.value = null
+    }
   }
 
   return { user, login, restore, logout }

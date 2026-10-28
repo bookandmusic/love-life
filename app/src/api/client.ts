@@ -43,6 +43,11 @@ export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
 
+/** 当前 refresh token（登出时交给服务端吊销用；正常请求流程不直接读它） */
+export function getRefreshToken(): string | null {
+  return localStorage.getItem(REFRESH_KEY)
+}
+
 export function setTokens(token: string, refreshToken: string) {
   localStorage.setItem(TOKEN_KEY, token)
   localStorage.setItem(REFRESH_KEY, refreshToken)

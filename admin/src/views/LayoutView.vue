@@ -19,9 +19,10 @@ const nav = [
 
 const pageTitle = computed(() => (route.meta.title as string) ?? '后台管理')
 
-function logout() {
-  authApi.logout()
-  router.push('/login')
+async function logout() {
+  // 先吊销服务端 token 再跳转：logout() 内部保证本地凭证一定被清（失败也清）
+  await authApi.logout()
+  await router.push('/login')
 }
 </script>
 

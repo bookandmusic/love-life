@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -251,6 +252,14 @@ func (a *adminAPI) resetPassword(w http.ResponseWriter, r *http.Request) {
 	if err := a.db.UpdateUserPassword(r.Context(), id, hash); err != nil {
 		a.writeUserUpdateErr(w, r, err)
 		return
+	}
+	// 改密即吊销该用户全部 refresh token：重置密码的动机通常是「怀疑泄露」，
+	// 不吊销的话旧设备最长还能续 30 天，等于改密没起作用。
+	if n, err := a.db.DeleteRefreshTokensByUser(r.Context(), id); err != nil {
+		// 改密已成功，吊销失败不回滚（回滚会让密码改不动）；记 ERROR 供管理员手工处理
+		slog.Error("reset password: revoke refresh tokens failed", "user_id", id, "err", err)
+	} else {
+		slog.Info("password reset, sessions revoked", "user_id", id, "tokens", n)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

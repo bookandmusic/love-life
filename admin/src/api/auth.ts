@@ -1,4 +1,4 @@
-import { http, setToken, setRefreshToken, setRole, clearAuth, ApiError } from '../lib/http'
+import { http, setToken, setRefreshToken, getRefreshToken, setRole, clearAuth, ApiError } from '../lib/http'
 
 export interface LoginResponse {
   token: string
@@ -23,7 +23,23 @@ export async function login(username: string, password: string): Promise<LoginRe
   return res
 }
 
-/** 退出登录：清空本地全部凭证（服务端 logout 由后端处理，前端仅清理本地态） */
-export function logout(): void {
-  clearAuth()
+/**
+ * 退出登录：先吊销服务端 refresh token，再清本地凭证。
+ * 服务端调用失败不阻断登出——本地必须清干净，否则用户以为退出了其实还在；
+ * 极端情况下（网络断）残留的 refresh token 会在 30 天内自然过期。
+ */
+export async function logout(): Promise<void> {
+  const refreshToken = getRefreshToken()
+  try {
+    if (refreshToken) {
+      await http('/api/v1/auth/logout', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      })
+    }
+  } catch {
+    // 忽略：本地清理在 finally 里保证执行
+  } finally {
+    clearAuth()
+  }
 }
