@@ -17,6 +17,10 @@ import { RECYCLE_CONFIRM, RECYCLE_TOAST, RECYCLE_TITLE, recycleMsg, peerNotice }
 import { useAuth } from '../stores/auth'
 import { nextLunarOccurrence, lunarDayText } from '../utils/lunar'
 import { daysUntilDate, nextSolarDate, ymdOf } from '../utils/dates'
+import {
+  REMIND_PRESETS, REMIND_CUSTOM, REMIND_MIN, REMIND_MAX,
+  remindSelection, resolveRemindDays, remindOptionLabel,
+} from '../utils/remindDays'
 
 defineOptions({ name: 'AnniversariesView' })
 
@@ -42,7 +46,7 @@ const hlId = ref<number | null>(null)
 const error = ref('')
 const loading = ref(false)
 const saving = ref(false)
-const remindOptions = [0, 1, 3, 7, 14, 30]
+const remindOptions = REMIND_PRESETS
 
 // ---- 完整表单页状态 ----
 const newForm = ref(false)
@@ -57,7 +61,9 @@ const fLunarYear = ref<number>(_today.getFullYear())
 const fLunarMonth = ref<number>(8)
 const fLunarDay = ref<number>(15)
 const fLunarLeap = ref(false)
-const fRemind = ref(1)
+const fRemindPick = ref(1)
+const fRemindCustom = ref(1)
+const fRemind = computed(() => resolveRemindDays(fRemindPick.value, fRemindCustom.value))
 // 日期选择：滚轮 sheet（iOS 风格），行内只显示当前值
 const showPicker = ref(false)
 const pickedDateLabel = computed(() =>
@@ -97,23 +103,29 @@ const { pressing, down: pressDown, move: pressMove, up: pressUp } = useLongPress
 // 提醒设置 sheet（每条纪念日的提醒天数可单独修改）
 const showRemind = ref(false)
 const reminding = ref<Anniv | null>(null)
-const remindDays = ref(1)
+// 下拉选中值：预设天数，或 REMIND_CUSTOM（-1）表示「自定义」
+const remindPick = ref(1)
+const remindCustom = ref(1)
+const remindDays = computed(() => resolveRemindDays(remindPick.value, remindCustom.value))
 const remindSaving = ref(false)
 function askRemind(a: Anniv) {
   reminding.value = a
-  remindDays.value = a.remind_days_before
+  const s = remindSelection(a.remind_days_before)
+  remindPick.value = s.preset ?? REMIND_CUSTOM
+  remindCustom.value = s.custom
   showRemind.value = true
 }
 async function saveRemind() {
   const a = reminding.value
   if (!a || remindSaving.value) return
   remindSaving.value = true
+  const days = remindDays.value
   try {
     await api(`/api/v1/anniversaries/${a.id}/reminder`, {
       method: 'PATCH',
-      body: JSON.stringify({ remind_days_before: remindDays.value }),
+      body: JSON.stringify({ remind_days_before: days }),
     })
-    a.remind_days_before = remindDays.value
+    a.remind_days_before = days
     showRemind.value = false
   } catch (e) {
     error.value = errText(e, '提醒保存失败')
@@ -191,7 +203,8 @@ function resetForm() {
   fLunarMonth.value = 8
   fLunarDay.value = 15
   fLunarLeap.value = false
-  fRemind.value = 1
+  fRemindPick.value = 1
+  fRemindCustom.value = 1
   error.value = ''
 }
 
@@ -375,9 +388,23 @@ watch(
           </button>
           <div class="frow">
             <span class="rlabel">提前提醒</span>
-            <select v-model.number="fRemind" class="row-select" aria-label="提前提醒">
-              <option v-for="d in remindOptions" :key="d" :value="d">{{ d === 0 ? '当天提醒' : `提前 ${d} 天提醒` }}</option>
+            <select v-model.number="fRemindPick" class="row-select" aria-label="提前提醒">
+              <option v-for="d in remindOptions" :key="d" :value="d">{{ remindOptionLabel(d) }}</option>
+              <option :value="REMIND_CUSTOM">自定义…</option>
             </select>
+          </div>
+          <!-- 自定义档：AI 可设任意 0-90 天，预设之外的值得有地方回显与修改 -->
+          <div v-if="fRemindPick === REMIND_CUSTOM" class="frow">
+            <span class="rlabel">提前天数</span>
+            <input
+              v-model.number="fRemindCustom"
+              class="cell-input"
+              type="number"
+              :min="REMIND_MIN"
+              :max="REMIND_MAX"
+              inputmode="numeric"
+              aria-label="提前天数"
+            />
           </div>
         </div>
         <p v-if="fType === 'lunar' && lunarPreviewLabel" class="foot-hint">
@@ -452,9 +479,21 @@ watch(
         @confirm="saveRemind"
       >
         <p class="s-hint">纪念日「{{ reminding.name }}」</p>
-        <select v-model.number="remindDays" class="s-input">
-          <option v-for="d in remindOptions" :key="d" :value="d">{{ d === 0 ? '当天提醒' : `提前 ${d} 天提醒` }}</option>
+        <select v-model.number="remindPick" class="s-input">
+          <option v-for="d in remindOptions" :key="d" :value="d">{{ remindOptionLabel(d) }}</option>
+          <option :value="REMIND_CUSTOM">自定义…</option>
         </select>
+        <!-- 自定义档：预设之外的 0-90 值（AI 可设出）在这里回显，否则 select 会渲染成空白 -->
+        <input
+          v-if="remindPick === REMIND_CUSTOM"
+          v-model.number="remindCustom"
+          class="s-input"
+          type="number"
+          :min="REMIND_MIN"
+          :max="REMIND_MAX"
+          inputmode="numeric"
+          aria-label="提前天数"
+        />
       </Sheet>
 
       <!-- 删除确认 sheet -->
