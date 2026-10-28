@@ -37,7 +37,7 @@ GO_ENV      += GOCACHE=$(GOCACHE)
 endif
 
 .PHONY: deps mock reset serve admin-dev app-dev \
-        verify verify-server verify-app verify-admin \
+        verify verify-server verify-app verify-admin test-race \
         build build-admin copy-admin build-server clean compose-build up down logs \
         android-keystore android-sign-env android-apk app-icon
 
@@ -85,6 +85,10 @@ verify-app:
 
 verify-admin:
 	cd $(ADMIN_DIR) && pnpm exec vue-tsc --noEmit && pnpm exec eslint src --max-warnings=0
+
+# 竞态检测：不进 verify / CI，口径与理由见 docs/DEVELOPMENT.md「本地测试 · 自动化验证」。
+test-race:
+	cd $(SERVER_DIR) && $(GO_ENV) go test -race -timeout 30m ./internal/...
 
 # ============================================================
 # 构建（二进制 / 镜像 / APK）：三个发布产物，日常开发不碰

@@ -47,6 +47,7 @@
 | | `make serve` | 后端 `go run` 直跑（无需构建） | 「启动命令（三端都连真实后端）」 |
 | | `make admin-dev` / `make app-dev` | 两端 dev server | 同上 |
 | 本地测试 | `make verify` / `verify-server` / `verify-app` / `verify-admin` | 三端测试、类型检查与 lint（`verify-app` 含 APP 侧 `node --test`；`-k` 跑完全部再报） | AGENTS「验证命令」 |
+| | `make test-race` | 后端 `-race` 竞态检测（不进 `verify` / CI） | 「自动化验证」 |
 | 构建 | `make build` / `make build-server` / `make clean` | 二进制 | 「二进制」 |
 | | `make compose-build` / `make up` / `make logs` / `make down` | 镜像 | 「Docker 镜像」 |
 | | `make android-keystore` / `make android-sign-env` / `make android-apk` / `make app-icon` | APK | 「APK」 |
@@ -118,7 +119,9 @@ girl / boy 由 admin 在后台「成员」页创建，本地开发按上表设�
 
 **后端多一道 gofmt**：`verify-server` 在编译与测试之外跑 `gofmt -l`，列出的文件即未通过（先 `gofmt -w` 再提交）。编辑器保存时自动格式化的可以忽略这道，它是给「没配自动格式化」的环境兜底的，也是 CI 的同一道门。
 
-**APP 侧测试用 Node 内置 runner**（`node --test`，零新依赖，无需 vitest / jest）：用例文件与源码同目录、后缀 `.test.mjs`（`.mjs` 而非 `.ts`，否则 `vue-tsc` 会因 `import '…/x.ts'` 的扩展名报错）；入口是 `app/scripts/run-tests.mjs`，`make verify-app` 里以 `pnpm test` 调用。该入口除了跑用例，还要求**实际执行的用例数不低于一个下限**——`node --test <glob>` 在 glob 一个文件都没匹配到时返回 exit 0，不设下限的话改名/换后缀会让整套 APP 测试静默消失、verify 依旧全绿。新增用例请同步抬高 `run-tests.mjs` 里的 `MIN_TESTS`。
+**竞态检测单独跑**：`make test-race` 跑后端全部包的 `-race`（`-timeout 30m`——api 包在 `-race` 下远超 Go 默认 10 分钟超时）。它不进 `verify` 也不进 CI：每次 PR 都跑会让验证时间翻十倍，而收益只在真改了并发代码时才体现；改了并发代码就手动跑一次。
+
+**APP 侧测试用 Node 内置 runner**（`node --test`，零新依赖，无需 vitest / jest）：用例文件与源码同目录、后缀 `.test.mjs`（纯 JS 用例，`node --test` 直接执行、零编译步骤，也不进 `vue-tsc` 与 vite 构建）；入口是 `app/scripts/run-tests.mjs`，`make verify-app` 里以 `pnpm test` 调用。该入口除了跑用例，还要求**实际执行的用例数不低于一个下限**——`node --test <glob>` 在 glob 一个文件都没匹配到时返回 exit 0，不设下限的话改名/换后缀会让整套 APP 测试静默消失、verify 依旧全绿。新增用例请同步抬高 `run-tests.mjs` 里的 `MIN_TESTS`。
 
 **跨语言共享常量放单一数据源**：同一份值同时被服务端与 APP 使用时（如农历周期表、单条动态媒体数上限），不各写一份，而是存成 JSON 由 Go `go:embed` + APP `import` 各取同一份——`go:embed` 不允许 `..`，故 JSON 放在 `server/` 侧、APP 反向 import。这样两侧不可能漂移，也就不需要「两份表逐项比对」这类读源码的测试。
 
