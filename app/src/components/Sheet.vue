@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // 通用底部弹出 sheet（iOS 风格圆角 + 柔阴影），支持标题/正文 slot + 取消/主操作按钮。
 // 受控显隐由父组件 v-model:show 控制。
-import { watch } from 'vue'
+import { onUnmounted, watch } from 'vue'
 
 const props = defineProps<{
   show: boolean
@@ -12,6 +12,8 @@ const props = defineProps<{
   confirmDanger?: boolean
   /** 隐藏取消按钮且禁用蒙层点击关闭（强更弹窗等不可关闭场景） */
   hideCancel?: boolean
+  /** 不渲染底部按钮区（picker 型浮层：点选项即选定并收起，无需确认按钮） */
+  hideFoot?: boolean
 }>()
 const emit = defineEmits<{
   'update:show': [v: boolean]
@@ -27,6 +29,12 @@ watch(() => props.show, (v) => {
   if (typeof document === 'undefined') return
   document.body.style.overflow = v ? 'hidden' : ''
 })
+
+// 开着时被卸载（浏览器返回/侧滑离开路由，picker 形态无自动关闭动作）：还原 body 滚动，
+// 否则 overflow:hidden 残留锁死下一页滚动
+onUnmounted(() => {
+  if (typeof document !== 'undefined' && props.show) document.body.style.overflow = ''
+})
 </script>
 
 <template>
@@ -38,7 +46,7 @@ watch(() => props.show, (v) => {
           <div class="sheet-body">
             <slot />
           </div>
-          <footer class="sheet-foot">
+          <footer v-if="!props.hideFoot" class="sheet-foot">
             <button v-if="!props.hideCancel" class="btn ghost" @click="onCancel">
               {{ cancelText || '取消' }}
             </button>
