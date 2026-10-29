@@ -1,0 +1,78 @@
+/* 设置族页面共享样式（SettingsView / ProxyView / AboutView 以 scoped src 引入，
+   源头唯一，避免三处复制漂移）。卡片背景/圆角/阴影继承全局 .group（App.vue）。 */
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* 分组：组标题 .sec 置于卡片外（iOS 设置经典式），卡片本身仍由 .group 承载 */
+.grp {
+  display: flex;
+  flex-direction: column;
+}
+.sec {
+  font-size: 13px;
+  color: var(--muted-ink);
+  padding: 0 16px 6px;
+}
+.group {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* 行 */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border: none;
+  background: none;
+  font-size: 15px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+.row + .row {
+  border-top: 0.5px solid var(--rule);
+}
+/* 行首图标块：随强调色淡底 + 深档粉图标；危险红仅退出类行（色彩纪律见 PRODUCT「色彩体系（iOS 风格）」） */
+.row-ic {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary-deep);
+}
+.row-ic.danger {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+.label {
+  flex: 1;
+}
+.value {
+  color: var(--muted-ink);
+  font-size: 14px;
+}
+/* 兼反馈位的行值：单行恒定高，长文案省略号收尾（错误原文不撑行） */
+.value-trunc {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.row-link {
+  text-decoration: none;
+  color: var(--ink);
+}
+.value-link {
+  color: var(--muted-ink);
+  flex-shrink: 0;
+}

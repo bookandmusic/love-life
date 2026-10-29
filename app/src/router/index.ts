@@ -22,6 +22,8 @@ const router = createRouter({
     { path: '/notifications', component: () => import('../views/NotificationsView.vue') },
     { path: '/chat', component: () => import('../views/ChatView.vue') },
     { path: '/settings', component: () => import('../views/SettingsView.vue') },
+    { path: '/settings/proxy', component: () => import('../views/ProxyView.vue') },
+    { path: '/settings/about', component: () => import('../views/AboutView.vue') },
     {
       path: '/',
       component: () => import('../views/MainView.vue'),
