@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/bookandmusic/love-life/server/internal/appupdate"
 	"github.com/bookandmusic/love-life/server/internal/auth"
 	"github.com/bookandmusic/love-life/server/internal/chat"
 	"github.com/bookandmusic/love-life/server/internal/config"
@@ -108,7 +109,16 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	adminMux.HandleFunc("PUT /api/v1/admin/uglink/config", uglinkAPI.putConfig)
 	adminMux.HandleFunc("POST /api/v1/admin/uglink/test", uglinkAPI.test)
 
-	// 备用服务地址（服务端不代理，只存取与探活；APP 按 order 逐个探活取用）
+	// 应用内更新中转：服务端从 GitHub 取回并缓存，APP 只连本服务
+	appUpdateSvc := appupdate.New(db, crypto.KeyFrom(tm.Secret()), cfg.DataDir)
+	appUpdateAPI := &appupdateAPI{svc: appUpdateSvc}
+	adminMux.HandleFunc("GET /api/v1/admin/appupdate/config", appUpdateAPI.getConfig)
+	adminMux.HandleFunc("PUT /api/v1/admin/appupdate/config", appUpdateAPI.putConfig)
+	adminMux.HandleFunc("POST /api/v1/admin/appupdate/check", appUpdateAPI.check)
+	adminMux.HandleFunc("POST /api/v1/admin/appupdate/download", appUpdateAPI.startDownload)
+	adminMux.HandleFunc("POST /api/v1/admin/appupdate/remove", appUpdateAPI.remove)
+
+	// 备用服务地址（服务端不代理，只存取与探活；APP 并发探活择优）
 	backupAPI := &backupAddrAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/backup-addresses", backupAPI.listAdmin)
 	adminMux.HandleFunc("POST /api/v1/admin/backup-addresses", backupAPI.create)
@@ -127,8 +137,14 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	// 绿联通道信息（登录用户）：未配置/失败都返回 available:false，APP 据此回落
 	mux.Handle("GET /api/v1/uglink/channel", authSvc.RequireAuth(http.HandlerFunc(uglinkAPI.channel)))
 
-	// 备用地址列表（登录用户）：APP 按 order 逐个探活，全不可用则用内置地址
+	// 备用地址列表（登录用户）：APP 并发探活取延迟最低的一条，全不可用则用内置地址
 	mux.Handle("GET /api/v1/channels/backup", authSvc.RequireAuth(http.HandlerFunc(backupAPI.listForApp)))
+
+	// 应用内更新（登录用户）：检查与下载都走当前 base，与业务请求同域
+	appUpdateMux := http.NewServeMux()
+	appUpdateMux.HandleFunc("GET /api/v1/app/update/latest", appUpdateAPI.latest)
+	appUpdateMux.HandleFunc("GET /api/v1/app/update/download", appUpdateAPI.download)
+	mux.Handle("/api/v1/app/update/", authSvc.RequireAuth(appUpdateMux))
 
 	// 地图（登录用户；瓦片走服务端代理，密钥不下发）
 	// config 走 RequireAuth；tile 用 config 下发的短时签名（exp+sig）鉴权——img 无法带 header
