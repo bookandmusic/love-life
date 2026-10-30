@@ -5,6 +5,7 @@
       <RouterLink to="/integrations/map" class="tab" active-class="active">地图配置</RouterLink>
       <RouterLink to="/integrations/uglink" class="tab" active-class="active">远程访问</RouterLink>
       <RouterLink to="/integrations/backup" class="tab" active-class="active">备用地址</RouterLink>
+      <RouterLink to="/integrations/appupdate" class="tab" active-class="active">应用更新</RouterLink>
     </nav>
     <RouterView />
   </div>
