@@ -38,6 +38,8 @@ const router = createRouter({
           children: [
             { path: 'webhooks', component: () => import('../views/WebhooksView.vue'), meta: { title: '外部集成 · 通知渠道' } },
             { path: 'map', component: () => import('../views/MapConfigView.vue'), meta: { title: '外部集成 · 地图配置' } },
+            { path: 'uglink', component: () => import('../views/UglinkConfigView.vue'), meta: { title: '外部集成 · 远程访问' } },
+            { path: 'backup', component: () => import('../views/BackupAddrView.vue'), meta: { title: '外部集成 · 备用地址' } },
           ],
         },
         { path: 'recycle', component: () => import('../views/RecycleBinView.vue'), meta: { title: '回收站' } },
