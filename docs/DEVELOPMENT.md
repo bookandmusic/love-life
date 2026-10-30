@@ -66,6 +66,14 @@
 - `make admin-dev` — 后台管理页（`:5173`）
 - `make app-dev` — APP（`:1420`）；连 mock 时 `make app-dev API_PROXY=http://127.0.0.1:8787`
 
+**服务地址注入**：服务地址在构建期注入 `APP_DEFAULT_BASE`（vite `define` → `__DEFAULT_BASE__`），APP 不提供填写入口。
+
+| 场景 | 做法 |
+|:--|:--|
+| 本地开发 | 不设也能用：dev 下未注入时回落 `http://localhost:8080`。要连别的地址：`make app-dev APP_DEFAULT_BASE=http://<IP>:8080` |
+| CI 构建 APK | 仓库变量 `APP_DEFAULT_BASE`（Settings → Secrets and variables → Actions → **Variables**，不是 secret）。缺失时构建步骤直接失败，避免产出「装完连不上」的包 |
+| 换服务器 | 改仓库变量后重新发版；或改后台「外部集成 · 备用地址」，无需重新构建 |
+
 访问地址口径：
 
 - 服务端地址一律填**本机局域网地址**（`hostname -I | awk '{print $1}'`；macOS 用 `ipconfig getifaddr en0`），形如 `192.168.1.23:8080`：服务常跑在容器或另一层命名空间里，`127.0.0.1` 指向的是浏览器那一侧，会连不上或连到别的东西。

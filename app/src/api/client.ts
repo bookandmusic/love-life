@@ -1,42 +1,57 @@
 import { KEYS } from '../utils/storage'
 
-const BASE_LEGACY_KEY = KEYS.BASE
 const TOKEN_KEY = KEYS.TOKEN
 const REFRESH_KEY = KEYS.REFRESH
 
-// 旧单地址迁移（AP1）：历史版本只有一个 base，视作公网槽初值；双地址槽已用时跳过
-function migrateLegacyBase() {
-  const legacy = localStorage.getItem(BASE_LEGACY_KEY)
-  if (legacy && !localStorage.getItem(KEYS.BASE_LAN) && !localStorage.getItem(KEYS.BASE_WAN)) {
-    localStorage.setItem(KEYS.BASE_WAN, legacy)
-  }
-}
-migrateLegacyBase()
+// 构建期内置地址（CI 注入 APP_DEFAULT_BASE，见 DEVELOPMENT「地址注入」）。
+// 未注入时的兜底：dev 回落本机后端，打包产物留空（此时只能靠登录后下发的绿联通道）。
+const BUILTIN_BASE: string = __DEFAULT_BASE__ || (import.meta.env.DEV ? 'http://localhost:8080' : '')
 
+// 绿联通道下发的地址（登录后由 utils/channel.ts 写入；未启用时为空串）
+let channelBase = ''
+
+/** 设置当前绿联通道地址（空串 = 清除，回落内置地址） */
+export function setChannelBase(base: string) {
+  channelBase = base ? base.replace(/\/+$/, '') : ''
+}
+
+/** 当前生效地址：绿联通道优先，其次构建期内置；两处都无则空串（无法发请求） */
 export function getBase(): string {
-  return localStorage.getItem(BASE_LEGACY_KEY) ?? ''
+  return channelBase || BUILTIN_BASE
 }
 
-// normalizeBase 统一去尾斜杠；空串原样返回（未配置槽位）
-function normalizeBase(base: string): string {
-  return base.replace(/\/+$/, '')
+/** 构建期内置地址（诊断展示用；不含通道） */
+export function getBuiltinBase(): string {
+  return BUILTIN_BASE
 }
 
-export function setBase(base: string) {
-  localStorage.setItem(BASE_LEGACY_KEY, normalizeBase(base))
+// 通道层注入点：client 不直接依赖 utils/channel（否则循环依赖），
+// 由 channel.ts 在初始化时把自己的实现注册进来。
+let channelCookieGetter: () => string = () => ''
+let channelFailureHandler: () => Promise<boolean> = async () => false
+let channelBeforeRequest: () => Promise<void> = async () => {}
+/** 注册通道层回调（channel.ts 调用一次） */
+export function registerChannelHooks(hooks: {
+  cookie: () => string
+  onFailed: () => Promise<boolean>
+  beforeRequest: () => Promise<void>
+}) {
+  channelCookieGetter = hooks.cookie
+  channelFailureHandler = hooks.onFailed
+  channelBeforeRequest = hooks.beforeRequest
 }
 
-export function getLanBase(): string {
-  return localStorage.getItem(KEYS.BASE_LAN) ?? ''
+function getChannelCookie(): string {
+  return channelCookieGetter()
 }
 
-export function getWanBase(): string {
-  return localStorage.getItem(KEYS.BASE_WAN) ?? ''
-}
-
-export function setDualBase(lan: string, wan: string) {
-  localStorage.setItem(KEYS.BASE_LAN, normalizeBase(lan))
-  localStorage.setItem(KEYS.BASE_WAN, normalizeBase(wan))
+/** 请求失败时询问通道层能否恢复（换通道后重试） */
+async function onChannelRequestFailed(): Promise<boolean> {
+  try {
+    return await channelFailureHandler()
+  } catch {
+    return false
+  }
 }
 
 export function getToken(): string | null {
@@ -120,12 +135,35 @@ export async function api<T>(path: string, options: RequestInit = {}, retry = tr
   }
   const token = getToken()
   if (token) headers.set('Authorization', `Bearer ${token}`)
+  // 绿联凭据接近到期时先续期（到期前 60 秒）；其它通道此调用立即返回
+  await channelBeforeRequest()
 
-  const res = await fetch(getBase() + path, { ...options, headers })
+  // 绿联通道需要附带服务端换发的会话 cookie（其它通道为空）
+  const channelCookie = getChannelCookie()
+  if (channelCookie) headers.set('Cookie', channelCookie)
+
+  let res: Response
+  try {
+    res = await fetch(getBase() + path, { ...options, headers })
+  } catch (err) {
+    // 网络层失败（连接不上 / 超时）：可能是通道失效，标记并重取一次后重试
+    if (retry && !path.startsWith('/api/v1/auth/')) {
+      const recovered = await onChannelRequestFailed()
+      if (recovered) return api<T>(path, options, false)
+    }
+    throw err
+  }
 
   // 登录/刷新自身的 401 是「凭据不对」，不是「会话过期」：不走重试分支，
   // 直接把服务端文案透出（否则登录页输错密码会显示「登录已过期，请重新登录」）
   const isAuthEntry = path.startsWith('/api/v1/auth/login') || path.startsWith('/api/v1/auth/refresh')
+  // 绿联通道的 cookie 失效时，绿联中转会 302 到登录页（浏览器会跟随，最终可能落在登录 HTML）。
+  // 判据：非 2xx 且当前通道是绿联 → 让通道层重取一次（服务端会重新登录）后重试。
+  // 注意与 401 区分：通道失效不代表登录态失效，绝不能 clearAuth。
+  if (!res.ok && res.status !== 401 && retry && !isAuthEntry) {
+    const recovered = await onChannelRequestFailed()
+    if (recovered) return api<T>(path, options, false)
+  }
   if (res.status === 401 && retry && !isAuthEntry) {
     if (await refreshOnce()) {
       return api<T>(path, options, false)

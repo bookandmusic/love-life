@@ -4,11 +4,9 @@ import { useRouter } from 'vue-router'
 import { KEYS } from './utils/storage'
 import { applyWindowState } from './utils/windowState'
 import { ACCENTS } from './utils/accents'
-import { probeAndSelect } from './utils/netProbe'
 import { startMediaRefresh } from './utils/mediaUrls'
 import { startTileGrantRefresh } from './utils/mapTiles'
 import AppUpdateSheet from './components/AppUpdateSheet.vue'
-import { useAppUpdate, CHECK_DELAY_MS } from './composables/useAppUpdate'
 
 const router = useRouter()
 
@@ -21,35 +19,24 @@ function applyStoredAppearance() {
   if (ACCENTS[accent]) document.documentElement.dataset.accent = accent
 }
 
-let probeTimer: number | undefined
-let updateCheckTimer: number | undefined
 // 具名引用才能解绑：此前匿名回调无法移除，卸载后仍会监听系统主题变化
 const media = window.matchMedia('(prefers-color-scheme: dark)')
 function onSystemThemeChange() {
   if ((localStorage.getItem(KEYS.THEME) || 'light') === 'system') applyStoredAppearance()
 }
 
-// 应用内更新：启动后延迟 3s 静默检查（仅 Tauri 环境，见 useAppUpdate 内判断）
-const { check: checkAppUpdate } = useAppUpdate()
-
 onMounted(() => {
   applyStoredAppearance()
   media.addEventListener('change', onSystemThemeChange)
   router.afterEach(() => applyStoredAppearance())
   void applyWindowState()
-  // 双地址定时重探测（AP1）：在家/在外网络切换后自动优选内网
-  void probeAndSelect()
-  probeTimer = window.setInterval(() => void probeAndSelect(), 5 * 60 * 1000)
   // 媒体签名 URL 定时重签（AP3）：15 分钟 TTL 临期前静默换新
   startMediaRefresh()
   // 地图瓦片短时签名定时换新（DB3）：30 分钟 TTL，每 10 分钟静默重取
   startTileGrantRefresh()
-  updateCheckTimer = window.setTimeout(() => void checkAppUpdate(), CHECK_DELAY_MS)
 })
 
 onUnmounted(() => {
-  if (probeTimer !== undefined) clearInterval(probeTimer)
-  if (updateCheckTimer !== undefined) clearTimeout(updateCheckTimer)
   media.removeEventListener('change', onSystemThemeChange)
 })
 </script>

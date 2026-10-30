@@ -19,6 +19,7 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: () => import('../views/LoginView.vue') },
+    { path: '/boot', component: () => import('../views/BootView.vue') },
     { path: '/notifications', component: () => import('../views/NotificationsView.vue') },
     { path: '/chat', component: () => import('../views/ChatView.vue') },
     { path: '/settings', component: () => import('../views/SettingsView.vue') },
@@ -43,13 +44,14 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
-  if (to.path === '/login') return true
+  // 登录页与启动页自行决定去留：/boot 内部处理恢复与跳转，避免与守卫互相踢
+  if (to.path === '/login' || to.path === '/boot') return true
   if (!getToken()) return '/login'
   const auth = useAuth()
-  if (!auth.user) {
-    await auth.restore()
-    if (!auth.user) return '/login'
-  }
+  // 有 token 但用户信息未恢复：交给 BootView 统一处理（区分失效与网络失败）。
+  // 带上原目标，BootView 完成后跳回这里，而不是一律回 landingRoute——
+  // 否则刷新设置页会被送回首页。
+  if (!auth.user) return { path: '/boot', query: { to: to.fullPath } }
   return true
 })
 

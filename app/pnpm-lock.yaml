@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@impierce/tauri-plugin-keystore':
+        specifier: 2.1.0-alpha.2
+        version: 2.1.0-alpha.2
       '@tauri-apps/api':
         specifier: ^2.0.0
         version: 2.11.1
@@ -282,6 +285,9 @@ packages:
   '@humanwhocodes/retry@0.4.3':
     resolution: {integrity: sha512-bV0Tgo9K4hfPCek+aMAn81RppFKv2ySDQeMoSZuvTASywNTnVJCArCZE2FWqpvIatKu7VMRLWlR1EazvVhDyhQ==}
     engines: {node: '>=18.18'}
+
+  '@impierce/tauri-plugin-keystore@2.1.0-alpha.2':
+    resolution: {integrity: sha512-Xf1a/UQqAPuVkZaA0LPmbyudQGDPjla4G4lXvbKFTw2SBpkyi3umL8jX31ScGQjM6sp/pXhNwiuVNwbzsg2HIg==}
 
   '@jridgewell/sourcemap-codec@1.5.5':
     resolution: {integrity: sha512-cYQ9310grqxueWbl+WuIUIaiUaDcj7WOq5fVhEljNVgRfOUhY9fy2zTvfoqWsnebh8Sl70VScFbICvJnLKB0Og==}
@@ -1280,6 +1286,10 @@ snapshots:
   '@humanwhocodes/module-importer@1.0.1': {}
 
   '@humanwhocodes/retry@0.4.3': {}
+
+  '@impierce/tauri-plugin-keystore@2.1.0-alpha.2':
+    dependencies:
+      '@tauri-apps/api': 2.11.1
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 

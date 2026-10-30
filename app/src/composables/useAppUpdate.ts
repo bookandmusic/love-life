@@ -38,7 +38,6 @@ type DownloadMsg =
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
 /** 启动静默检查的延迟：给首屏渲染让路 */
-export const CHECK_DELAY_MS = 3_000
 
 const state = ref<UpdateState>('idle')
 const release = ref<UpdateRelease | null>(null)

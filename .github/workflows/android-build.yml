@@ -84,7 +84,18 @@ jobs:
           } > keystore.properties
 
       - name: 构建 Android APK + AAB（release）
-        run: make android-apk
+        env:
+          # 内置服务地址（Repository variable，不是 secret——它是地址不是密钥）。
+          # 缺失时 vite 会把它编译成空串，产出的包登录前无地址可用，故下面强制校验。
+          APP_DEFAULT_BASE: ${{ vars.APP_DEFAULT_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_DEFAULT_BASE}" ]; then
+            echo "缺少仓库变量 APP_DEFAULT_BASE，产出的 APK 将无法在登录前连接服务端" >&2
+            echo "请在 Settings → Secrets and variables → Actions → Variables 添加它" >&2
+            exit 1
+          fi
+          make android-apk
 
       - name: 收集并重命名产物
         run: |

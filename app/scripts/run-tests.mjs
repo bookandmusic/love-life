@@ -12,7 +12,7 @@ import { dirname, join } from 'node:path'
 
 // 已登记的用例数：新增用例时抬高它。这不是「好看的数字」，而是「至少跑过这么多」的下限——
 // 调低它必须是一个显式动作，不能因为文件没被找到而悄悄变少。
-const MIN_TESTS = 56
+const MIN_TESTS = 66
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 const utilsDir = join(root, 'src', 'utils')

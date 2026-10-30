@@ -1,11 +1,12 @@
 {
   "identifier": "default",
-  "description": "默认能力集：核心权限 + 媒体另存到本机（dialog 系统另存为 + fs 写入所选文件）",
+  "description": "默认能力集：核心权限 + 媒体另存到本机（dialog 系统另存为 + fs 写入所选文件）+ 凭据安全存储（keystore）",
   "windows": ["main"],
   "permissions": [
     "core:default",
     "dialog:allow-save",
     "fs:allow-write-file",
+    "keystore:default",
     {
       "identifier": "fs:scope",
       "allow": [{ "path": "**" }]

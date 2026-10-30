@@ -1,9 +1,6 @@
 // 本地存储键集中管理（`love-life-*` 键散落 4 个文件，统一在此维护）
 // 薄转发已删：调用处直用 localStorage，此处只留键常量
 export const KEYS = {
-  BASE: 'love-life-base',
-  BASE_LAN: 'love-life-base-lan',
-  BASE_WAN: 'love-life-base-wan',
   TOKEN: 'love-life-token',
   REFRESH: 'love-life-refresh',
   THEME: 'love-life-theme',

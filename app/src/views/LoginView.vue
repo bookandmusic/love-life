@@ -1,165 +1,43 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { Eye, EyeOff, Heart, PenLine } from 'lucide-vue-next'
-import Sheet from '../components/Sheet.vue'
+import { Eye, EyeOff, Heart } from 'lucide-vue-next'
 import { useAuth } from '../stores/auth'
-import { errText, getLanBase, getWanBase, setDualBase } from '../api/client'
-import { landingRoute } from '../router'
-import { probeAndSelect, type ProbeStatus } from '../utils/netProbe'
-import { useAppUpdate, CHECK_DELAY_MS } from '../composables/useAppUpdate'
+import { errText } from '../api/client'
 
 const router = useRouter()
 const auth = useAuth()
 
-// 登录前也静默检查更新（更新链路走 GitHub，不依赖已配置的服务端地址）
-const { check: checkAppUpdate } = useAppUpdate()
-let updateCheckTimer: number | undefined
-onMounted(() => {
-  updateCheckTimer = window.setTimeout(() => void checkAppUpdate(), CHECK_DELAY_MS)
-})
-onUnmounted(() => {
-  if (updateCheckTimer !== undefined) clearTimeout(updateCheckTimer)
-})
-
-// 服务端地址（AP1 双通道）：内网（在家直连）/ 公网（在外 HTTPS），
-// 各自可空——只填一个时直接用该地址；双地址探测优选内网。
-// 主界面只留一行摘要，编辑收进 Sheet：每天动线是「进空间」，改地址是低频配置。
-type Schema = 'http' | 'https'
-const lan = reactive({ schema: 'http' as Schema, addr: '' })
-const wan = reactive({ schema: 'https' as Schema, addr: '' })
 const username = ref('')
 const password = ref('')
 const showPass = ref(false)
-const showAddr = ref(false)
 const error = ref('')
-const addrError = ref('')
 const loading = ref(false)
-const probing = ref(false)
-const probe = ref<ProbeStatus | null>(null)
+// 记住登录：勾选则把凭据写入系统安全存储，供 token 失效时静默重登
+const remember = ref(true)
 
-// 初始回填：已存双地址（旧单地址迁移后在公网槽）
-function initAddr(row: { schema: Schema; addr: string }, value: string) {
-  if (!value) return
-  try {
-    const u = new URL(value)
-    if (u.protocol === 'http:' || u.protocol === 'https:') row.schema = u.protocol === 'https:' ? 'https' : 'http'
-    row.addr = u.port ? `${u.hostname}:${u.port}` : u.hostname
-  } catch {
-    row.addr = value
+// 预填：读过安全存储的凭据填入表单（不自动提交——是否登录由用户点按钮决定）
+onMounted(async () => {
+  const saved = await auth.loadSavedCredentials()
+  if (saved) {
+    username.value = saved.username
+    password.value = saved.password
   }
-}
-initAddr(lan, getLanBase() || (import.meta.env.VITE_SERVER_URL as string) || '')
-initAddr(wan, getWanBase())
-
-function toggleSchema(row: { schema: Schema }) {
-  row.schema = row.schema === 'http' ? 'https' : 'http'
-}
-
-// 地址校验：host 必填；端口若存在需为 1-65535；空串合法（双地址可任选其一填写）
-function validateAddress(raw: string): string | null {
-  const addr = raw.trim()
-  if (!addr) return null
-  let rest = addr.replace(/^https?:\/\//i, '')
-  let host = rest
-  let port = ''
-  const idx = rest.lastIndexOf(':')
-  if (idx > 0 && !rest.slice(idx + 1).includes(']') && rest.lastIndexOf(']') < idx) {
-    const maybePort = rest.slice(idx + 1)
-    if (/^\d+$/.test(maybePort)) {
-      host = rest.slice(0, idx)
-      port = maybePort
-    }
-  }
-  if (!host) return '请输入服务地址'
-  if (port && !(/^\d{1,5}$/.test(port) && +port >= 1 && +port <= 65535)) {
-    return '端口需为 1-65535 的数字'
-  }
-  return null
-}
-
-// 与 client 的 fullUrl（相对路径转绝对地址）同名异义，改名避免误用
-function resolveUrl(row: { schema: Schema; addr: string }): string {
-  const addr = row.addr.trim()
-  if (!addr) return ''
-  if (/^https?:\/\//i.test(addr)) return addr
-  return `${row.schema}://${addr}`
-}
-
-// 校验并保存双地址 → 探测连通性 → 优选生效地址；失败返回 false（error 已置）
-async function saveAndProbe(): Promise<boolean> {
-  error.value = ''
-  for (const row of [lan, wan]) {
-    const invalid = validateAddress(row.addr)
-    if (invalid) {
-      error.value = invalid
-      return false
-    }
-  }
-  if (!lan.addr.trim() && !wan.addr.trim()) {
-    error.value = '请至少填写一个服务地址'
-    return false
-  }
-  setDualBase(resolveUrl(lan), resolveUrl(wan))
-  probe.value = await probeAndSelect()
-  return true
-}
-
-// 主界面摘要：优先内网（在家场景），未配置时给出去编辑的入口文案
-const addrLabel = computed(() => lan.addr.trim() || wan.addr.trim() || '未配置')
-const addrConfigured = computed(() => !!(lan.addr.trim() || wan.addr.trim()))
-// 行内状态点：只在本次探测有结果时显示（App.vue 挂载时已做过一次优选探测，不重复请求）
-const addrState = computed(() => {
-  const p = probe.value
-  if (!p) return null
-  if ((p.lanConfigured && p.lan) || (p.wanConfigured && p.wan)) return true
-  if (p.lanConfigured || p.wanConfigured) return false
-  return null
-})
-
-// 打开编辑：清掉上一次的探测结果，避免展示陈旧状态
-function openAddr() {
-  addrError.value = ''
-  probe.value = null
-  showAddr.value = true
-}
-
-// 保存并检测：校验失败留在 Sheet 内提示；成功保持打开以展示两路探测结果
-async function saveAddr() {
-  addrError.value = ''
-  probing.value = true
-  try {
-    if (!(await saveAndProbe())) {
-      addrError.value = error.value || '地址无效'
-      error.value = ''
-    }
-  } finally {
-    probing.value = false
-  }
-}
-
-// 探测状态点：绿=通、红=不通、灰=未配置或未测
-function probeDot(state: boolean | null | undefined): string {
-  if (state === true) return 'ok'
-  if (state === false) return 'bad'
-  return 'idle'
-}
-
-const probeHint = computed(() => {
-  if (!probe.value) return ''
-  const parts: string[] = []
-  if (probe.value.lanConfigured) parts.push(probe.value.lan ? '内网可用' : '内网不可达')
-  if (probe.value.wanConfigured) parts.push(probe.value.wan ? '公网可用' : '公网不可达')
-  return parts.join(' · ')
 })
 
 async function submit() {
-  if (!(await saveAndProbe())) return
+  error.value = ''
   loading.value = true
   try {
     await auth.login(username.value, password.value)
-    // 与冷启动同一套落地规则：AI 模式→对话页，传统模式→上次一级 tab（此前硬编码 /home 与设置页显示打架）
-    router.replace(landingRoute())
+    if (remember.value) {
+      await auth.rememberCredentials(username.value, password.value)
+    } else {
+      // 取消勾选：清掉可能残留的旧凭据
+      await auth.forgetCredentials()
+    }
+    // 统一进加载页：由 BootView 取通道并决定落地页（与冷启动同一套逻辑）
+    router.replace('/boot')
   } catch (e) {
     error.value = errText(e, '登录失败')
   } finally {
@@ -188,7 +66,7 @@ async function submit() {
                 autocomplete="username"
                 autocapitalize="off"
                 spellcheck="false"
-                :autofocus="addrConfigured"
+                autofocus
               />
             </label>
             <label class="row" for="pass">
@@ -213,12 +91,10 @@ async function submit() {
                 </button>
               </span>
             </label>
-            <button type="button" class="row addr" @click="openAddr">
-              <span class="label">服务地址</span>
-              <span class="value">{{ addrLabel }}</span>
-              <span v-if="addrState !== null" class="dot" :class="probeDot(addrState)" aria-hidden="true" />
-              <PenLine :size="14" :stroke-width="1.8" class="edit" aria-hidden="true" />
-            </button>
+            <label class="row remember" for="remember">
+              <span class="label">记住登录</span>
+              <input id="remember" v-model="remember" type="checkbox" class="checkbox" />
+            </label>
           </div>
 
           <p v-if="error" class="error" role="alert">{{ error }}</p>
@@ -230,58 +106,6 @@ async function submit() {
         </form>
       </div>
     </div>
-
-    <Sheet
-      v-model:show="showAddr"
-      title="服务地址"
-      confirm-text="保存并检测"
-      cancel-text="关闭"
-      :confirm-disabled="probing"
-      @confirm="saveAddr"
-    >
-      <p class="s-hint">在家填内网地址、在外填公网地址；两个都填时自动优选可用的一个。</p>
-
-      <label class="s-label" for="addr-lan">内网（在家直连）</label>
-      <div class="addr-row">
-        <button type="button" class="schema" :aria-label="`协议 ${lan.schema}，点击切换`" @click="toggleSchema(lan)">
-          {{ lan.schema }}
-        </button>
-        <span class="sep">://</span>
-        <input
-          id="addr-lan"
-          v-model="lan.addr"
-          class="addr-input"
-          placeholder="192.168.1.100:8080"
-          inputmode="url"
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-        />
-        <span class="dot" :class="probeDot(probe?.lanConfigured ? probe.lan : null)" aria-hidden="true" />
-      </div>
-
-      <label class="s-label" for="addr-wan">公网（在外访问）</label>
-      <div class="addr-row">
-        <button type="button" class="schema" :aria-label="`协议 ${wan.schema}，点击切换`" @click="toggleSchema(wan)">
-          {{ wan.schema }}
-        </button>
-        <span class="sep">://</span>
-        <input
-          id="addr-wan"
-          v-model="wan.addr"
-          class="addr-input"
-          placeholder="example.com"
-          inputmode="url"
-          autocomplete="off"
-          autocapitalize="off"
-          spellcheck="false"
-        />
-        <span class="dot" :class="probeDot(probe?.wanConfigured ? probe.wan : null)" aria-hidden="true" />
-      </div>
-
-      <p v-if="probeHint" class="probe-hint">{{ probeHint }}</p>
-      <p v-if="addrError" class="s-err" role="alert">{{ addrError }}</p>
-    </Sheet>
   </div>
 </template>
 
@@ -424,48 +248,6 @@ async function submit() {
   background: var(--sk);
 }
 
-/* 服务地址行：低频配置入口（主界面只显示当前生效地址）。
-   按钮需显式清掉浏览器默认样式（buttonface 底 + 1px 边 + 13.33px 居中字） */
-.addr {
-  width: 100%;
-  min-height: 48px;
-  margin: 0;
-  border: none;
-  background: none;
-  font: inherit;
-  font-size: 15px;
-  color: var(--ink);
-  text-align: left;
-  cursor: pointer;
-}
-.addr .value {
-  margin-left: auto;
-  max-width: 56%;
-  font-size: 15px;
-  color: var(--muted-ink);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.addr .edit {
-  flex-shrink: 0;
-  color: var(--muted-ink);
-}
-
-.dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--sk);
-}
-.dot.ok {
-  background: var(--sem-green);
-}
-.dot.bad {
-  background: var(--danger);
-}
-
 .error {
   margin: 0;
   padding: 0 4px;
@@ -522,71 +304,14 @@ async function submit() {
   }
 }
 
-/* Sheet 内：地址编辑（沿用 .s-input 那套「描边 + 底色」字段语言） */
-.s-hint {
-  margin: 0 0 10px;
-  font-size: 13px;
-  color: var(--muted-ink);
-}
-.s-label {
-  display: block;
-  margin: 6px 0;
-  font-size: 13px;
-  color: var(--muted-ink);
-}
-.addr-row {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 9px 12px;
-  border: 1px solid var(--rule);
-  border-radius: 10px;
-  background: var(--bg);
-  margin-bottom: 10px;
-}
-.addr-row:focus-within {
-  border-color: var(--primary);
-}
-.schema {
-  flex-shrink: 0;
-  border: none;
-  border-radius: 6px;
-  padding: 4px 8px;
-  font-size: 13px;
-  font-weight: 600;
-  background: var(--sk);
-  color: var(--ink); /* 该按钮是功能信息，--primary-deep 在白/浅灰底仅 3.06:1（< AA） */
+/* 记住登录：勾选框右对齐，与其它行的 value 位对齐 */
+.remember {
   cursor: pointer;
 }
-.schema:active {
-  opacity: 0.7;
-}
-.sep {
-  flex-shrink: 0;
-  font-size: 15px;
-  color: var(--muted-ink);
-  user-select: none;
-}
-.addr-input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: none;
-  padding: 0;
-  font-size: 16px;
-  color: var(--ink);
-}
-.addr-input:focus {
-  outline: none;
-}
-.probe-hint {
-  margin: 8px 0 0;
-  font-size: 12px;
-  color: var(--muted-ink);
-}
-.s-err {
-  margin: 8px 0 0;
-  font-size: 13px;
-  color: var(--danger);
+.checkbox {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--primary);
+  cursor: pointer;
 }
 </style>

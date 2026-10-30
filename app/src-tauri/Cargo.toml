@@ -16,6 +16,11 @@ tauri = { version = "2", features = [] }
 # 媒体另存到本机：dialog = 系统「另存为」，fs = 写入所选文件（见 src/lib.rs 与 capabilities/default.json）
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
+# 登录凭据安全存储（「记住登录」）：Android Keystore / iOS Keychain，仅移动端支持。
+# 设备未设生物识别时插件不可用，前端降级为不保存密码（见 utils/credentials.ts）。
+# 钉死版本：该 crate 只发布过预发布版（2.1.0-alpha.x），而 Cargo 的 "^2" 不匹配预发布，
+# 写 "2" 会解析不到任何版本。上游出正式版后可改回 "2"。
+tauri-plugin-keystore = "2.1.0-alpha.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # 应用内更新：Rust 只做薄转发（命令 → Kotlin），下载引擎/前台服务/安装全在 Kotlin

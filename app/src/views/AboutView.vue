@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // 关于（专业信息，从设置页「关于」行进入）：版本 / 服务端地址 / 项目主页
 import { useRouter } from 'vue-router'
-import { ExternalLink, Github, Info, Server } from 'lucide-vue-next'
+import { ExternalLink, Github, Info, Server, Waypoints } from 'lucide-vue-next'
 import { getBase } from '../api/client'
+import { currentKind } from '../utils/channel'
 import PageLayout from '../components/PageLayout.vue'
 
 const PROJECT_HOME = 'https://github.com/bookandmusic/love-life'
@@ -10,6 +11,10 @@ const PROJECT_HOME = 'https://github.com/bookandmusic/love-life'
 const appVersion = __APP_VERSION__
 
 const router = useRouter()
+
+// 当前生效地址的来源：绿联中转 / 备用地址 / 构建期内置
+const kindLabel = { uglink: '绿联中转', backup: '备用地址', builtin: '内置地址' } as const
+const sourceLabel = kindLabel[currentKind()]
 </script>
 
 <template>
@@ -27,6 +32,11 @@ const router = useRouter()
             <span class="row-ic"><Server :size="16" stroke-width="1.8" /></span>
             <span class="label">服务端</span>
             <span class="value server-url">{{ getBase() || '（未配置）' }}</span>
+          </div>
+          <div class="row">
+            <span class="row-ic"><Waypoints :size="16" stroke-width="1.8" /></span>
+            <span class="label">连接方式</span>
+            <span class="value">{{ sourceLabel }}</span>
           </div>
         </div>
       </section>

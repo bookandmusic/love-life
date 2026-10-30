@@ -1,4 +1,4 @@
-/* 设置族页面共享样式（SettingsView / ProxyView / AboutView 以 scoped src 引入，
+/* 设置族页面共享样式（SettingsView / AboutView 以 scoped src 引入，
    源头唯一，避免三处复制漂移）。卡片背景/圆角/阴影继承全局 .group（App.vue）。 */
 .content {
   display: flex;
