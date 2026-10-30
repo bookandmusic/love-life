@@ -3,15 +3,15 @@
 import { Channel, invoke } from '@tauri-apps/api/core'
 import { ref } from 'vue'
 import {
-  buildDownloadUrl,
   getDismissedVersionCode,
-  getProxies,
   isForceUpdate,
   isUpdateAvailable,
-  raceLatestRelease,
+  parseRelease,
   setDismissedVersionCode,
+  UPDATE_LATEST_PATH,
   type UpdateRelease,
 } from '../utils/appUpdate'
+import { api, getBase } from '../api/client'
 
 export type UpdateState =
   | 'idle'
@@ -37,8 +37,6 @@ type DownloadMsg =
 
 const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window
 
-/** 启动静默检查的延迟：给首屏渲染让路 */
-
 const state = ref<UpdateState>('idle')
 const release = ref<UpdateRelease | null>(null)
 const localVersionCode = ref(0)
@@ -49,8 +47,6 @@ const manualNotice = ref('')
 const needsPermission = ref(false)
 let cachedPath = ''
 let downloading = false
-/** 竞速胜出的代理：下载 URL 用它构建（下载阶段不再竞速，见客户端设计「应用内更新 · 代理与威胁模型」） */
-let winnerProxy = ''
 
 export function useAppUpdate() {
   /** 检查更新：manual=true 时失败给提示、跳过「稍后」记忆（用户主动要看） */
@@ -61,9 +57,8 @@ export function useAppUpdate() {
     errorMsg.value = ''
     if (manual) manualNotice.value = ''
     try {
-      const raced = await raceLatestRelease(getProxies(), 10_000)
-      const r = raced.release
-      winnerProxy = raced.proxy
+      // 走 api()：与业务请求同一地址（含绿联通道 / 备用地址），失败会自动换通道重试
+      const r = parseRelease(await api<unknown>(UPDATE_LATEST_PATH))
       localVersionCode.value = await invoke<number>('get_version_code')
       if (!isUpdateAvailable(localVersionCode.value, r.versionCode)) {
         state.value = 'noupdate'
@@ -129,7 +124,8 @@ export function useAppUpdate() {
     }
     try {
       await invoke('download_apk', {
-        url: buildDownloadUrl(r.downloadUrl, winnerProxy || getProxies()[0]),
+        // downloadUrl 是相对路径：拼上当前 base（与业务请求同一地址）
+        url: getBase() + r.downloadUrl,
         expectedSha256: r.sha256,
         fileName: r.fileName,
         versionName: r.versionName,
@@ -147,12 +143,10 @@ export function useAppUpdate() {
     // 实际落态等 finished(cancelled) 消息；这里不抢状态，防竞态误回 idle
   }
 
-  /** 失败重试：重新竞速选代理再续传——胜出代理可能已死，不复用旧 winner（计划决策「重试重新竞速」） */
+  /** 失败重试：重新取一次清单再续传——版本信息与下载凭据都可能已过期 */
   async function retryDownload(): Promise<void> {
     try {
-      const raced = await raceLatestRelease(getProxies(), 10_000)
-      release.value = raced.release
-      winnerProxy = raced.proxy
+      release.value = parseRelease(await api<unknown>(UPDATE_LATEST_PATH))
     } catch (e) {
       errorMsg.value = e instanceof Error ? e.message : String(e)
       return // 保持 failed 态，用户稍后可再试

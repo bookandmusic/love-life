@@ -10,8 +10,7 @@ export const KEYS = {
   WINDOW_STATE: 'love-life-window-state',
   // 长按手势的一次性提示（跨页面共享，本地记住后不再打扰）
   HINT_LONGPRESS: 'love-life-hint-longpress-del',
-  // 应用内更新：GitHub 代理列表（JSON 数组，仅存自定义项，内置项恒在）与「稍后」记忆的 versionCode
-  GH_PROXIES: 'love-life-gh-proxies',
+  // 应用内更新：「稍后」记忆的 versionCode（代理配置在服务端，客户端不再持有）
   DISMISSED_UPDATE: 'love-life-dismissed-update',
 } as const
 

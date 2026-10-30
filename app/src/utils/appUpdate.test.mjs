@@ -1,23 +1,15 @@
-// 应用内更新纯逻辑测试：清单解析、tag 换算、代理拼接、强更与「稍后」记忆、体积人性化。
+// 应用内更新纯逻辑测试：服务端清单解析、版本换算、强更与「稍后」记忆、体积人性化。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  addProxy,
   bodyToMeta,
-  buildApiUrl,
-  buildDownloadUrl,
   getDismissedVersionCode,
-  getProxies,
   humanBytes,
   isForceUpdate,
   isUpdateAvailable,
   parseRelease,
-  parseTagName,
-  pickApkAsset,
-  raceLatestRelease,
-  removeProxy,
   setDismissedVersionCode,
-  tagToVersionCode,
+  UPDATE_LATEST_PATH,
 } from './appUpdate.ts'
 
 // node 环境无 localStorage：挂内存实现（先例：chatCache.test.mjs 挂 globalThis.indexedDB）
@@ -29,166 +21,87 @@ globalThis.localStorage = {
   clear: () => memStore.clear(),
 }
 
-const V011_RELEASE = {
-  tag_name: 'v0.1.1',
-  body: '**Full Changelog**: https://github.com/bookandmusic/love-life/compare/v0.1.0...v0.1.1',
-  assets: [
-    {
-      name: 'love-life-0.1.1-app-universal-release.aab',
-      browser_download_url: 'https://github.com/bookandmusic/love-life/releases/download/v0.1.1/x.aab',
-      size: 17954376,
-      digest: 'sha256:aaa',
-    },
-    {
-      name: 'love-life-0.1.1-app-universal-release.apk',
-      browser_download_url:
-        'https://github.com/bookandmusic/love-life/releases/download/v0.1.1/love-life-0.1.1-app-universal-release.apk',
-      size: 48338417,
-      digest: 'sha256:aad54057e1ecb96f2c8d031ea92c4fcc38b0b49dc942f3f41dad47f9aa7ee811',
-    },
-  ],
+// 服务端 /api/v1/app/update/latest 的典型响应
+const SERVER_OK = {
+  available: true,
+  version_name: '0.1.4',
+  version_code: 104,
+  notes: '### 更新内容\n- 修了某个问题\n\nmin-version-code: 10200\n',
+  min_version_code: 10200,
+  asset_name: 'love-life-0.1.4-app-universal-release.apk',
+  asset_size: 48338417,
+  download_path: '/api/v1/app/update/download',
 }
 
-test('tag 解析与 versionCode 换算（tauri-cli 规则：major*1e6+minor*1e3+patch，v0.1.1 产物实测=1001）', () => {
-  assert.equal(parseTagName('v0.1.1'), '0.1.1')
-  assert.equal(parseTagName('0.1.1'), '0.1.1')
-  assert.equal(parseTagName('v1.0'), null)
-  assert.equal(parseTagName('latest'), null)
-  assert.equal(tagToVersionCode('0.1.1'), 1001)
-  assert.equal(tagToVersionCode('1.99.5'), 1_099_005)
-  assert.equal(tagToVersionCode('0.2.0'), 2_000)
-  assert.equal(tagToVersionCode('abc'), null)
-})
-
-test('release 解析：挑出 APK asset（排除 AAB）并推导清单', () => {
-  const r = parseRelease(V011_RELEASE)
-  assert.equal(r.versionName, '0.1.1')
-  assert.equal(r.versionCode, 1001)
-  assert.equal(r.fileName, 'love-life-0.1.1-app-universal-release.apk')
+test('清单解析：从服务端响应取出发布信息', () => {
+  const r = parseRelease(SERVER_OK)
+  assert.equal(r.versionName, '0.1.4')
+  assert.equal(r.versionCode, 104)
+  assert.equal(r.fileName, 'love-life-0.1.4-app-universal-release.apk')
   assert.equal(r.sizeBytes, 48338417)
-  assert.equal(r.sha256, 'sha256:aad54057e1ecb96f2c8d031ea92c4fcc38b0b49dc942f3f41dad47f9aa7ee811')
-  assert.equal(r.downloadUrl.includes('/releases/download/v0.1.1/'), true)
-  assert.deepEqual(r.notes, [
-    '**Full Changelog**: https://github.com/bookandmusic/love-life/compare/v0.1.0...v0.1.1',
-  ])
-  assert.equal(r.minVersionCode, 0)
+  assert.equal(r.minVersionCode, 10200)
+  // 下载地址是相对路径；调用处拼上当前 base
+  assert.equal(r.downloadUrl, '/api/v1/app/update/download')
 })
 
-test('release 解析：缺 APK / 坏 tag / 非对象都报明确错误', () => {
-  const noApk = { ...V011_RELEASE, assets: V011_RELEASE.assets.filter((a) => !a.name.endsWith('.apk')) }
-  assert.throws(() => parseRelease(noApk), /缺少 APK/)
-  assert.throws(() => parseRelease({ tag_name: 'nope', assets: [] }), /tag 无法解析/)
+test('清单解析：available:false 转成可读错误', () => {
+  assert.throws(() => parseRelease({ available: false, reason: '暂时无法获取更新信息' }), /无法获取更新信息/)
+  assert.throws(() => parseRelease({ available: false }), /暂时无法获取更新信息/)
+})
+
+test('清单解析：缺版本 / 缺凭据 / 非对象都报明确错误', () => {
   assert.throws(() => parseRelease(null), /不是对象/)
-  assert.throws(() => parseRelease({ tag_name: 'v0.1.1', assets: 'x' }), /缺少 APK/)
+  assert.throws(() => parseRelease({ available: true, asset_name: 'a.apk', download_token: 't' }), /缺少版本信息/)
+  assert.throws(() => parseRelease({ available: true, version_name: '0.1.4', version_code: 104 }), /缺少下载地址/)
+  assert.throws(
+    () => parseRelease({ available: true, version_name: '0.1.4', version_code: 104, download_path: '/d' }),
+    /缺少下载地址/
+  )
 })
 
 test('body 约定行：min-version-code 提取且不进 notes；缺省为 0', () => {
-  assert.deepEqual(
-    bodyToMeta('新增应用内更新\nmin-version-code: 1001000\n修复 xx\n'),
-    { notes: ['新增应用内更新', '修复 xx'], minVersionCode: 1_001_000 }
-  )
-  assert.deepEqual(bodyToMeta(''), { notes: [], minVersionCode: 0 })
-  // 大小写不敏感
-  assert.deepEqual(bodyToMeta('MIN-VERSION-CODE: 42'), { notes: [], minVersionCode: 42 })
+  const got = bodyToMeta('### 内容\n- 一条\nmin-version-code: 105\n- 两条')
+  assert.equal(got.minVersionCode, 105)
+  assert.deepEqual(got.notes, ['### 内容', '- 一条', '- 两条'])
+  const none = bodyToMeta('没有约定行\n')
+  assert.equal(none.minVersionCode, 0)
+  assert.deepEqual(none.notes, ['没有约定行'])
 })
 
-test('pickApkAsset：前缀必须匹配版本号，串版本 asset 不被选中', () => {
-  assert.equal(pickApkAsset(V011_RELEASE.assets, '0.1.1')?.name.includes('0.1.1'), true)
-  assert.equal(pickApkAsset(V011_RELEASE.assets, '0.2.0'), null)
-  assert.equal(pickApkAsset('not-array', '0.1.1'), null)
+test('强更门槛：服务端字段优先，缺失时回落到说明里的约定行', () => {
+  const withField = parseRelease({ ...SERVER_OK, min_version_code: 200 })
+  assert.equal(withField.minVersionCode, 200)
+  const fallback = parseRelease({ ...SERVER_OK, min_version_code: 0 })
+  assert.equal(fallback.minVersionCode, 10200) // 来自 notes 里的 min-version-code
 })
 
-test('代理拼接：前缀去尾斜杠；API 与下载 URL 同规则（纯拼接，内置注入在 getProxies 层）', () => {
-  assert.equal(
-    buildApiUrl(''),
-    'https://api.github.com/repos/bookandmusic/love-life/releases/latest'
-  )
-  assert.equal(
-    buildApiUrl('https://gh-proxy.com/'),
-    'https://gh-proxy.com/https://api.github.com/repos/bookandmusic/love-life/releases/latest'
-  )
-  const asset =
-    'https://github.com/bookandmusic/love-life/releases/download/v0.1.1/love-life-0.1.1-app-universal-release.apk'
-  assert.equal(buildDownloadUrl(asset, ''), asset)
-  assert.equal(buildDownloadUrl(asset, 'https://gh-proxy.com'), `https://gh-proxy.com/${asset}`)
-})
-
-test('代理列表：默认仅内置；自定义追加去重；内置不可删', () => {
-  assert.deepEqual(getProxies(), ['https://gh-proxy.com'])
-  addProxy(' https://gh-proxy.net/// ')
-  assert.deepEqual(getProxies(), ['https://gh-proxy.com', 'https://gh-proxy.net'])
-  addProxy('https://gh-proxy.net') // 与已有自定义同值：忽略
-  assert.equal(getProxies().length, 2)
-  addProxy('https://gh-proxy.com') // 与内置同值：忽略
-  assert.equal(getProxies().length, 2)
-  removeProxy('https://gh-proxy.com') // 内置不可删
-  assert.deepEqual(getProxies(), ['https://gh-proxy.com', 'https://gh-proxy.net'])
-  removeProxy('https://gh-proxy.net')
-  assert.deepEqual(getProxies(), ['https://gh-proxy.com'])
-})
-
-test('竞速：最快解析通过者胜出并取消其余；快而坏清单的不该赢', async () => {
-  const realFetch = globalThis.fetch
-  const aborted = []
-  const okBody = JSON.stringify(V011_RELEASE)
-  globalThis.fetch = (url, init = {}) =>
-    new Promise((resolve, reject) => {
-      init.signal?.addEventListener('abort', () => {
-        aborted.push(String(url))
-        reject(new Error('aborted'))
-      })
-      const u = String(url)
-      if (u.includes('fast-bad')) setTimeout(() => resolve(new Response('{"broken"', { status: 200 })), 5)
-      else if (u.includes('fast')) setTimeout(() => resolve(new Response(okBody, { status: 200 })), 10)
-      else setTimeout(() => resolve(new Response(okBody, { status: 200 })), 120)
-    })
-  try {
-    const raced = await raceLatestRelease(
-      ['https://p-slow.example', 'https://p-fast-bad.example', 'https://p-fast.example'],
-      5_000
-    )
-    assert.equal(raced.proxy, 'https://p-fast.example')
-    assert.equal(raced.release.versionName, '0.1.1')
-    await new Promise((r) => setTimeout(r, 160)) // 等 abort 传播
-    assert.equal(aborted.some((u) => u.includes('p-slow')), true, '慢的一路应被取消')
-    assert.equal(aborted.some((u) => u.includes('p-fast-bad')), true, '坏清单的一路应被取消')
-  } finally {
-    globalThis.fetch = realFetch
-  }
-})
-
-test('竞速：全部失败抛「全部更新通道不可达」', async () => {
-  const realFetch = globalThis.fetch
-  globalThis.fetch = () => Promise.reject(new Error('boom'))
-  try {
-    await assert.rejects(
-      raceLatestRelease(['https://a.example', 'https://b.example'], 5_000),
-      /全部更新通道不可达/
-    )
-  } finally {
-    globalThis.fetch = realFetch
-  }
+test('检查更新的请求路径是相对业务 base 的', () => {
+  assert.equal(UPDATE_LATEST_PATH, '/api/v1/app/update/latest')
 })
 
 test('版本对比与强更判断', () => {
-  assert.equal(isUpdateAvailable(1_001_000, 2_000_000), true)
-  assert.equal(isUpdateAvailable(2_000_000, 1_001_000), false)
-  assert.equal(isUpdateAvailable(1_001_000, 1_001_000), false)
-  assert.equal(isForceUpdate(1_001_000, 2_000_000), true)
-  assert.equal(isForceUpdate(2_000_000, 2_000_000), false)
-  assert.equal(isForceUpdate(1, 0), false) // min=0 → 永不强更
+  assert.equal(isUpdateAvailable(1001, 1002), true)
+  assert.equal(isUpdateAvailable(1001, 1001), false)
+  assert.equal(isUpdateAvailable(1001, 1000), false)
+  assert.equal(isForceUpdate(1001, 1002), true)
+  assert.equal(isForceUpdate(1001, 0), false) // 未标注 = 不强更
+  assert.equal(isForceUpdate(1002, 1002), false)
 })
 
 test('「稍后」记忆：整数非负才被接受，异常回 0', () => {
-  setDismissedVersionCode(2_000_000)
-  assert.equal(getDismissedVersionCode(), 2_000_000)
-  setDismissedVersionCode(0)
+  memStore.clear()
+  assert.equal(getDismissedVersionCode(), 0)
+  setDismissedVersionCode(1002)
+  assert.equal(getDismissedVersionCode(), 1002)
+  memStore.set('love-life-dismissed-update', 'abc')
+  assert.equal(getDismissedVersionCode(), 0)
+  memStore.set('love-life-dismissed-update', '-5')
   assert.equal(getDismissedVersionCode(), 0)
 })
 
 test('humanBytes：体积人性化', () => {
   assert.equal(humanBytes(48338417), '46.1 MB')
   assert.equal(humanBytes(512), '512 B')
-  assert.equal(humanBytes(0), '')
-  assert.equal(humanBytes(Number.NaN), '')
+  assert.equal(humanBytes(0), '—')
+  assert.equal(humanBytes(Number.NaN), '—')
 })

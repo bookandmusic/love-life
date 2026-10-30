@@ -8,12 +8,11 @@ let modeDraft: AppMode | null = null
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
-import { ArrowDownToLine, ChevronRight, CircleCheck, Globe, Info, Layers, LogOut, RefreshCw } from 'lucide-vue-next'
+import { ArrowDownToLine, ChevronRight, CircleCheck, Info, Layers, LogOut, RefreshCw } from 'lucide-vue-next'
 import { api, errText } from '../api/client'
 import PageLayout from '../components/PageLayout.vue'
 import Sheet from '../components/Sheet.vue'
 import { useAuth } from '../stores/auth'
-import { getProxies } from '../utils/appUpdate'
 import { useMode } from '../stores/mode'
 import { KEYS } from '../utils/storage'
 import { ACCENTS, ACCENT_IDS } from '../utils/accents'
@@ -124,8 +123,6 @@ const updateStateText = computed(() => {
 function onCheckUpdate() {
   void checkUpdate(true)
 }
-// 代理数量只读展示（列表管理在二级页；从子页返回时本页重挂、数量即新值）
-const ghProxyCount = getProxies().length
 
 function syncAIPref() {
   const server = auth.user?.ai_style || defaultStyleName.value || '文艺'
@@ -285,12 +282,6 @@ onMounted(() => {
               stroke-width="2"
               class="value-link"
             />
-          </button>
-          <button class="row row-link" @click="router.push('/settings/proxy')">
-            <span class="row-ic"><Globe :size="16" stroke-width="1.8" /></span>
-            <span class="label">更新代理</span>
-            <span class="value num">{{ ghProxyCount }} 个</span>
-            <ChevronRight :size="14" stroke-width="2" class="value-link" />
           </button>
           <button class="row row-link" @click="router.push('/settings/about')">
             <span class="row-ic"><Info :size="16" stroke-width="1.8" /></span>

@@ -84,7 +84,7 @@ function onConfirm() {
       void install()
       break
     case 'failed':
-      void retryDownload() // 重新竞速选代理后再续传，不复用死掉的胜出代理
+      void retryDownload() // 重新取一次清单（版本信息与下载地址都可能已变）再续传
       break
     case 'handoff':
       state.value = 'idle'

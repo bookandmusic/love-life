@@ -66,6 +66,8 @@
 - `make admin-dev` — 后台管理页（`:5173`）
 - `make app-dev` — APP（`:1420`）；连 mock 时 `make app-dev API_PROXY=http://127.0.0.1:8787`
 
+**应用更新缓存**：服务端从 GitHub 取回的安装包落在 `<DATA_DIR>/updates/<version>/`，只保留最新版本；后台「外部集成 · 应用更新」可查看占用并清理。GitHub 出站慢时在同一页面配 HTTP(S) 代理（支持用户名密码），该代理仅作用于更新链路。
+
 **服务地址注入**：服务地址在构建期注入 `APP_DEFAULT_BASE`（vite `define` → `__DEFAULT_BASE__`），APP 不提供填写入口。
 
 | 场景 | 做法 |
