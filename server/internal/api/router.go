@@ -102,6 +102,20 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 	// 审计日志查询
 	auditAPI := &auditAPI{db: db}
 	adminMux.HandleFunc("GET /api/v1/admin/audit", auditAPI.list)
+	// 绿联通道：APP 取通道信息（登录态）+ 后台配置（admin）
+	uglinkAPI := newUglinkAPI(db, tm.Secret())
+	adminMux.HandleFunc("GET /api/v1/admin/uglink/config", uglinkAPI.getConfig)
+	adminMux.HandleFunc("PUT /api/v1/admin/uglink/config", uglinkAPI.putConfig)
+	adminMux.HandleFunc("POST /api/v1/admin/uglink/test", uglinkAPI.test)
+
+	// 备用服务地址（服务端不代理，只存取与探活；APP 按 order 逐个探活取用）
+	backupAPI := &backupAddrAPI{db: db}
+	adminMux.HandleFunc("GET /api/v1/admin/backup-addresses", backupAPI.listAdmin)
+	adminMux.HandleFunc("POST /api/v1/admin/backup-addresses", backupAPI.create)
+	adminMux.HandleFunc("PUT /api/v1/admin/backup-addresses/{id}", backupAPI.update)
+	adminMux.HandleFunc("DELETE /api/v1/admin/backup-addresses/{id}", backupAPI.remove)
+	adminMux.HandleFunc("POST /api/v1/admin/backup-addresses/test", backupAPI.test)
+
 	// 服务日志（进程内环形缓冲，只读；见 logsAPI 注释）
 	logsAPI := &logsAPI{buf: logs}
 	adminMux.HandleFunc("GET /api/v1/admin/logs", logsAPI.list)
@@ -109,6 +123,12 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, mp *media
 
 	// 输出风格列表（登录用户，形状同 admin 列表；AI 偏好属个人体验项）
 	mux.Handle("GET /api/v1/styles", authSvc.RequireAuth(http.HandlerFunc(stylesAPI.list)))
+
+	// 绿联通道信息（登录用户）：未配置/失败都返回 available:false，APP 据此回落
+	mux.Handle("GET /api/v1/uglink/channel", authSvc.RequireAuth(http.HandlerFunc(uglinkAPI.channel)))
+
+	// 备用地址列表（登录用户）：APP 按 order 逐个探活，全不可用则用内置地址
+	mux.Handle("GET /api/v1/channels/backup", authSvc.RequireAuth(http.HandlerFunc(backupAPI.listForApp)))
 
 	// 地图（登录用户；瓦片走服务端代理，密钥不下发）
 	// config 走 RequireAuth；tile 用 config 下发的短时签名（exp+sig）鉴权——img 无法带 header
