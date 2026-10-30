@@ -55,8 +55,13 @@ func sanitizeName(name string) string {
 // 回源不绑调用方请求的生命周期（独立 context + 10 分钟上限），
 // 且用 .part 累积 + Range 续传，慢速代理中途 EOF 后重试不从头开始。
 func (s *Service) Download(_ context.Context, rel *Release) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	// 总超时按「体积 / 保守速度」估算，再留一倍余量：
+	// 慢速代理实测约 250KB/s，46MB 约 3 分钟；给 2 倍余量覆盖抖动与重试。
+	// 固定 10 分钟在更慢的链路上会半途而废（且已下载的 .part 会被白白清掉）。
+	timeout := estimateTimeout(rel.AssetSize)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
+	slog.Info("appupdate: 开始回源", "version", rel.VersionName, "size", rel.AssetSize, "timeout", timeout)
 
 	dst := s.apkPath(rel)
 	if fi, err := os.Stat(dst); err == nil && fi.Size() > 0 {
@@ -79,7 +84,7 @@ func (s *Service) Download(_ context.Context, rel *Release) (string, error) {
 			slog.Warn("appupdate: 回源重试", "version", rel.VersionName, "attempt", attempt+1, "err", lastErr)
 			select {
 			case <-ctx.Done():
-				_ = os.Remove(tmp)
+				// 超时也保留 .part：下次触发从断点继续
 				return "", ctx.Err()
 			case <-time.After(time.Duration(attempt) * 2 * time.Second):
 			}
@@ -94,7 +99,11 @@ func (s *Service) Download(_ context.Context, rel *Release) (string, error) {
 		}
 		lastErr = err
 	}
-	_ = os.Remove(tmp)
+	// 保留 .part：下次触发下载会从断点续传，不清零已下载的部分。
+	// 只有文件大小已达标却仍失败（内容异常）才丢弃，那种情况续传无意义。
+	if fi, statErr := os.Stat(tmp); statErr == nil && rel.AssetSize > 0 && fi.Size() >= rel.AssetSize {
+		_ = os.Remove(tmp)
+	}
 	if lastErr == nil {
 		lastErr = errors.New("多次尝试仍未完成下载")
 	}
@@ -262,3 +271,21 @@ func (s *Service) Usage(ctx context.Context) Usage {
 // fetchRetries 回源重试次数。慢速代理下 46MB 传输中途断开是常态（EOF），
 // 每次重试从 .part 已收到的位置续传，因此重试代价很低。
 const fetchRetries = 5
+
+// minFetchSpeed 保守估计的下行速度（慢速代理实测约 250KB/s，取一半留余量）。
+const minFetchSpeed = 128 * 1024
+
+// estimateTimeout 按体积与保守速度估算超时，下限 5 分钟、上限 60 分钟。
+func estimateTimeout(size int64) time.Duration {
+	if size <= 0 {
+		return 15 * time.Minute
+	}
+	d := time.Duration(float64(size)/float64(minFetchSpeed)) * time.Second * 2
+	if d < 5*time.Minute {
+		return 5 * time.Minute
+	}
+	if d > 60*time.Minute {
+		return 60 * time.Minute
+	}
+	return d
+}

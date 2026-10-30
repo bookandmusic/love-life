@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/crypto"
 	"github.com/bookandmusic/love-life/server/internal/store"
@@ -133,6 +134,29 @@ func TestReadyReleaseNeedsLocalAPK(t *testing.T) {
 	got := svc.ReadyRelease(ctx)
 	if got == nil || got.VersionName != "0.1.4" {
 		t.Fatalf("落盘后应就绪，实际 %+v", got)
+	}
+}
+
+// ---- 超时估算（慢链路必须给够时间）----
+
+// TestEstimateTimeout 守住「慢链路不能半途而废」：46MB 在 250KB/s 下约 3 分钟，
+// 估算值必须显著大于该值（含重试与抖动余量），且不设无限等待。
+func TestEstimateTimeout(t *testing.T) {
+	// 46MB：至少 5 分钟（下限），且不超过 60 分钟（上限）
+	got := estimateTimeout(46 * 1024 * 1024)
+	if got < 5*time.Minute {
+		t.Fatalf("46MB 的超时不应低于 5 分钟，实际 %v", got)
+	}
+	if got > 60*time.Minute {
+		t.Fatalf("不应超过 60 分钟，实际 %v", got)
+	}
+	// 极大体积被上限截住
+	if big := estimateTimeout(10 * 1024 * 1024 * 1024); big != 60*time.Minute {
+		t.Fatalf("超大文件应截到 60 分钟，实际 %v", big)
+	}
+	// 体积未知时给一个合理默认值
+	if unknown := estimateTimeout(0); unknown != 15*time.Minute {
+		t.Fatalf("体积未知时应 15 分钟，实际 %v", unknown)
 	}
 }
 
