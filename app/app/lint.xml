@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- compileSdk 领前一档（37），targetSdk 停在最新**稳定**版（36）。
+         不为消一条提示把 targetSdk 顶到预览版：targetSdk 决定运行时行为开关，
+         升预览版等于在没有对应设备验证的情况下接受一批新限制。升 targetSdk 时删掉这条。 -->
+    <issue id="OldTargetApi" severity="ignore" />
+</lint>

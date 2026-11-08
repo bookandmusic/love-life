@@ -1,0 +1,287 @@
+package auth
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/bookandmusic/love-life/server/internal/store"
+)
+
+func newTestService(t *testing.T) (*Service, *httptest.Server) {
+	t.Helper()
+	dir := t.TempDir()
+	db, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+
+	hash, err := HashPassword("right-password")
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if _, err := db.CreateUser(context.Background(), &store.User{
+		Username: "admin", PasswordHash: hash, Role: "admin", Nickname: "管理员",
+	}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	tm, err := LoadOrCreateSecret(dir)
+	if err != nil {
+		t.Fatalf("secret: %v", err)
+	}
+	svc := NewService(db, tm)
+	return svc, httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login":
+			svc.Login(w, r)
+		case "/refresh":
+			svc.Refresh(w, r)
+		case "/logout":
+			svc.Logout(w, r)
+		case "/me":
+			svc.RequireAuth(http.HandlerFunc(svc.Me)).ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
+func post(t *testing.T, url string, body any) *http.Response {
+	t.Helper()
+	b, _ := json.Marshal(body)
+	res, err := http.Post(url, "application/json", bytes.NewReader(b))
+	if err != nil {
+		t.Fatalf("post %s: %v", url, err)
+	}
+	return res
+}
+
+func decode(t *testing.T, res *http.Response, v any) {
+	t.Helper()
+	defer res.Body.Close()
+	if err := json.NewDecoder(res.Body).Decode(v); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestLoginLockRefreshFlow(t *testing.T) {
+	_, ts := newTestService(t)
+	defer ts.Close()
+
+	// 正确登录（admin 后台口径）
+	res := post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "admin"})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("login: want 200, got %d", res.StatusCode)
+	}
+	var tok struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+		User         struct {
+			Role    string `json:"role"`
+			AIStyle string `json:"ai_style"`
+		} `json:"user"`
+	}
+	decode(t, res, &tok)
+	if tok.Token == "" || tok.RefreshToken == "" || tok.User.Role != "admin" {
+		t.Fatalf("login response incomplete: %+v", tok)
+	}
+	// AI 偏好随 user 返回（新建用户走 DB 默认值）；birthday / 保留时长不下发 APP
+	if tok.User.AIStyle != "文艺" {
+		t.Fatalf("login user preferences: %+v", tok.User)
+	}
+
+	// /me 受保护：带 token 可访问，且返回 AI 偏好字段
+	req, _ := http.NewRequest("GET", ts.URL+"/me", nil)
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	meRes, err := http.DefaultClient.Do(req)
+	if err != nil || meRes.StatusCode != http.StatusOK {
+		t.Fatalf("me with token failed: %v", meRes.Status)
+	}
+	var me struct {
+		AIStyle string `json:"ai_style"`
+	}
+	_ = json.NewDecoder(meRes.Body).Decode(&me)
+	meRes.Body.Close()
+	if me.AIStyle != "文艺" {
+		t.Fatalf("me preferences: %+v", me)
+	}
+
+	// 错误密码连续 5 次 → 锁定（第 6 次尝试正确密码也被拒）
+	for i := 0; i < 5; i++ {
+		res = post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "wrong", "client": "admin"})
+		res.Body.Close()
+		if res.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("wrong password #%d: want 401, got %d", i+1, res.StatusCode)
+		}
+	}
+	res = post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "admin"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("after 5 fails: want 429, got %d", res.StatusCode)
+	}
+
+	// refresh 轮换：新 token 可用，旧 token 立即作废
+	res = post(t, ts.URL+"/refresh", map[string]string{"refresh_token": tok.RefreshToken})
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("refresh: want 200, got %d", res.StatusCode)
+	}
+	var tok2 struct {
+		Token        string `json:"token"`
+		RefreshToken string `json:"refresh_token"`
+		User         struct {
+			AIStyle string `json:"ai_style"`
+		} `json:"user"`
+	}
+	decode(t, res, &tok2)
+	// refresh 换发同样携带完整 user（与 login 同源组装；birthday / 保留时长不下发）
+	if tok2.User.AIStyle != "文艺" {
+		t.Fatalf("refresh user preferences: %+v", tok2.User)
+	}
+	res = post(t, ts.URL+"/refresh", map[string]string{"refresh_token": tok.RefreshToken})
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old refresh token reuse: want 401, got %d", res.StatusCode)
+	}
+
+	// 登出后 refresh 不可用
+	res = post(t, ts.URL+"/logout", map[string]string{"refresh_token": tok2.RefreshToken})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("logout: want 200, got %d", res.StatusCode)
+	}
+	res = post(t, ts.URL+"/refresh", map[string]string{"refresh_token": tok2.RefreshToken})
+	res.Body.Close()
+	if res.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("refresh after logout: want 401, got %d", res.StatusCode)
+	}
+}
+
+func TestNonAdminCannotLoginAdminClient(t *testing.T) {
+	svc, ts := newTestService(t)
+	defer ts.Close()
+
+	hash, _ := HashPassword("pw")
+	_, err := svc.db.CreateUser(context.Background(), &store.User{Username: "girl", PasswordHash: hash, Role: "girl"})
+	if err != nil {
+		t.Fatalf("create girl: %v", err)
+	}
+
+	res := post(t, ts.URL+"/login", map[string]string{"username": "girl", "password": "pw", "client": "admin"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("girl login admin client: want 403, got %d", res.StatusCode)
+	}
+
+	// APP 口径可正常登录
+	res = post(t, ts.URL+"/login", map[string]string{"username": "girl", "password": "pw", "client": "app"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("girl login app client: want 200, got %d", res.StatusCode)
+	}
+}
+
+// client 只认 "admin"/"app"：其它值（拼错、旧 client 名）一律 400，堵「非标 client 绕过角色门禁」。
+func TestLoginRejectsUnknownClient(t *testing.T) {
+	svc, ts := newTestService(t)
+	defer ts.Close()
+
+	hash, _ := HashPassword("pw")
+	_, err := svc.db.CreateUser(context.Background(), &store.User{Username: "girl", PasswordHash: hash, Role: "girl"})
+	if err != nil {
+		t.Fatalf("create girl: %v", err)
+	}
+
+	for _, bad := range []string{"", "girl", "web", "APP"} {
+		res := post(t, ts.URL+"/login", map[string]string{"username": "girl", "password": "pw", "client": bad})
+		res.Body.Close()
+		if res.StatusCode != http.StatusBadRequest {
+			t.Fatalf("client=%q: want 400, got %d", bad, res.StatusCode)
+		}
+	}
+}
+
+// 与 TestNonAdminCannotLoginAdminClient 对称：admin 不得登录 APP，只能走后台口径。
+func TestAdminCannotLoginAppClient(t *testing.T) {
+	_, ts := newTestService(t)
+	defer ts.Close()
+
+	res := post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "app"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("admin login app client: want 403, got %d", res.StatusCode)
+	}
+
+	// 后台口径正常
+	res = post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "admin"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("admin login admin client: want 200, got %d", res.StatusCode)
+	}
+}
+
+func TestSecretPersistsAcrossRestarts(t *testing.T) {
+	dir := t.TempDir()
+	tm1, err := LoadOrCreateSecret(dir)
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	tm2, err := LoadOrCreateSecret(filepath.Join(dir))
+	if err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	token, err := tm1.IssueAccessToken(1, "admin", "admin")
+	if err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+	if _, err := tm2.ParseAccessToken(token); err != nil {
+		t.Fatalf("token from first secret should validate with second: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "jwt_secret")); err != nil {
+		t.Fatalf("secret file missing: %v", err)
+	}
+}
+
+// TestServerErrorsAreLogged 认证链路 5xx 必须落日志：响应体是刻意的笼统「服务器错误」，
+// 不记日志的话「登录/刷新一直 500」在服务端查不到任何线索。
+// 用 DROP TABLE refresh_tokens 造一个真实失败点：用户查得到（密码校验通过），
+// 令牌存不进去——正是 Login 里 SaveRefreshToken 的 500 分支。
+func TestServerErrorsAreLogged(t *testing.T) {
+	svc, ts := newTestService(t)
+	defer ts.Close()
+
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelError})))
+	defer slog.SetDefault(old)
+
+	if _, err := svc.db.Exec(`DROP TABLE refresh_tokens`); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	res := post(t, ts.URL+"/login", map[string]string{"username": "admin", "password": "right-password", "client": "admin"})
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("want 500, got %d: %s", res.StatusCode, body)
+	}
+	// 响应体只回人话，不带内部错误
+	if bytes.Contains(body, []byte("refresh_tokens")) || bytes.Contains(body, []byte("no such table")) {
+		t.Fatalf("响应体泄露了内部错误: %s", body)
+	}
+	logged := buf.String()
+	if !strings.Contains(logged, "保存 refresh token") {
+		t.Fatalf("日志缺少失败场景: %q", logged)
+	}
+	if !strings.Contains(logged, "refresh_tokens") {
+		t.Fatalf("日志未带原始错误: %q", logged)
+	}
+}

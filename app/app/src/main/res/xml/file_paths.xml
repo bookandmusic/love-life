@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 暴露面：只给下载器写 APK 的 cache 根目录，别的一律不给。 -->
+<paths>
+    <cache-path
+        name="update_apk"
+        path="." />
+</paths>

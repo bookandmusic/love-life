@@ -1,0 +1,21 @@
+<script setup lang="ts">
+/**
+ * 站点 logo：双心相叠（渐变主心 + 浅粉副心），与浆果红主题同源。
+ * 侧栏品牌位、登录页、页头共用本组件。
+ */
+defineOptions({
+  name: 'AppLogo'
+});
+</script>
+
+<template>
+  <div class="app-logo">
+    <svg width="100%" height="100%" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+      <defs><linearGradient id="llg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#d4558f" /><stop offset="1" stop-color="#8e2d57" /></linearGradient></defs>
+      <path transform="translate(21 3) scale(1.75)" fill="#e58bb4" opacity="0.9" d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
+      <path transform="translate(3 14) scale(2.05)" fill="url(#llg)" d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z" />
+    </svg>
+  </div>
+</template>
+
+<style scoped></style>

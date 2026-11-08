@@ -1,0 +1,787 @@
+package api
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"mime/multipart"
+	"net/http"
+	"strconv"
+	"strings"
+
+	"github.com/bookandmusic/love-life/server/internal/auth"
+	"github.com/bookandmusic/love-life/server/internal/geo"
+	"github.com/bookandmusic/love-life/server/internal/limits"
+	"github.com/bookandmusic/love-life/server/internal/media"
+	"github.com/bookandmusic/love-life/server/internal/notify"
+	"github.com/bookandmusic/love-life/server/internal/store"
+	"github.com/bookandmusic/love-life/server/internal/textutil"
+)
+
+// maxPostMedia 单条动态的媒体文件数上限（与 APP 同源：internal/limits 的 media.json）。
+var maxPostMedia = limits.MaxMediaPerPost
+
+// multipartEnvelopeMargin 请求体上限相对文件上限的余量：multipart 的 boundary、
+// Content-Disposition 与 Content-Type 头（实测单文件约 190 字节，文件名受文件系统
+// 限制在数百字节内）。只影响「恰好等于上限的文件能否通过 HTTP 层」，8 KiB 有几十倍余量。
+const multipartEnvelopeMargin = 8 << 10
+
+type postsAPI struct {
+	db *store.DB
+	mp *media.Pipeline
+	dp *notify.Dispatcher
+}
+
+func nullStr(s string) sql.NullString {
+	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// nullStrText 把 sql.NullString 反解为串（NULL → ""）。
+func nullStrText(n sql.NullString) string {
+	if n.Valid {
+		return n.String
+	}
+	return ""
+}
+
+// ---- 媒体上传（两段式第一段：临时区） ----
+
+// 分片上传协议头。无这些头 = 整文件上传，走 SaveTemp 全流程——
+// APP 与服务端独立升级，整文件请求的行为必须保持稳定。
+const (
+	hdrUploadID     = "X-Upload-Id"     // 上传 id（= 临时区 token）；首片不带，由服务端下发
+	hdrUploadOffset = "X-Upload-Offset" // 本片起始偏移，必须等于服务端已收字节数
+	hdrUploadFinal  = "X-Upload-Final"  // 本片是最后一片
+)
+
+func (a *postsAPI) uploadMedia(w http.ResponseWriter, r *http.Request) {
+	// 上限在读取阶段生效：超限请求不落盘（否则会整份写进临时区再判限）
+	r.Body = http.MaxBytesReader(w, r.Body, a.mp.MaxBytes()+multipartEnvelopeMargin)
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, media.TooLargeMessage(a.mp.MaxBytes()))
+			return
+		}
+		writeError(w, http.StatusBadRequest, "缺少 file 字段")
+		return
+	}
+	defer file.Close()
+	claims, _ := auth.UserFromContext(r.Context())
+
+	uploadID := r.Header.Get(hdrUploadID)
+	offsetStr := r.Header.Get(hdrUploadOffset)
+	if uploadID == "" && offsetStr == "" {
+		// 无分片头：按整文件一次上传
+		a.finishLegacyUpload(w, file, header.Filename, claims.UserID)
+		return
+	}
+	a.handleChunkedUpload(w, r, file, header.Filename, claims.UserID, uploadID, offsetStr)
+}
+
+// finishLegacyUpload 无分片头的整文件上传。
+func (a *postsAPI) finishLegacyUpload(w http.ResponseWriter, file multipart.File, filename string, userID int64) {
+	up, err := a.mp.SaveTemp(file, filename, userID)
+	if err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
+}
+
+// handleChunkedUpload 分片上传的四种形态：
+// 首片即末片（文件 ≤ 一片，最常见）、首片、中间片、末片；末片可重复（幂等）。
+func (a *postsAPI) handleChunkedUpload(w http.ResponseWriter, r *http.Request, file multipart.File,
+	filename string, userID int64, uploadID, offsetStr string) {
+	offset, perr := strconv.ParseInt(offsetStr, 10, 64)
+	if perr != nil || offset < 0 {
+		writeError(w, http.StatusBadRequest, "X-Upload-Offset 非法")
+		return
+	}
+	isFinal := r.Header.Get(hdrUploadFinal) != ""
+
+	// 首片（无 id）：带 final 即「首片即末片」——一次请求走完三段，直接回完成响应；
+	// 不带则只开上传，回 upload_id 与已收字节。
+	if uploadID == "" {
+		if offset != 0 {
+			writeError(w, http.StatusBadRequest, "首片 offset 必须为 0")
+			return
+		}
+		up, err := a.mp.BeginUpload(filename, userID)
+		if err != nil {
+			a.writeUploadError(w, err)
+			return
+		}
+		if err := a.mp.AppendChunk(up.Token, 0, file, userID); err != nil {
+			a.writeUploadError(w, err)
+			return
+		}
+		if !isFinal {
+			a.writeChunkAck(w, up.Token, userID)
+			return
+		}
+		done, err := a.mp.FinalizeUpload(up.Token)
+		if err != nil {
+			a.writeUploadError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, done)
+		return
+	}
+
+	// 带 id + final：先只读查是否已收尾。已收尾即回同一结果（幂等）——否则客户端重发末片
+	// 会因 offset 落后拿到 409，卡在「文件传完了却拿不到 token」。
+	if isFinal {
+		if _, finalized, err := a.mp.UploadState(uploadID, userID); err == nil && finalized {
+			done, ferr := a.mp.FinalizeUpload(uploadID)
+			if ferr != nil {
+				a.writeUploadError(w, ferr)
+				return
+			}
+			writeJSON(w, http.StatusOK, done)
+			return
+		}
+	}
+	if err := a.mp.AppendChunk(uploadID, offset, file, userID); err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	if !isFinal {
+		a.writeChunkAck(w, uploadID, userID)
+		return
+	}
+	up, err := a.mp.FinalizeUpload(uploadID)
+	if err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, up)
+}
+
+// writeChunkAck 中间片的回执：upload_id + 已收字节（客户端据 received 推进 offset）。
+func (a *postsAPI) writeChunkAck(w http.ResponseWriter, token string, userID int64) {
+	received, _, err := a.mp.UploadState(token, userID)
+	if err != nil {
+		a.writeUploadError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"upload_id": token, "received": received})
+}
+
+// writeUploadError 上传错误 → 状态码（413 超限 / 409 分片位置 / 404 上传不存在 / 400 其余）。
+func (a *postsAPI) writeUploadError(w http.ResponseWriter, err error) {
+	var offsetErr *media.OffsetMismatchError
+	switch {
+	case errors.Is(err, media.ErrTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, media.TooLargeMessage(a.mp.MaxBytes()))
+	case errors.Is(err, media.ErrImageTooLarge):
+		writeError(w, http.StatusRequestEntityTooLarge, media.ErrImageTooLarge.Error())
+	case errors.As(err, &offsetErr):
+		// 409 + 实际长度：客户端据 received 重同步，不必重传已收部分
+		writeJSON(w, http.StatusConflict, map[string]any{"error": offsetErr.Error(), "received": offsetErr.Received})
+	case errors.Is(err, media.ErrUploadNotFound):
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		// 含 ErrUnsupportedFormat（格式不支持）：同为 400 + 原文案
+		writeError(w, http.StatusBadRequest, err.Error())
+	}
+}
+
+// ---- 动态 ----
+
+// locationInput 地点输入：地图选点/候选回填传对象（name+坐标），纯文本地名传 location_name。
+type locationInput struct {
+	Name string   `json:"name"`
+	Lat  *float64 `json:"lat"`
+	Lng  *float64 `json:"lng"`
+}
+
+type createPostRequest struct {
+	Content     string         `json:"content"`
+	Mood        string         `json:"mood"`
+	Loc         *locationInput `json:"location"`
+	Location    string         `json:"location_name"`
+	MediaTokens []string       `json:"media_tokens"`
+}
+
+type mediaResponse struct {
+	ID       int64  `json:"id"`
+	Kind     string `json:"kind"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+	URL      string `json:"url"`
+	ThumbURL string `json:"thumb_url"`
+	// Duration 秒（视频时长角标与音频查看器共用；解析不出则为空，客户端不显示角标）
+	Duration *float64 `json:"duration,omitempty"`
+	// AuthorID 媒体作者（= 所属动态作者）：APP 长按菜单「删除」项仅作者可见
+	AuthorID int64 `json:"author_id"`
+}
+
+// avatarURL 作者头像签名 URL；无头像时返回空串（客户端回退首字色块）。
+// 头像走独立签名通道（avatar:<userID>），不能下发裸文件路径——裸路径没有签名会 401。
+func avatarURL(mp *media.Pipeline, p *store.Post) string {
+	if !p.AuthorAvatar.Valid || p.AuthorAvatar.String == "" {
+		return ""
+	}
+	return mp.SignedAvatarURL(p.AuthorID)
+}
+
+// toLikerResponses store 模型 → API 模型。
+func toLikerResponses(in []store.Liker) []likerResponse {
+	out := make([]likerResponse, 0, len(in))
+	for _, l := range in {
+		out = append(out, likerResponse{ID: l.ID, Nickname: l.Nickname})
+	}
+	return out
+}
+
+// likerResponse 点赞人（只有两个用户，直接全量下发名字用于「谁点赞了」）。
+type likerResponse struct {
+	ID       int64  `json:"id"`
+	Nickname string `json:"nickname"`
+}
+
+type postResponse struct {
+	ID       int64  `json:"id"`
+	AuthorID int64  `json:"author_id"`
+	Author   string `json:"author"`
+	// 作者头像签名 URL（空=无头像）；与首页同一头像通道，已含 base 后的相对路径与签名
+	AuthorAvatar string          `json:"author_avatar"`
+	Content      string          `json:"content"`
+	Mood         string          `json:"mood"`
+	Location     string          `json:"location_name"`
+	CreatedAt    string          `json:"created_at"`
+	Media        []mediaResponse `json:"media"`
+	LikeCount    int             `json:"like_count"`
+	Liked        bool            `json:"liked"`
+	Likers       []likerResponse `json:"likers"`
+	CommentCount int             `json:"comment_count"`
+}
+
+func (a *postsAPI) buildPostResponse(p *store.Post, medias []*store.MediaRow, inter *store.PostInteraction, likers []likerResponse) postResponse {
+	if inter == nil {
+		inter = &store.PostInteraction{}
+	}
+	resp := postResponse{
+		ID: p.ID, AuthorID: p.AuthorID, Author: p.AuthorNickname.String,
+		AuthorAvatar: avatarURL(a.mp, p),
+		Content:      p.Content, Mood: p.Mood.String,
+		Location: p.LocationName.String, CreatedAt: p.CreatedAt, Media: []mediaResponse{},
+		LikeCount: inter.LikeCount, Liked: inter.Liked,
+		Likers:       likers,
+		CommentCount: inter.CommentCount,
+	}
+	for _, m := range medias {
+		item := mediaResponse{
+			ID: m.ID, Kind: m.Kind, Width: m.Width, Height: m.Height,
+			URL:      a.mp.SignedURL(m.ID, "raw"),
+			ThumbURL: a.mp.SignedURL(m.ID, "thumb"),
+			AuthorID: m.AuthorID,
+		}
+		if m.Duration.Valid {
+			d := m.Duration.Float64
+			item.Duration = &d
+		}
+		resp.Media = append(resp.Media, item)
+	}
+	return resp
+}
+
+func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
+		return
+	}
+	var req createPostRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadRequest)
+		return
+	}
+	// 地点名解析：location 对象（含坐标）优先，其次 location_name 纯文本
+	locName := ""
+	lat, lng := 0.0, 0.0
+	if req.Loc != nil && req.Loc.Name != "" {
+		locName = req.Loc.Name
+		if req.Loc.Lat != nil {
+			lat = *req.Loc.Lat
+		}
+		if req.Loc.Lng != nil {
+			lng = *req.Loc.Lng
+		}
+	} else {
+		locName = req.Location
+	}
+	if req.Content == "" && len(req.MediaTokens) == 0 && locName == "" && req.Mood == "" {
+		writeError(w, http.StatusBadRequest, "请至少填写文字、心情、地点或媒体")
+		return
+	}
+	if len(req.MediaTokens) > maxPostMedia {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("单条动态最多 %d 个媒体文件", maxPostMedia))
+		return
+	}
+
+	// 带地点时同步点位（双来源同池：同名复用、坐标以先创建者为准）；
+	// 坐标缺失时查内置地名表回填
+	var pointID sql.NullInt64
+	if locName != "" {
+		if lat == 0 && lng == 0 {
+			if hit, ok := geo.LocatePlace(locName); ok {
+				lat, lng = hit.Lat, hit.Lng
+			}
+		}
+		point, _, err := a.db.FindOrCreatePoint(r.Context(), store.PointInput{
+			Name: locName, Lat: lat, Lng: lng, Source: "post", UserID: claims.UserID,
+		})
+		if err != nil {
+			writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+			return
+		}
+		pointID = sql.NullInt64{Int64: point.ID, Valid: true}
+	}
+
+	medias := make([]store.MediaRow, 0, len(req.MediaTokens))
+	promoted := make([]*media.Promoted, 0, len(req.MediaTokens))
+	for _, token := range req.MediaTokens {
+		p, err := a.mp.Promote(token, claims.UserID)
+		if err != nil {
+			a.cleanupPromoted(promoted)
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		promoted = append(promoted, p)
+		medias = append(medias, store.MediaRow{
+			Kind: p.Kind, FilePath: p.FilePath, ThumbPath: nullStr(p.ThumbPath),
+			Width: p.Width, Height: p.Height, Size: p.Size,
+			Duration: sql.NullFloat64{Float64: p.Duration, Valid: p.Duration > 0},
+			TakenAt:  nullStr(p.TakenAt),
+		})
+	}
+
+	postID, err := a.db.CreatePostWithMedia(r.Context(), &store.Post{
+		AuthorID: claims.UserID, Content: req.Content,
+		Mood:         nullStr(req.Mood),
+		LocationName: nullStr(locName), PointID: pointID,
+	}, medias)
+	if err != nil {
+		a.cleanupPromoted(promoted)
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+
+	// 新动态通知另一方（admin 不在情侣里）+ 外部推送（订阅 new_post 的渠道）
+	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
+	// 通知快照仅含字符串，必然可序列化。
+	snapshot, _ := json.Marshal(map[string]any{
+		"content": textutil.TruncMark(req.Content, 50), "operator": claims.Username,
+	})
+	a.dp.Dispatch(r.Context(), recipients, "post_created", "post", postID, string(snapshot),
+		"新动态", textutil.TruncMark(req.Content, 100))
+
+	writeJSON(w, http.StatusCreated, map[string]any{"id": postID})
+}
+
+func (a *postsAPI) cleanupPromoted(promoted []*media.Promoted) {
+	for _, p := range promoted {
+		a.mp.Delete(p.FilePath, p.ThumbPath)
+	}
+}
+
+func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(r.URL.Query().Get("page_size"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	}
+	if pageSize > 50 {
+		pageSize = 50 // 夹紧上限（防 DoS）
+	}
+	// 那年今日：只取历年在今天同月同日发布的动态，不含当年；
+	// 过滤在分页之前，故 total 为过滤后总数。
+	memories := r.URL.Query().Get("memories") == "1"
+	// sample=1：在**全量候选**里随机取（首页「回忆精选」用；见 store.ListPostsSampled）
+	sample := r.URL.Query().Get("sample") == "1"
+	// media=1 / media=0：只看带媒体 / 不带媒体——首页据此刻意分层抽样，保证封面卡那层非空
+	var hasMedia *bool
+	switch r.URL.Query().Get("media") {
+	case "1":
+		v := true
+		hasMedia = &v
+	case "0":
+		v := false
+		hasMedia = &v
+	}
+	posts, total, err := a.db.ListPostsSampled(r.Context(), page, pageSize, memories, sample, hasMedia)
+	if sample && page > 1 {
+		page = 1 // 抽样路径不翻页（每次都重抽），响应如实回 page=1
+	}
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	ids := make([]int64, 0, len(posts))
+	for _, p := range posts {
+		ids = append(ids, p.ID)
+	}
+	mediaMap, err := a.db.GetMediaByPostIDs(r.Context(), ids)
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	interMap, err := a.db.GetInteractions(r.Context(), ids, claims.UserID)
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	likerMap, err := a.db.LikersByPostIDs(r.Context(), ids)
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	items := make([]postResponse, 0, len(posts))
+	for _, p := range posts {
+		items = append(items, a.buildPostResponse(p, mediaMap[p.ID], interMap[p.ID], toLikerResponses(likerMap[p.ID])))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "page": page, "page_size": pageSize})
+}
+
+func (a *postsAPI) getPost(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidID)
+		return
+	}
+	p, err := a.db.GetPost(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "动态不存在")
+		return
+	}
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	mediaMap, err := a.db.GetMediaByPostIDs(r.Context(), []int64{id})
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	interMap, err := a.db.GetInteractions(r.Context(), []int64{id}, claims.UserID)
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	likerMap, _ := a.db.LikersByPostIDs(r.Context(), []int64{id})
+	writeJSON(w, http.StatusOK, a.buildPostResponse(p, mediaMap[id], interMap[id], toLikerResponses(likerMap[id])))
+}
+
+func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidID)
+		return
+	}
+	p, err := a.db.GetPost(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "动态不存在")
+		return
+	}
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	// 有明确用户属性的数据只能删自己的：仅动态作者可删（admin 的恢复走 /admin/recycle，不受影响）。
+	if p.AuthorID != claims.UserID {
+		writeError(w, http.StatusForbidden, "只能删除自己发布的动态")
+		return
+	}
+	if err := a.db.SoftDeletePost(r.Context(), id, store.ActorTypeUser, claims.UserID); err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	// 自删静默（仅作者可删，不存在「删对方内容」的通知场景；口径同 deleteMedia）
+	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
+		CreatorID: p.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
+		EventType: "post_deleted", TargetType: "post", TargetID: id,
+		Extra: map[string]any{"content": textutil.TruncMark(p.Content, 50)},
+	})
+	// ：删除一律 204 No Content
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- 媒体文件服务（签名 URL，无 Authorization 头） ----
+
+// reurlMedia 批量重签媒体 URL：{ids ≤200} → {items:[{id,thumb_url,url}]}；
+// 无效/已删 id 跳过不报错；签名 TTL 与现有媒体一致（15 分钟）。
+func (a *postsAPI) reurlMedia(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		IDs []int64 `json:"ids"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || len(req.IDs) == 0 {
+		writeError(w, http.StatusBadRequest, "ids 不能为空")
+		return
+	}
+	if len(req.IDs) > 200 {
+		writeError(w, http.StatusBadRequest, "单次最多重签 200 个媒体")
+		return
+	}
+	medias, err := a.db.GetMediaByIDs(r.Context(), req.IDs)
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	type reurlItem struct {
+		ID       int64  `json:"id"`
+		URL      string `json:"url"`
+		ThumbURL string `json:"thumb_url"`
+	}
+	items := make([]reurlItem, 0, len(medias))
+	for _, m := range medias {
+		items = append(items, reurlItem{ID: m.ID, URL: a.mp.SignedURL(m.ID, "raw"), ThumbURL: a.mp.SignedURL(m.ID, "thumb")})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *postsAPI) serveMediaFile(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidID)
+		return
+	}
+	variant := r.URL.Query().Get("v")
+	if variant != "raw" && variant != "thumb" {
+		variant = "raw"
+	}
+	if !a.mp.VerifySig(id, variant, r.URL.Query().Get("exp"), r.URL.Query().Get("sig")) {
+		writeError(w, http.StatusUnauthorized, "签名无效或已过期")
+		return
+	}
+	m, err := a.db.GetMedia(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "媒体不存在")
+		return
+	}
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+
+	if variant == "thumb" {
+		// 优先用真实缩略图（照片同步生成；视频首帧 / 音频波形由 ffmpeg 生成）；
+		// 没有缩略图时才回退占位图——历史数据可能未生成。
+		if m.ThumbPath.Valid && m.ThumbPath.String != "" {
+			ct := "image/jpeg"
+			if fileExt(m.ThumbPath.String) == ".png" {
+				ct = "image/png"
+			}
+			a.serveFile(w, r, m.ThumbPath.String, ct, "thumb"+fileExt(m.ThumbPath.String))
+			return
+		}
+		if m.Kind == "video" {
+			ct, body := media.PlaceholderThumb()
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Cache-Control", "private, max-age=900")
+			_, _ = w.Write(body)
+			return
+		}
+		if m.Kind == "audio" {
+			ct, body := media.AudioPlaceholder(id)
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("Cache-Control", "private, max-age=900")
+			_, _ = w.Write(body)
+			return
+		}
+	}
+
+	ext := fileExt(m.FilePath)
+	ct := map[string]string{".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".mp4": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm", ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav"}[ext]
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	// download=1：另存到本机（APP 查看器「保存」）。文件名由服务端生成——跨域下
+	// <a download> 指定中文名会被浏览器忽略，必须靠 Content-Disposition。
+	name := ""
+	if r.URL.Query().Get("download") == "1" {
+		name = a.downloadName(r.Context(), m)
+		w.Header().Set("Content-Disposition", contentDisposition(name))
+	}
+	a.serveFile(w, r, m.FilePath, ct, name)
+}
+
+// serveFile 下发媒体字节。用 http.ServeContent 而非 io.Copy：自动获得 Range/206、
+// Content-Length、Last-Modified —— 大视频/大音频另存可续传、播放器可拖进度，
+// 且不必整份读进内存（*os.File 即 io.ReadSeeker）。
+func (a *postsAPI) serveFile(w http.ResponseWriter, r *http.Request, relPath, contentType, name string) {
+	f, err := a.mp.Open(relPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", "private, max-age=900")
+	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// downloadName 生成另存文件名：{日期}_{照片|视频|录音}_{动态内序号}.{ext}
+// 例：2026-08-15_照片_1.jpg。数据层没有原始文件名（Media 只有 file_path），
+// 故按「拍摄时间优先、其次动态发布时间」+ 类型中文 + 该动态内序号拼。
+// 日期口径：EXIF taken_at 原样；动态/媒体 created_at 为 UTC，转**本地时区**取日（见 store.LocalDate）。
+func (a *postsAPI) downloadName(ctx context.Context, m *store.MediaRow) string {
+	ext := fileExt(m.FilePath)
+	kindWord, ok := map[string]string{"photo": "照片", "video": "视频", "audio": "录音"}[m.Kind]
+	if !ok {
+		kindWord = "媒体"
+	}
+	// taken_at 是 EXIF 墙钟时间（无时区），原样取日期；created_at 是 UTC，按本地时区取日期
+	date := ""
+	if m.TakenAt.Valid && len(m.TakenAt.String) >= 10 {
+		date = m.TakenAt.String[:10]
+	}
+	if date == "" {
+		if post, err := a.db.GetPost(ctx, m.PostID); err == nil && post.CreatedAt != "" {
+			date = store.LocalDate(post.CreatedAt)
+		} else {
+			date = store.LocalDate(m.CreatedAt)
+		}
+	}
+	seq := int(m.ID) // 兜底：拿不到同动态媒体列表时用媒体 id 保唯一
+	if byPost, err := a.db.GetMediaByPostIDs(ctx, []int64{m.PostID}); err == nil {
+		for i, x := range byPost[m.PostID] {
+			if x.ID == m.ID {
+				seq = i + 1
+				break
+			}
+		}
+	}
+	if date == "" {
+		return "love-life_" + kindWord + "_" + strconv.Itoa(seq) + ext
+	}
+	return date + "_" + kindWord + "_" + strconv.Itoa(seq) + ext
+}
+
+// contentDisposition 生成下载头：ASCII 兜底名 + RFC 5987 的 UTF-8 名。
+// 中文文件名在 Chrome / Safari / Android WebView 上都按 filename* 取，
+// filename= 保留 ASCII 兜底名（去掉非 ASCII 字符并压掉重复下划线）。
+func contentDisposition(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		if r >= 0x20 && r < 0x7f && r != '"' && r != 0x5c {
+			b.WriteRune(r)
+		}
+	}
+	ascii := b.String()
+	for strings.Contains(ascii, "__") {
+		ascii = strings.ReplaceAll(ascii, "__", "_")
+	}
+	if ascii == "" || strings.HasPrefix(ascii, ".") {
+		ascii = "love-life" + fileExt(name)
+	}
+	return "attachment; filename=\"" + ascii + "\"; filename*=UTF-8''" + percentEncode(name)
+}
+
+// percentEncode RFC 5987 值编码：保留 attr-char，其余逐字节 %XX
+func percentEncode(s string) string {
+	const attrChar = "!#$&+-.^_|~"
+	const hex = "0123456789ABCDEF"
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || strings.IndexByte(attrChar, c) >= 0 {
+			b.WriteByte(c)
+		} else {
+			b.WriteByte('%')
+			b.WriteByte(hex[c>>4])
+			b.WriteByte(hex[c&0xf])
+		}
+	}
+	return b.String()
+}
+
+func fileExt(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '.' {
+			return p[i:]
+		}
+	}
+	return ""
+}
+
+// discardMedia POST /api/v1/media/discard：放弃 / 取消 / 把关作废时主动撤销已上传的临时文件。
+// 体 {tokens:[...]}；幂等，归属不符跳过；上限与单次上传媒体数同量级（100）。
+func (a *postsAPI) discardMedia(w http.ResponseWriter, r *http.Request) {
+	claims, _ := auth.UserFromContext(r.Context())
+	var req struct {
+		Tokens []string `json:"tokens"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadRequest)
+		return
+	}
+	if len(req.Tokens) == 0 {
+		writeJSON(w, http.StatusOK, map[string]int{"discarded": 0})
+		return
+	}
+	if len(req.Tokens) > 100 {
+		writeError(w, http.StatusBadRequest, "单次最多撤销 100 个临时文件")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]int{"discarded": a.mp.Discard(req.Tokens, claims.UserID)})
+}
+
+// deleteMedia 单独删除一条媒体（仅动态作者）。
+// 删后若所属动态既无其他媒体也无正文 —— store 会在同一事务内连带软删动态，
+// 响应体回 {post_deleted:true} 让客户端把整条动态从时间轴移除；否则 {post_deleted:false}。
+func (a *postsAPI) deleteMedia(w http.ResponseWriter, r *http.Request) {
+	claims, ok := auth.UserFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, errUnauthorized)
+		return
+	}
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errInvalidID)
+		return
+	}
+	m, err := a.db.GetMedia(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "媒体不存在")
+		return
+	}
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	// 有明确用户属性的数据只能删自己的：仅动态作者可删其媒体
+	if m.AuthorID != claims.UserID {
+		writeError(w, http.StatusForbidden, "只能删除自己动态的媒体")
+		return
+	}
+	_, postGone, err := a.db.SoftDeleteMedia(r.Context(), id, store.ActorTypeUser, claims.UserID)
+	if errors.Is(err, store.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "媒体不存在")
+		return
+	}
+	if err != nil {
+		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"post_deleted": postGone})
+}

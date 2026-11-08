@@ -1,0 +1,61 @@
+name: ci-app
+
+# APP（原生 Compose，app/）的独立验证流程。
+
+on:
+  push:
+    branches: [main, 'feat/app*']
+    paths:
+      - 'app/**'
+      - 'server/internal/limits/**'
+      - 'Makefile'
+      - '.github/workflows/app-ci.yml'
+  pull_request:
+    paths:
+      - 'app/**'
+      - 'server/internal/limits/**'
+      - 'Makefile'
+      - '.github/workflows/app-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 设置 JDK 25（temurin）
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # compileSdk 37 的平台包名是 android-37.0（不是 android-37），构建工具用 36.0.0；
+      # 这与本地实测可出包的组合一致，不要凭 compileSdk 数字直推包名。
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'tools platform-tools platforms;android-37.0 build-tools;36.0.0'
+
+      # gradle 版本由 app/gradle/wrapper/gradle-wrapper.properties 决定
+      # （setup-gradle 会自动读取 wrapper 并缓存对应发行版，不再在这里重复声明版本）
+      - name: 设置 Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # 与本地同一条命令：make verify-app（资源/清单/AAPT + 编译 + 两侧单测 + Lint）。
+      # Lint 当前 0 条，转成阻断；需要放行的检查在 app/app/lint.xml 里按 issue 忽略并写明理由。
+      # 只做校验、不出包；出包在 android-build.yml（推 tag），那条路才需要 APP_DEFAULT_BASE 与签名密钥。
+      - name: 编译 + 单元测试 + Lint
+        run: make verify-app
+
+      - name: 归档 Lint 报告
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lint-results-app
+          path: app/app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore

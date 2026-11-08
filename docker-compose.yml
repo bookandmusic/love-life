@@ -1,0 +1,23 @@
+# 情侣生活记录 · Docker Compose
+# 用法：`make up`（部署）/ `make compose-build`（本地构建，随后 make up 直接用本地产物，不拉远端）
+# 首次启动必须提供 ADMIN_USER / ADMIN_PASS 创建管理员；库中已有管理员后这两个值不再使用，
+# 但变量仍必须存在——`${...:?}` 缺失即报错，避免静默启动出没有管理员实例。
+# 数据持久化在宿主机 ./data 目录（SQLite / 媒体 / 密钥 / 向量全在其中）。
+# 公网部署请前置 HTTPS 反代（Caddy / Nginx / 云 LB），服务端本身只监听 HTTP。
+services:
+  love-life:
+    build: .   # 本地构建（make compose-build）；拉远端时 image 名即 registry 名
+    image: ghcr.io/bookandmusic/love-life:latest   # 每次 tag 发布都会更新 latest；要钉版本就换成具体版本号
+    container_name: love-life
+    ports:
+      - "8080:8080"
+    environment:
+      TZ: Asia/Shanghai
+      # 首次启动创建管理员；之后被服务端忽略（变量仍需存在，缺失 compose 直接报错），可换占位值
+      ADMIN_USER: ${ADMIN_USER:?请设置 ADMIN_USER（首次启动创建管理员）}
+      ADMIN_PASS: ${ADMIN_PASS:?请设置 ADMIN_PASS（首次启动创建管理员）}
+      # 可选：单媒体文件软限（默认 500MB）
+      # MEDIA_MAX_MB: "500"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped

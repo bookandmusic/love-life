@@ -1,0 +1,43 @@
+# Git
+.git
+.gitignore
+
+# 构建产物
+bin/
+**/node_modules/
+admin/dist/
+app/**/build/
+app/.gradle/
+app/.kotlin/
+server/internal/webui/dist/
+
+# 本地密钥与运行时
+.env
+**/.env
+**/.env.local
+**/.env.*.local
+**/keystore.properties
+server/data/
+data/
+**/*.log
+
+# 编辑器/系统
+.DS_Store
+.vscode/
+.idea/
+
+# 临时与本地工具目录
+.verify/
+demo/
+.pnpm-store/
+.impeccable/
+.dsh/
+.gocache/
+.cache/
+.zcode/
+
+# 改动计划文档（不入版本控制）
+docs/dev/
+
+# CI 自身（无需进入 build context）
+.github/

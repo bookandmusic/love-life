@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自部署：服务地址由部署者自己填（内网 IP / 反代域名 / 隧道域名都可能），
+     客户端不预设任何域名，因此无法按域名白名单收紧明文策略——收紧就得先知道部署形态。
+     传输安全由部署者决定；这里只负责让内网直连可用。 -->
+<network-security-config xmlns:tools="http://schemas.android.com/tools">
+    <base-config
+        cleartextTrafficPermitted="true"
+        tools:ignore="InsecureBaseConfiguration" />
+</network-security-config>

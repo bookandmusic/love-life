@@ -1,0 +1,119 @@
+name: build-android-apk
+
+# 发布 Android APK：推 v<version> tag → tag 即版本号（注入构建，产物回读核对）→ 出签名 release 包 → 发 GitHub Release。
+# 应用内更新消费的就是这里的产物（服务端从 release 取回并缓存后，APP 才看得到更新）。
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 设置 JDK 25（temurin）
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # compileSdk 37 的平台包名是 android-37.0（不是 android-37），构建工具用 36.0.0；
+      # 这与本地实测可出包的组合一致，不要凭 compileSdk 数字直推包名。
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'tools platform-tools platforms;android-37.0 build-tools;36.0.0'
+
+      # gradle 版本由 app/gradle/wrapper/gradle-wrapper.properties 决定
+      - name: 设置 Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # tag 流水线独立触发，先跑与 app-ci 相同的检查，再出签名包
+      - name: 跑 APP 验证
+        run: make verify-app
+
+      - name: 写入签名密钥
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "缺少 ANDROID_KEYSTORE_BASE64 secret，无法签名构建" >&2
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          # 原生工程读仓库根下的 app/keystore.properties（Makefile android-sign-env 本地也写这份）
+          {
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'password=%s\n' "$KEY_PASSWORD"
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/keystore.jks"
+          } > app/keystore.properties
+
+      - name: 构建 Android APK（release，签名）
+        env:
+          # 内置服务地址（Repository variable，不是 secret——它是地址不是密钥）。
+          # 缺失时包内是空串，装上后登录前无地址可用，故 make 与 gradle 双向强制校验。
+          APP_DEFAULT_BASE: ${{ vars.APP_DEFAULT_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${APP_DEFAULT_BASE}" ]; then
+            echo "缺少仓库变量 APP_DEFAULT_BASE，产出的 APK 将无法在登录前连接服务端" >&2
+            echo "请在 Settings → Secrets and variables → Actions → Variables 添加它" >&2
+            exit 1
+          fi
+          # 发布号唯一源就是这个 tag：注入成 versionName，包内版本由此而来，不需要另改文件。
+          make build-apk NATIVE_VARIANT=release NATIVE_VERSION="${GITHUB_REF_NAME#v}"
+
+      # 注入链断掉（比如 make 行漏了 NATIVE_VERSION）时产物会退回兜底号，
+      # 与 tag 不符会让应用内更新的版本比较失真——所以回读产物本身核对，不看构建脚本。
+      - name: 校验产物版本与 tag 一致
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          if ! [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag 不是 x.y.z：v${TAG}" >&2
+            exit 1
+          fi
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$TAG"
+          CODE=$((10#$MAJOR * 1000000 + 10#$MINOR * 1000 + 10#$PATCH))
+          BADGING=$("${ANDROID_HOME}/build-tools/36.0.0/aapt2" dump badging bin/apk/lovelife-native-release.apk | head -1)
+          echo "$BADGING"
+          case "$BADGING" in
+            *"versionName='${TAG}'"*) ;;
+            *) echo "产物版本与 tag v${TAG} 不一致：NATIVE_VERSION 注入没生效" >&2; exit 1 ;;
+          esac
+          # versionCode 由 versionName 推导（major*1000000+minor*1000+patch）：公式漂移同样会让
+          # 应用内更新判断失真，所以按 tag 独立算出期望值再核一遍产物。
+          case "$BADGING" in
+            *"versionCode='${CODE}'"*) echo "产物版本 = tag v${TAG}（versionCode ${CODE}）" ;;
+            *) echo "产物 versionCode 与公式不符：期望 ${CODE}" >&2; exit 1 ;;
+          esac
+
+      - name: 收集并重命名产物
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          VERSION="${GITHUB_REF_NAME#v}"
+          # 资产名参与服务端的 release 解析（取第一个 .apk），保持既有 love-life-<版本>- 前缀
+          cp bin/apk/lovelife-native-release.apk "artifacts/love-life-${VERSION}-app-universal-release.apk"
+          ls -la artifacts
+
+      - name: 上传 workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: love-life-android-${{ github.ref_name }}
+          path: artifacts/*
+
+      - name: 发布到 GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: artifacts/*
+          draft: false
+          generate_release_notes: true

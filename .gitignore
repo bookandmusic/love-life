@@ -1,0 +1,48 @@
+node_modules/
+dist/
+!server/internal/webui/dist/
+server/internal/webui/dist/*
+!server/internal/webui/dist/.gitkeep
+# 服务端数据目录（含 jwt_secret 与 sqlite 库，任何实例都不入库）：data/ data-prod/ data-test/ 及未来变体
+server/data*/
+# 根目录 data/ 是 docker-compose 的宿主机挂载点（同样含 jwt_secret 与 sqlite）
+# 必须锚定到仓库根：不带前缀的 `data/` 会连 app/.../appnative/data/ 整个源码包一起忽略
+/data/
+bin/
+# 原生 APP（app）：release 签名配置由 make android-sign-env 生成，含口令，不入库
+app/keystore.properties
+*.log
+.DS_Store
+*.tsbuildinfo
+.env
+.env.local
+.verify/
+demo/
+
+# 本地包管理器与工具目录
+.pnpm-store/
+.impeccable/
+.cache/
+.dsh/
+# 临时视觉比对产物（agent 工具缓存，含图片）
+.dsh-vision-router/
+.gocache/
+.zcode/
+# 编辑器专属忽略文件（个人编辑器配置，不入库；内容与 .gitignore 重复）
+.zcodeignore
+
+# 改动计划文档：保留文件但不入版本控制
+# dev 为改动计划文档（改动前产出、验证后删除）
+docs/dev/
+
+# 原生 APP（app）：构建产物与本地工具状态不入库
+# （源码与 gradle/libs.versions.toml 正常入库）
+app/**/build/
+app/.gradle/
+app/.kotlin/
+app/local.properties
+app/captures/
+*.hprof
+
+# 参考图（视觉对齐用的外部截图，只作本地对照，不入库）
+app/docs/refs/

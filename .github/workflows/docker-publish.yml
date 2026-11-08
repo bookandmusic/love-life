@@ -1,0 +1,95 @@
+name: build-and-publish-image
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: bookandmusic/love-life
+
+jobs:
+  # 发布前先跑与 ci 相同的验证：tag 流水线独立触发，不能假设 main 上的 ci 已经绿过
+  verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: 设置 Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: 设置 Node 22
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: 启用 pnpm（corepack）
+        run: corepack enable && corepack prepare pnpm@11 --activate
+
+      - name: 装三端依赖
+        run: make deps
+
+      - name: 全量验证（文档 / 后端 / admin）
+        run: make -k verify
+
+  build:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up QEMU（多架构模拟）
+        uses: docker/setup-qemu-action@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: 登录 GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像 tag 与 label
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # tag 规则（YAML 注释，不能写进 tags: 块——块内每行都会被当作规则解析，
+          # metadata-action 不忽略 # 开头的行，会产出垃圾 tag）。
+          #   1) {{raw}} 保留 v 前缀（v1.2.3，与 git tag 同名）
+          #   2) {{version}} 产出 1.2.3；3) major.minor 产出 1.2
+          #   4) 裸主版本仅非 v0.x 阶段产出（v0.x 不发 :0）
+          #   5) sha-<短SHA> 便于追溯
+          tags: |
+            type=semver,pattern={{raw}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=sha,prefix=sha-,format=short
+
+      - name: 构建并推送（多架构）
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 输出镜像摘要
+        run: echo "已发布 ${{ steps.meta.outputs.tags }}"
