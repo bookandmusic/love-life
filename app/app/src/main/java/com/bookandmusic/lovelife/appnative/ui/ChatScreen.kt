@@ -216,6 +216,10 @@ fun ChatScreen(
     var sessions by remember { mutableStateOf<List<ChatRepository.SessionInfo>>(emptyList()) }
     // 「选择对话」管理页（参考图 06）：多选 + 批量删除
     var manageOpen by remember { mutableStateOf(false) }
+    // 系统返回键：先收「选择对话」管理页，再收抽屉；两层都收起后才轮到壳层（AI 模式是根页 → 系统退出应用）。
+    BackHandler(enabled = manageOpen || drawerFraction > 0f) {
+        if (manageOpen) manageOpen = false else closeDrawer()
+    }
     var switching by remember { mutableStateOf(false) }
 
     fun loadSessions() {

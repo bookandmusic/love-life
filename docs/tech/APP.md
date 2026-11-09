@@ -66,20 +66,20 @@
 | `Login` | 未登录或退出登录 | `MainActivity.kt:81-84`；`LoginScreen.kt:48` |
 | `Main` | `DemoApp` | `MainActivity.kt:85-101` |
 
-底部导航 5 项（`DemoApp.kt:57-63`）：我们 / 时光 / 相册 / 纪念日 / 足迹，图标 `FavoriteBorder / History / PhotoLibrary / Cake / Place`（`DemoApp.kt:498-503`）；选中态 = 主色 12% 胶囊（`AppNavBar.kt:85`）。
+底部导航 5 项（`DemoApp.kt:57-63`）：我们 / 时光 / 相册 / 纪念日 / 足迹，图标 `FavoriteBorder / History / PhotoLibrary / Cake / Place`（`DemoApp.kt:508-514`）；选中态 = 主色 12% 胶囊（`AppNavBar.kt:85`）。
 
 | 路由 | 页面 | 顶栏标题 | 底栏 | 依据 |
 |:--|:--|:--|:--|:--|
-| `Main` | 当前 tab（`MainTabs`） | tab 名 | 显示 | `DemoApp.kt:184-203` |
-| `Settings` / `Notifications` | `SettingsScreen` / `NotificationsScreen` | 设置 / 通知 | 隐藏（不属于任何 tab） | `DemoApp.kt:204-220,233-266` |
-| `Chat` | `ChatScreen` | 「我们的 AI 助手」，自带顶栏不叠壳顶栏 | 隐藏 | `DemoApp.kt:221-231,326-328` |
-| `About` / `Anniversaries` / `AnniversaryForm` | `AboutScreen` / 纪念日列表 / 纪念日表单 | 关于 / 纪念日 / 添加纪念日 | 显示 | `DemoApp.kt:267-292` |
-| `AlbumForm` / `PointForm` / `Publish` / `AlbumDetail` | 三个表单页 / 相册详情（顶栏用相册名） | 新建相册 / 添加地点 / 记动态 / 相册名 | 显示 | `DemoApp.kt:293-322` |
+| `Main` | 当前 tab（`MainTabs`） | tab 名 | 显示 | `DemoApp.kt:193-212` |
+| `Settings` / `Notifications` | `SettingsScreen` / `NotificationsScreen` | 设置 / 通知 | 隐藏（不属于任何 tab） | `DemoApp.kt:213-229,242-275` |
+| `Chat` | `ChatScreen` | 「我们的 AI 助手」，自带顶栏不叠壳顶栏 | 隐藏 | `DemoApp.kt:230-241,334-337` |
+| `About` / `Anniversaries` / `AnniversaryForm` | `AboutScreen` / 纪念日列表 / 纪念日表单 | 关于 / 纪念日 / 添加纪念日 | 显示 | `DemoApp.kt:276-301` |
+| `AlbumForm` / `PointForm` / `Publish` / `AlbumDetail` | 三个表单页 / 相册详情（顶栏用相册名） | 新建相册 / 添加地点 / 记动态 / 相册名 | 显示 | `DemoApp.kt:302-331` |
 
-- 二级页 = 除 `Main` 外全部（`DemoApp.kt:66-79`）；返回目标 `parentOf`：`AnniversaryForm → Anniversaries`、`About → Settings`，其余 → `Main`（`DemoApp.kt:84-89`）。系统返回键与顶栏返回共用同一分支（`DemoApp.kt:133-135,421`）。
-- 顶栏动作分工：「我们」只给通知 + 设置；其余四个 tab 只给「+」新增入口（`DemoApp.kt:360-380,488-495`）。
-- 页面内边距：顶部 = 状态栏 + 44dp 标题行 + 8dp；底部 = 手势区 + 68dp 导航条 + 8 + 12（`DemoApp.kt:157-164`）；AI 页顶部只让状态栏（`DemoApp.kt:173-174`）。
-- 设置页返回要提交「界面模式」暂存，顶栏与系统返回都走 `leaveSettings()`，按新模式落位 `Chat` 或 `Main`（`DemoApp.kt:125-129,353-354,421`）。
+- 二级页 = 除 `Main` 外全部（`DemoApp.kt:66-81`）；返回目标 `backTarget`：`AnniversaryForm → Anniversaries`、`About → Settings`，其余 → `Main`，根页（`Main` / `Chat`）返回 null（`DemoApp.kt:87-94`）。系统返回键与顶栏返回共用同一分支（`DemoApp.kt:138-144,431`）。
+- 顶栏动作分工：「我们」只给通知 + 设置；其余四个 tab 只给「+」新增入口（`DemoApp.kt:369-389,498-505`）。
+- 页面内边距：顶部 = 状态栏 + 44dp 标题行 + 8dp；底部 = 手势区 + 68dp 导航条 + 8 + 12（`DemoApp.kt:166-173`）；AI 页顶部只让状态栏（`DemoApp.kt:182-183`）。
+- 设置页返回要提交「界面模式」暂存，顶栏与系统返回都走 `leaveSettings()`，按新模式落位 `Chat` 或 `Main`（`DemoApp.kt:130-134,362-363,431`）。
 
 ## 4. 媒体
 
@@ -289,3 +289,5 @@
 | 聊天内地图卡与地图页同一换签口径：首拉失败短退避、已加载按 exp 提前 2 分钟续签 | `ChatCards.kt:594-602`（延迟逻辑由 `AppFixGuardTest.kt:194` 覆盖） |
 | `PickedMedia` 字段只读，状态整体 `copy()` 替换 | `AppFixGuardTest.kt:217` |
 | 项目主页地址全文件只出现一次（单一常量） | `AppFixGuardTest.kt:226` |
+| 壳内返回策略：根页（主壳 / AI 对话页）不拦截系统返回，二级页回上级，设置页离开时提交模式 | `ShellBackTest.kt:15,21` |
+| AI 对话页的返回层级：「选择对话」管理页 → 会话抽屉 → 交给系统退出应用；抽屉/管理页打开时按返回不得退出应用 | **无自动测试**：模拟器手验——AI 模式下开抽屉按返回应收抽屉、开「管理对话」按返回应回抽屉、两层都收起后再按返回才退到桌面 |

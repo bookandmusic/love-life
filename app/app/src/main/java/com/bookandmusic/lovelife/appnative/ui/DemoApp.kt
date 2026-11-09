@@ -62,8 +62,8 @@ enum class MainTab(val label: String) {
     Map("足迹"),
 }
 
-/** 壳内二级页（无底栏，顶栏带返回）。 */
-private sealed interface Route {
+/** 壳内页面。internal 以便返回策略被单元测试覆盖（见 ShellBackTest）。 */
+internal sealed interface Route {
     data class Main(val focusPostId: Long? = null) : Route
     data object Settings : Route
     data object Notifications : Route
@@ -79,13 +79,18 @@ private sealed interface Route {
 }
 
 /**
- * 二级页的父级（返回目标）：顶栏返回与系统返回共用，避免两条路径落到不同页面。
+ * 返回目标：null 表示根页，不拦截系统返回（交给系统退出应用）。
+ * 主壳与 AI 对话页都是根页——AI 对话页没有上级，落回传统主壳会让界面与 appMode 不一致。
+ * 顶栏返回与系统返回共用这一张表，避免两条路径落到不同页面。
+ * 逐个列出而不写 else：新增路由时编译器会强制在这里表态，避免又一个「根页」被当成二级页。
  */
-private fun parentOf(route: Route): Route = when (route) {
+internal fun backTarget(route: Route): Route? = when (route) {
+    is Route.Main, Route.Chat -> null
     Route.AnniversaryForm -> Route.Anniversaries
     Route.About -> Route.Settings
     is Route.AlbumDetail -> Route.Main()
-    else -> Route.Main()
+    Route.Settings, Route.Notifications, Route.Anniversaries,
+    Route.Publish, Route.AlbumForm, Route.PointForm -> Route.Main()
 }
 
 /**
@@ -131,7 +136,11 @@ fun DemoApp(
     // 二级页返回的唯一出口：设置页（含从「关于」回来后再退出）走 leaveSettings 收尾，
     // 其余回上级（关于 → 设置）。顶栏返回与系统返回键都调它，避免其中一条漏掉模式提交
     fun back() {
-        if (route is Route.Settings) leaveSettings() else route = parentOf(route)
+        if (route is Route.Settings) {
+            leaveSettings()
+            return
+        }
+        backTarget(route)?.let { route = it }
     }
 
     // AI 可用性：进入设置页/聊天页时拉一次（bootstrap 的 available+reason）。
@@ -417,8 +426,9 @@ fun DemoApp(
             }
         }
     }
-    // 二级页返回键：与顶栏返回走同一条路径（设置页特殊，见 leaveSettings）
-    BackHandler(enabled = route !is Route.Main) { back() }
+    // 系统返回键：与顶栏返回走同一条路径（设置页特殊，见 leaveSettings）；
+    // 根页（主壳 / AI 对话页）不拦截，让系统正常退出应用。
+    BackHandler(enabled = backTarget(route) != null) { back() }
 }
 
 @Composable
