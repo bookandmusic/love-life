@@ -142,6 +142,38 @@ docker compose up -d    # 启动
 - APP 的服务地址在发布时确定，装好的包默认连发布时指定的那台服务器
 - 服务端可在后台「集成 → 远程访问」登记备用地址与绿联通道，APP 启动时探活并按权重选路，主地址不可用会切到备用
 
+## MCP 调用
+
+服务端对外提供 MCP（Model Context Protocol）通道，AI 客户端可以直接查询记录、发动态、建相册等。
+
+**签发访问令牌**：后台「AI 配置 → 访问令牌」新建，填名称、绑定成员（小五或小六）、选档位；`llp_` 开头的明文只在创建时显示一次。
+
+| 档位 | 可用能力 |
+|:--|:--|
+| `readonly` | 只读：查动态、相册、媒体、纪念日、地点、单条记录、空间统计 |
+| `readwrite` | 只读 + 写入：发动态、评论、建相册、加相册成员、建纪念日、加地点、点赞 |
+
+**连接**：只支持 Streamable HTTP 的 POST，地址为 `https://<你的域名>/api/v1/mcp`，请求头带 `Authorization: Bearer llp_...`。以 Claude Code / Cursor 这类客户端为例：
+
+```json
+{
+  "mcpServers": {
+    "love-life": {
+      "type": "http",
+      "url": "https://<你的域名>/api/v1/mcp",
+      "headers": { "Authorization": "Bearer llp_xxx" }
+    }
+  }
+}
+```
+
+**约束**：
+
+- 不支持 SSE 长连接与会话 ID，客户端请选 HTTP（Streamable HTTP）传输
+- 删除类工具不对任何令牌开放
+- 写入经外部通道直接生效，没有 APP 内的提案确认，确认动作由客户端负责
+- 每次调用都会记进后台「日志 → 审计日志」，可按 PAT 过滤
+
 ## 安全
 
 - 首次登录后立刻改管理员口令；`ADMIN_USER` / `ADMIN_PASS` 只在库里没有管理员时生效
