@@ -1,8 +1,9 @@
 -- 001_init.sql — 全量初始 schema（压缩版）
--- 一次建出完整结构：新部署空库直接应用；仓库内不含增量 schema 文件，无升级路径。
+-- 一次建出完整结构：新部署空库直接应用；增量变更追加同级 NNN_*.sql，
+-- 由 migrate.go 按文件名顺序应用尚未记入 schema_migrations 的版本。
 -- 关键约束（改表前读）：
 --   media.kind 含 audio；album_items UNIQUE(media_id) 一文件一相册；
---   anniversaries.type 取 solar|lunar；webhook_channels 空间级，无用户归属；
+--   anniversaries.type 取 solar|lunar；
 --   chat_messages 的附件与回显统一由 parts 承载（无 media / content 列）；
 --   chat_sessions 与 chat_messages.session_id 承载多会话，role 取 user|assistant，
 --   chat_messages.turn_id 支撑按轮回滚；

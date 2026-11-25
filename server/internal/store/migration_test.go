@@ -1,18 +1,23 @@
 package store
 
 import (
+	"context"
+	"database/sql"
+	"fmt"
 	"io/fs"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
 )
 
-// TestFullSchema 验证 001_init.sql 一次建出的全量库结构：
+// TestFullSchema 验证 schema 基线 + 增量文件建出的库结构：
 // 覆盖结构约束（kind 收 audio、一文件一相册、anniversaries.type、chat_messages.media、
-// webhook_channels 空间级）、模型网关数据模型（model_providers/provider_models/output_styles/
+// webhook_channels 投递归属）、模型网关数据模型（model_providers/provider_models/output_styles/
 // app_settings，内置风格种子与全局默认风格），以及会话表与对话回显角色。
-// 仓库规则：schema 变更一律直接改写 001 全量文件，不留增量 schema 文件，无升级路径
-// （见 001_init.sql 头部与下方守卫）。
+// 仓库规则：001_init.sql 是全量基线；schema 变更追加同级 NNN_*.sql，由 migrate.go
+// 按版本顺序应用——已部署的库据此升级，不重建、不丢数据。
 func TestFullSchema(t *testing.T) {
 	db, err := Open(t.TempDir())
 	if err != nil {
@@ -20,22 +25,28 @@ func TestFullSchema(t *testing.T) {
 	}
 	defer db.Close()
 
-	// 「单一全量 schema 文件」规则的守卫：一旦有人新增 002_*.sql，此处必失败。
-	// 同时存在 001 与一份重复的 002 增量时，两处都会演进，且 002 可能引用库里不存在的列。
+	// 「单一基线 + 递增增量」规则的守卫：001 是全量基线，其余按版本号连续递增（002、003…），
+	// 每个文件只应用一次。禁止出现重号文件——两处同时演进会出现「002 引用库里不存在的列」。
 	entries, err := fs.Glob(migrationFS, "migrations/*.sql")
 	if err != nil {
 		t.Fatalf("glob migrations: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("migrations 应只有 001_init.sql 一个全量文件，实得 %d 个：%v", len(entries), entries)
+	if len(entries) == 0 {
+		t.Fatal("migrations 至少要有 001_init.sql")
+	}
+	for i, p := range entries {
+		want := fmt.Sprintf("migrations/%03d", i+1)
+		if !strings.HasPrefix(p, want) {
+			t.Fatalf("迁移文件须自 001 连续递增：第 %d 个是 %s，want 前缀 %s", i+1, p, want)
+		}
 	}
 	var n int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("schema_migrations rows = %d err=%v, want 1", n, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&n); err != nil || n != len(entries) {
+		t.Fatalf("schema_migrations rows = %d err=%v, want %d", n, err, len(entries))
 	}
-	var version string
-	if err := db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil || version != "001_init" {
-		t.Fatalf("schema_migrations version = %q err=%v, want 001_init", version, err)
+	var baseline string
+	if err := db.QueryRow(`SELECT version FROM schema_migrations ORDER BY version LIMIT 1`).Scan(&baseline); err != nil || baseline != "001_init" {
+		t.Fatalf("schema_migrations 首版 = %q err=%v, want 001_init", baseline, err)
 	}
 
 	// 种子：两个用户、两条动态
@@ -120,12 +131,14 @@ func TestFullSchema(t *testing.T) {
 		}
 	}
 
-	// 不变式 5：webhook_channels 空间级——无 user_id 列（007 收敛）
+	// 不变式 5：webhook_channels.owner_id——可空投递归属（002 收敛）；
+	// NULL = 空间级渠道（群 / 共享），非空 = 该用户的私人渠道
 	rows, err := db.Query(`PRAGMA table_info(webhook_channels)`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer rows.Close()
+	var hasOwner bool
 	for rows.Next() {
 		var cid int
 		var name, ctype string
@@ -135,9 +148,15 @@ func TestFullSchema(t *testing.T) {
 		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
 			t.Fatal(err)
 		}
-		if name == "user_id" {
-			t.Fatal("webhook_channels must not have user_id (space-level)")
+		if name == "owner_id" {
+			hasOwner = true
+			if notnull != 0 {
+				t.Fatal("webhook_channels.owner_id must be nullable (NULL = space-level)")
+			}
 		}
+	}
+	if !hasOwner {
+		t.Fatal("webhook_channels must have owner_id (002)")
 	}
 
 	// 不变式 6：模型网关表集 + 内置风格种子 + 全局默认风格（LLM 数据模型重构收敛）
@@ -298,5 +317,66 @@ func TestFullSchema(t *testing.T) {
 	// 不变式 15：chat_result_sets 结果集句柄——随会话存取
 	if _, err := db.Exec(`INSERT INTO chat_result_sets (session_id, result_id, kind, ids_json) VALUES (1, 'r_1', 'post', '[1,2]')`); err != nil {
 		t.Fatalf("chat_result_sets must be accepted: %v", err)
+	}
+}
+
+// 已部署的库（只有基线 001）能就地升级到最新 schema：加列不重建、不丢既有数据。
+// 这是「增量文件」的核心承诺——没有这条守卫，某个 002 写成需要重建库的改动也没人发现。
+func TestMigrateUpgradesExistingDBInPlace(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "love-life.db")
+
+	baseline, err := migrationFS.ReadFile("migrations/001_init.sql")
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	old, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	if _, err := old.Exec(string(baseline)); err != nil {
+		_ = old.Close()
+		t.Fatalf("apply baseline: %v", err)
+	}
+	if _, err := old.Exec(`CREATE TABLE schema_migrations (
+		version TEXT PRIMARY KEY,
+		applied_at TEXT NOT NULL DEFAULT (datetime('now'))
+	)`); err != nil {
+		_ = old.Close()
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	if _, err := old.Exec(`INSERT INTO schema_migrations (version) VALUES ('001_init')`); err != nil {
+		_ = old.Close()
+		t.Fatalf("record baseline: %v", err)
+	}
+	// 老库里已有渠道：升级后必须还在，且归属为 NULL（空间级）
+	if _, err := old.Exec(`INSERT INTO webhook_channels (name, method, url, events_json)
+		VALUES ('老渠道', 'POST', 'https://example.invalid/hook', '["like"]')`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed old channel: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close old db: %v", err)
+	}
+
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen with migrations: %v", err)
+	}
+	defer db.Close()
+
+	list, err := db.ListWebhookChannels(context.Background())
+	if err != nil {
+		t.Fatalf("list channels: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("升级后应保留 1 个渠道，实得 %d", len(list))
+	}
+	if list[0].Name != "老渠道" || !list[0].IsShared() {
+		t.Fatalf("老渠道应保留且默认为空间级：%+v", list[0])
+	}
+	var applied int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 2 {
+		t.Fatalf("schema_migrations = %d err=%v, want 2", applied, err)
 	}
 }
