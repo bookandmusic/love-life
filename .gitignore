@@ -20,10 +20,12 @@ app/keystore.properties
 demo/
 
 # 本地包管理器与工具目录
+# .designenv 是设计稿脚本（docs/dev/design-v3/gen.py）用到的 resvg 解包目录，只在本机存在
 .pnpm-store/
 .impeccable/
 .cache/
 .dsh/
+.designenv/
 # 临时视觉比对产物（agent 工具缓存，含图片）
 .dsh-vision-router/
 .gocache/
