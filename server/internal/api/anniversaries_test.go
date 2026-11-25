@@ -356,3 +356,106 @@ func TestAnniversaryAndWebhook(t *testing.T) {
 		t.Fatalf("after delete channel list: %+v", chs.Items)
 	}
 }
+
+// 渠道归属的 API 契约：省略 owner_id = 空间级（群 / 共享），给出则必须是真实用户。
+// 后者是硬要求——归属指向不存在的用户时，该渠道的 owner 永远不会出现在收件人里，
+// 表现为「配了渠道却一条都收不到」，比直接报错难查得多。
+func TestWebhookChannelOwnerContract(t *testing.T) {
+	ts, _, _ := newPostTestEnv(t)
+	realAdmin, _ := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
+	rc := newWebhookReceiver(t)
+
+	var girlID int64
+	if err := ts.db.QueryRow(`SELECT id FROM users WHERE username = 'girl'`).Scan(&girlID); err != nil {
+		t.Fatalf("read girl id: %v", err)
+	}
+
+	// 归属指向不存在的用户 → 400
+	res := doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks", realAdmin, map[string]any{
+		"name": "幽灵渠道", "url": rc.server.URL, "events": []string{"like"}, "owner_id": 99999,
+	})
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "通知对象不存在") {
+		t.Fatalf("owner_id 指向不存在用户应 400 并说明原因：%d %s", res.StatusCode, body)
+	}
+
+	// 归属指向管理员 → 400：两个收件人查询都排除 admin，配上去等于永久静默
+	var adminID int64
+	if err := ts.db.QueryRow(`SELECT id FROM users WHERE username = 'admin'`).Scan(&adminID); err != nil {
+		t.Fatalf("read admin id: %v", err)
+	}
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks", realAdmin, map[string]any{
+		"name": "管理员渠道", "url": rc.server.URL, "events": []string{"like"}, "owner_id": adminID,
+	})
+	body, _ = io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "不作为通知对象") {
+		t.Fatalf("owner_id 指向管理员应 400：%d %s", res.StatusCode, body)
+	}
+
+	// 省略 owner_id → 空间级；给出 → 往返
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks", realAdmin, map[string]any{
+		"name": "群", "url": rc.server.URL + "/group", "events": []string{"like"},
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create shared: %d", res.StatusCode)
+	}
+	res = doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks", realAdmin, map[string]any{
+		"name": "小六私聊", "url": rc.server.URL + "/girl", "events": []string{"like"}, "owner_id": girlID,
+	})
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create personal: %d", res.StatusCode)
+	}
+
+	// 列表下发：空间级是 null，私人渠道是数字
+	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/webhooks", realAdmin, nil)
+	var chs struct {
+		Items []struct {
+			ID      int64  `json:"id"`
+			Name    string `json:"name"`
+			OwnerID *int64 `json:"owner_id"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&chs)
+	res.Body.Close()
+	byName := map[string]*int64{}
+	for _, c := range chs.Items {
+		byName[c.Name] = c.OwnerID
+	}
+	if shared, ok := byName["群"]; !ok || shared != nil {
+		t.Fatalf("空间级渠道 owner_id 应为 null：%+v", byName)
+	}
+	if personal, ok := byName["小六私聊"]; !ok || personal == nil || *personal != girlID {
+		t.Fatalf("私人渠道 owner_id 应为 #%d：%+v", girlID, byName)
+	}
+
+	// 更新：把归属清空回空间级（编辑时省略 owner_id 即此语义）
+	res = doJSON(t, "PUT", ts.URL+"/api/v1/admin/webhooks/"+strconv.FormatInt(created.ID, 10), realAdmin, map[string]any{
+		"name": "小六私聊", "url": rc.server.URL + "/girl", "events": []string{"like"},
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("update channel: %d", res.StatusCode)
+	}
+	var ownerValid bool
+	var ownerID *int64
+	res = doJSON(t, "GET", ts.URL+"/api/v1/admin/webhooks", realAdmin, nil)
+	_ = json.NewDecoder(res.Body).Decode(&chs)
+	res.Body.Close()
+	for _, c := range chs.Items {
+		if c.ID == created.ID {
+			ownerID = c.OwnerID
+			ownerValid = true
+		}
+	}
+	if !ownerValid || ownerID != nil {
+		t.Fatalf("清空归属后 owner_id 应为 null：%+v", ownerID)
+	}
+}

@@ -16,6 +16,7 @@ import {
 import { Plus } from 'lucide-vue-next'
 import { webhooksApi } from '@/api'
 import type { WebhookChannel } from '@/api/webhooks'
+import { listUsers, type UserItem } from '@/api/users'
 import SectionHeader from '@/components/SectionHeader.vue'
 import ConfirmDialog from '@/components/ConfirmDialog.vue'
 import { errMsg } from '@/lib/http'
@@ -25,6 +26,7 @@ import { useConfirmAction } from '@/lib/confirm'
 const { WEBHOOK_EVENTS, WEBHOOK_PRESETS } = webhooksApi
 
 const channels = ref<WebhookChannel[]>([])
+const users = ref<UserItem[]>([])
 const loading = ref(false)
 
 // editingId 为 null = 新增；否则编辑该渠道
@@ -39,10 +41,29 @@ const emptyForm = () => ({
   headersText: '',
   body_template: '',
   events: ['new_post'] as string[],
+  // 'shared' = 空间级（群 / 共享）；其余为用户 id 字符串 = 该用户的私人渠道
+  ownerKey: 'shared',
 })
 const form = ref(emptyForm())
 
 const methodOptions = ['GET', 'POST'].map((m) => ({ label: m, value: m }))
+
+const userLabel = (u: UserItem) => u.nickname || u.username
+
+/** 通知对象：空间级（群 / 共享）或某个成员的私人渠道 */
+const ownerOptions = computed(() => [
+  { label: '群 / 共享（订阅即推送）', value: 'shared' },
+  // 管理员不在情侣里、永远不会是收件人，不提供这个选项
+  ...users.value
+    .filter((u) => u.role !== 'admin')
+    .map((u) => ({ label: `${userLabel(u)} 的私人渠道`, value: String(u.id) })),
+])
+
+function ownerText(ownerId: number | null): string {
+  if (ownerId == null) return '群 / 共享'
+  const u = users.value.find((x) => x.id === ownerId)
+  return u ? `${userLabel(u)} 的私人渠道` : `用户 #${ownerId}`
+}
 
 // headers 以「每行 Key: Value」录入，序列化为对象
 function headersToText(headers: Record<string, string>): string {
@@ -85,10 +106,19 @@ function toggleEvent(key: string) {
 async function load() {
   loading.value = true
   try {
-    const res = await webhooksApi.listWebhooks()
-    channels.value = res.items
-  } catch (e) {
-    toast.error(errMsg(e, '渠道列表加载失败'))
+    // 两个数据源各自降级：成员列表只喂「通知对象」下拉，失败不该把渠道列表一起打成错误态
+    const [res, list] = await Promise.allSettled([webhooksApi.listWebhooks(), listUsers()])
+    if (res.status === 'fulfilled') {
+      channels.value = res.value.items
+    } else {
+      toast.error(errMsg(res.reason, '渠道列表加载失败'))
+    }
+    if (list.status === 'fulfilled') {
+      users.value = list.value
+    } else {
+      users.value = []
+      toast.error(errMsg(list.reason, '成员列表加载失败，暂不能按成员指定通知对象'))
+    }
   } finally {
     loading.value = false
   }
@@ -109,6 +139,7 @@ function openEdit(c: WebhookChannel) {
     headersText: headersToText(c.headers),
     body_template: c.body_template,
     events: [...c.events],
+    ownerKey: c.owner_id == null ? 'shared' : String(c.owner_id),
   }
   showForm.value = true
 }
@@ -117,13 +148,14 @@ async function save() {
   saving.value = true
   try {
     const payload = {
-    name: form.value.name,
-    method: form.value.method,
-    url: form.value.url,
-    headers: parseHeaders(form.value.headersText),
-    body_template: form.value.body_template,
-    events: form.value.events,
-  }
+      name: form.value.name,
+      method: form.value.method,
+      url: form.value.url,
+      headers: parseHeaders(form.value.headersText),
+      body_template: form.value.body_template,
+      events: form.value.events,
+      owner_id: form.value.ownerKey === 'shared' ? null : Number(form.value.ownerKey),
+    }
     if (editingId.value === null) {
       await webhooksApi.createWebhook(payload)
     } else {
@@ -174,6 +206,7 @@ const columns: DataTableColumns<WebhookChannel> = [
       ]),
   },
   { title: '地址', key: 'url', minWidth: 240, ellipsis: { tooltip: true }, render: (row) => `${row.method} ${row.url}` },
+  { title: '通知对象', key: 'owner_id', width: 160, render: (row) => ownerText(row.owner_id) },
   { title: '订阅', key: 'events', minWidth: 180, render: (row) => row.events.map(eventLabel).join('、') || '无' },
   {
     title: '',
@@ -195,7 +228,7 @@ const presetNames = computed(() => Object.keys(WEBHOOK_PRESETS))
 <template>
   <div class="view">
     <NAlert type="info" :show-icon="false">
-      空间级外部推送（Webhook）：订阅事件的渠道在事件发生时收到推送；与模型配置同属服务端集成，仅 admin 可管理。
+      外部推送（Webhook）：订阅事件的渠道在事件发生时收到推送。「通知对象」决定谁能收到——群 / 共享渠道推给全部订阅者并用第三人称具名；成员的私人渠道只在该成员是本次收件人时推送，措辞与 APP 站内通知一致。
     </NAlert>
 
     <SectionHeader title="已配置渠道" desc="事件发生时向订阅渠道推送 HTTP 请求。">
@@ -238,6 +271,9 @@ const presetNames = computed(() => Object.keys(WEBHOOK_PRESETS))
         </div>
         <NFormItem label="服务地址" required>
           <NInput v-model:value="form.url" placeholder="https://…" />
+        </NFormItem>
+        <NFormItem label="通知对象">
+          <NSelect v-model:value="form.ownerKey" :options="ownerOptions" />
         </NFormItem>
         <NFormItem label="请求头（可选，每行一条 Key: Value）">
           <NInput v-model:value="form.headersText" type="textarea" :rows="2" placeholder="Authorization: Bearer xxx" />

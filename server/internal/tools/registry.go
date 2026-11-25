@@ -219,23 +219,44 @@ func (d *Deps) auditWithLatency(ctx context.Context, userID int64, tool, argsJSO
 const aiOperatorLabel = "AI助手"
 
 // notifyPartners 通用通知分发辅助（站内通知另一方 + 外部推送）。
-func (d *Deps) notifyPartners(ctx context.Context, userID int64, eventType, entityType string, entityID int64, snapshot, title, body string) {
+func (d *Deps) notifyPartners(ctx context.Context, userID int64, eventType, entityType string, entityID int64, snapshot map[string]any, title string, texts notify.Texts) {
 	partnerIDs, err := d.DB.ListPartnerIDs(ctx, userID)
 	if err != nil {
 		slog.Warn("list partner ids failed", "err", err, "user_id", userID, "event", eventType)
 		return
 	}
-	d.DP.Dispatch(ctx, partnerIDs, eventType, entityType, entityID, snapshot, title, body)
+	d.DP.Dispatch(ctx, partnerIDs, eventType, entityType, entityID, snapshot, title, texts)
 }
 
-// aiOperatorName AI 代操作的通知署名：取真实用户名（与 REST 同口径）。
-func (d *Deps) aiOperatorName(ctx context.Context, userID int64) string {
+// userName 用户在通知句子里的称呼：昵称优先、回退用户名、再回退 fallback。
+// REST 与 AI 两条路径共用同一口径，否则同一件事在两个人眼里会是两个名字。
+func (d *Deps) userName(ctx context.Context, userID int64, fallback string) string {
 	u, err := d.DB.GetUserByID(ctx, userID)
-	if err != nil || u.Username == "" {
-		slog.Warn("resolve ai operator name failed", "err", err, "user_id", userID)
+	if err != nil || u == nil {
+		return fallback
+	}
+	if u.Nickname != "" {
+		return u.Nickname
+	}
+	if u.Username != "" {
+		return u.Username
+	}
+	return fallback
+}
+
+// userDisplayName 通知里引用「他人」的称呼：查不到时写「对方」。
+func (d *Deps) userDisplayName(ctx context.Context, userID int64) string {
+	return d.userName(ctx, userID, "对方")
+}
+
+// aiOperatorName AI 代操作的通知署名：与 REST 同口径（昵称优先、回退用户名）。
+func (d *Deps) aiOperatorName(ctx context.Context, userID int64) string {
+	name := d.userName(ctx, userID, "")
+	if name == "" {
+		slog.Warn("resolve ai operator name failed", "user_id", userID)
 		return aiOperatorLabel
 	}
-	return u.Username
+	return name
 }
 
 // ---- 参数取值小工具 ----
@@ -462,7 +483,7 @@ type PostHit struct {
 }
 
 const postHitColumns = `p.id, p.content, p.created_at,
-		COALESCE(u.nickname, u.username), COALESCE(p.location_name,'')`
+		COALESCE(NULLIF(u.nickname, ''), u.username), COALESCE(p.location_name,'')`
 
 func scanPostHits(rows *sql.Rows) ([]PostHit, error) {
 	var hits []PostHit
@@ -1007,7 +1028,7 @@ func attachmentsFromRefs(args map[string]any) []AttachmentRef {
 // ---- 对象摘要（提案预览引用既有记录时使用） ----
 
 // postSummaryRecord 动态摘要条目 + 作者 id；不存在（已删/越权 id）返回 ok=false。
-// 作者 id 一并返回：互动通知归属口径（notify.PossessivePost：自己的 / 你的）要用，
+// 作者 id 一并返回：互动通知的归属判断（作者是否就是操作者）与具名引用都要用，
 // 且调用方此时已持有该行，不必再取一次。
 func (d *Deps) postSummaryRecord(ctx context.Context, id int64) (Record, int64, bool) {
 	p, err := d.DB.GetPost(ctx, id)
@@ -1961,13 +1982,10 @@ func proposePostTool() *Tool {
 					return nil, err
 				}
 				op := d.aiOperatorName(ctx, userID)
-				snapshot, _ := json.Marshal(map[string]any{"content": content, "operator": op, "via": "ai"})
-				// 推送正文带操作者与「（AI）」标记，接收端据此判别来源
-				body := op + "（AI）发布了新动态"
-				if t := textutil.TruncMark(content, 100); t != "" {
-					body += "：" + t
-				}
-				d.notifyPartners(ctx, userID, "post_created", "post", postID, string(snapshot), "新动态", body)
+				// 「（AI）」是代操作署名的一部分，两视角文案都带，接收端据此判别来源
+				d.notifyPartners(ctx, userID, "post_created", "post", postID,
+					map[string]any{"content": content, "operator": op, "via": "ai"},
+					"新动态", notify.Posted(op+"（AI）", content))
 				return &ToolResult{
 					Text:     fmt.Sprintf("动态 #%d 已发布。", postID),
 					UserText: fmt.Sprintf("动态 #%d 已发布", postID),
@@ -2054,13 +2072,10 @@ func proposeCommentTool() *Tool {
 				if err != nil {
 					return nil, err
 				}
-				operator, err := d.DB.GetUserByID(ctx, userID)
-				if err != nil {
-					return nil, err
-				}
-				snapshot, _ := json.Marshal(map[string]any{"content": textutil.Trunc(content, 50), "operator": operator.Username, "author_id": post.AuthorID, "via": "ai"})
-				d.notifyPartners(ctx, userID, "post_commented", "post", postID, string(snapshot),
-					"收到评论", operator.Username+"（AI）评论了"+notify.PossessivePost(post.AuthorID, userID)+"："+textutil.Trunc(content, 50))
+				operator := d.aiOperatorName(ctx, userID)
+				d.notifyPartners(ctx, userID, "post_commented", "post", postID,
+					map[string]any{"content": textutil.Trunc(content, 50), "operator": operator, "author_id": post.AuthorID, "via": "ai"},
+					"收到评论", notify.Commented(operator+"（AI）", post.AuthorNickname.String, content, post.AuthorID == userID))
 				return &ToolResult{Text: fmt.Sprintf("评论 #%d 已发表。", commentID),
 					UserText: "评论已发表", Record: &RecordRef{Kind: "comment", ID: commentID}}, nil
 			}
@@ -2115,9 +2130,9 @@ func proposeAlbumTool() *Tool {
 					return nil, err
 				}
 				operator := d.aiOperatorName(ctx, userID)
-				snapshot, _ := json.Marshal(map[string]any{"name": name, "operator": operator, "via": "ai"})
-				d.notifyPartners(ctx, userID, "album_created", "album", albumID, string(snapshot),
-					"相册上新", operator+"（AI）创建了相册「"+name+"」")
+				d.notifyPartners(ctx, userID, "album_created", "album", albumID,
+					map[string]any{"name": name, "operator": operator, "via": "ai"},
+					"相册上新", notify.AlbumCreated(operator+"（AI）", name))
 				return &ToolResult{Text: fmt.Sprintf("相册「%s」已创建（#%d，%d 条媒体）。", name, albumID, len(mediaIDs)),
 					UserText: fmt.Sprintf("相册「%s」已创建", name), Record: &RecordRef{Kind: "album", ID: albumID}}, nil
 			}
@@ -2368,9 +2383,9 @@ func proposePlaceTool() *Tool {
 				}
 				if created {
 					operator := d.aiOperatorName(ctx, userID)
-					snapshot, _ := json.Marshal(map[string]any{"name": name, "latitude": lat, "longitude": lng, "operator": operator, "via": "ai"})
-					d.notifyPartners(ctx, userID, "map_point_created", "map_point", p.ID, string(snapshot),
-						"足迹更新", operator+"（AI）把「"+name+"」记到了地图上")
+					d.notifyPartners(ctx, userID, "map_point_created", "map_point", p.ID,
+						map[string]any{"name": name, "latitude": lat, "longitude": lng, "operator": operator, "via": "ai"},
+						"足迹更新", notify.FootprintAdded(operator+"（AI）", name))
 				}
 				return &ToolResult{Text: content, UserText: fmt.Sprintf("已记录地点「%s」", name),
 					Record: &RecordRef{Kind: "map_point", ID: p.ID}}, nil
@@ -2722,7 +2737,7 @@ func proposeReactionTool() *Tool {
 				return nil, fmt.Errorf("动态不存在")
 			}
 			if mode == ModeExecute {
-				// 互动通知归属口径用目标动态作者（notify.PossessivePost：自己的 / 你的）；
+				// 互动通知的归属判断用目标动态作者；
 				// 上面的存在性检查已取到该行，直接复用，不二次查库。
 				var changes []string
 				if hasLike {
@@ -2736,9 +2751,9 @@ func proposeReactionTool() *Tool {
 							// 通知另一方（任何一方动作都通知另一方）。与 REST 同口径：
 							// 只在状态真的变为「已赞」时发，取消赞不发。
 							op := d.aiOperatorName(ctx, userID)
-							snapshot, _ := json.Marshal(map[string]any{"operator": op, "author_id": authorID, "via": "ai"})
-							d.notifyPartners(ctx, userID, "post_liked", "post", postID, string(snapshot),
-								"收到点赞", op+"（AI）赞了"+notify.PossessivePost(authorID, userID))
+							d.notifyPartners(ctx, userID, "post_liked", "post", postID,
+								map[string]any{"operator": op, "author_id": authorID, "via": "ai"},
+								"收到点赞", notify.Liked(op+"（AI）", d.userDisplayName(ctx, authorID), authorID == userID))
 						} else {
 							changes = append(changes, "已取消点赞")
 						}
@@ -2971,6 +2986,7 @@ func deleteKindLabel(kind string) string {
 // deletedNotice 取「删除后要发给对方」的站内通知（口径对齐 REST：删对方内容 → 通知作者/创建者）。
 // 读的是删除前的记录（Get* 只返回未软删行），故须在软删之前调用；读不到即无通知，不阻断删除。
 func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id int64) (store.DeletedNotice, bool) {
+	deleter := d.aiOperatorName(ctx, userID)
 	switch kind {
 	case "post":
 		p, err := d.DB.GetPost(ctx, id)
@@ -2978,8 +2994,9 @@ func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id 
 			return store.DeletedNotice{}, false
 		}
 		return store.DeletedNotice{
-			CreatorID: p.AuthorID, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+			CreatorID: p.AuthorID, DeleterID: userID, DeleterName: deleter,
 			EventType: "post_deleted", TargetType: "post", TargetID: id,
+			Text:  notify.Deleted(deleter, "动态", ""),
 			Extra: map[string]any{"content": textutil.Trunc(p.Content, 50)},
 		}, true
 	case "comment":
@@ -2988,8 +3005,9 @@ func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id 
 			return store.DeletedNotice{}, false
 		}
 		return store.DeletedNotice{
-			CreatorID: c.AuthorID, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+			CreatorID: c.AuthorID, DeleterID: userID, DeleterName: deleter,
 			EventType: "comment_deleted", TargetType: "comment", TargetID: id,
+			Text:  notify.Deleted(deleter, "评论", ""),
 			Extra: map[string]any{"content": textutil.Trunc(c.Content, 50)},
 		}, true
 	case "album":
@@ -2998,8 +3016,9 @@ func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id 
 			return store.DeletedNotice{}, false
 		}
 		return store.DeletedNotice{
-			CreatorID: al.CreatedBy.Int64, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+			CreatorID: al.CreatedBy.Int64, DeleterID: userID, DeleterName: deleter,
 			EventType: "album_deleted", TargetType: "album", TargetID: id,
+			Text:  notify.Deleted(deleter, "相册", al.Name),
 			Extra: map[string]any{"name": al.Name},
 		}, true
 	case "anniversary":
@@ -3008,8 +3027,9 @@ func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id 
 			return store.DeletedNotice{}, false
 		}
 		return store.DeletedNotice{
-			CreatorID: a.CreatedBy, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+			CreatorID: a.CreatedBy, DeleterID: userID, DeleterName: deleter,
 			EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
+			Text:  notify.Deleted(deleter, "纪念日", a.Name),
 			Extra: map[string]any{"name": a.Name},
 		}, true
 	case "place":
@@ -3018,8 +3038,9 @@ func (d *Deps) deletedNotice(ctx context.Context, userID int64, kind string, id 
 			return store.DeletedNotice{}, false
 		}
 		return store.DeletedNotice{
-			CreatorID: p.CreatedBy, DeleterID: userID, DeleterName: d.aiOperatorName(ctx, userID),
+			CreatorID: p.CreatedBy, DeleterID: userID, DeleterName: deleter,
 			EventType: "map_point_deleted", TargetType: "map_point", TargetID: id,
+			Text:  notify.Deleted(deleter, "足迹", p.Name),
 			Extra: map[string]any{"name": p.Name},
 		}, true
 	}

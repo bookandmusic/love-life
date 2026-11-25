@@ -20,12 +20,14 @@ func (d *DB) InsertNotification(ctx context.Context, recipientID int64, eventTyp
 type DeletedNotice struct {
 	CreatorID   int64  // 内容创建者（收件人）
 	DeleterID   int64  // 删除者（发起人）；与 CreatorID 相同则静默
-	DeleterName string // 删除者显示名（真实用户名；AI 代操作同口径）
+	DeleterName string // 删除者署名（昵称优先，回退用户名；AI 代操作同口径）
 	EventType   string // post_deleted / comment_deleted / album_deleted / anniversary_deleted / map_point_deleted
 	TargetType  string // post / comment / album / anniversary / map_point
 	TargetID    int64
 	// ViaAI AI 代操作：快照写 via:"ai"（接收端据此判别来源）
 	ViaAI bool
+	// Text 渲染好的通知句子（收件人视角），随快照下发给客户端；客户端不再自行拼文案
+	Text  string
 	Extra map[string]any // 快照附加字段（title / content / name…）；deleted_by / via 由本方法写入
 }
 
@@ -35,11 +37,14 @@ func (d *DB) NotifyContentDeleted(ctx context.Context, n DeletedNotice) error {
 	if n.CreatorID == 0 || n.CreatorID == n.DeleterID {
 		return nil
 	}
-	snap := make(map[string]any, len(n.Extra)+2)
+	snap := make(map[string]any, len(n.Extra)+3)
 	for k, v := range n.Extra {
 		snap[k] = v
 	}
 	snap["deleted_by"] = n.DeleterName
+	if n.Text != "" {
+		snap["text"] = n.Text
+	}
 	if n.ViaAI {
 		snap["via"] = "ai"
 	}

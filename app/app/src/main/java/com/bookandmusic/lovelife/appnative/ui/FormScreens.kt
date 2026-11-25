@@ -1386,7 +1386,7 @@ private fun notificationTint(
 }
 
 /** 事件文案：把通知类型翻成一句人话。 */
-private fun notificationText(n: com.bookandmusic.lovelife.appnative.data.NotificationDto): String {
+internal fun notificationText(n: com.bookandmusic.lovelife.appnative.data.NotificationDto): String {
     val snap = runCatching {
         kotlinx.serialization.json.Json.parseToJsonElement(n.snapshot)
     }.getOrNull()
@@ -1395,9 +1395,13 @@ private fun notificationText(n: com.bookandmusic.lovelife.appnative.data.Notific
             as? kotlinx.serialization.json.JsonPrimitive
         return prim?.content ?: ""
     }
+    // 服务端下发渲染好的句子（通知文案的唯一事实源，随视角切换措辞）；
+    // 更早入库的通知没有该字段，按事件类型回退拼接。
+    field("text").takeIf { it.isNotEmpty() }?.let { return it }
     val operator = field("operator").ifEmpty { "对方" }
     return when (n.event_type) {
-        "post_created" -> "$operator 发布了新动态：${field("content")}"
+        // 纯媒体 / 纯地点动态没有正文：不留空冒号（与服务端 notify.Posted 同口径）
+        "post_created" -> field("content").let { if (it.isEmpty()) "$operator 发布了新动态" else "$operator 发布了新动态：$it" }
         "post_liked" -> "$operator 赞了你的动态"
         "post_commented" -> "$operator 评论了你的动态：${field("content")}"
         "post_deleted" -> "${field("deleted_by").ifEmpty { "对方" }} 删除了你发布的动态"

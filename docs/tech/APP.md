@@ -262,6 +262,7 @@
 
 | 约束（不许改坏） | 守卫 |
 |:--|:--|
+| 通知文案以服务端 `snapshot.text` 为准；旧通知按事件类型回退拼接，空正文不留冒号、快照坏掉回落到「系统通知」 | `NotificationTextTest.kt:19,26,38,47` |
 | SSE 分帧规则：空行分界、`event:` / `data:` 解析、注释行与心跳忽略、多行 data 拼接 | `SseParserTest.kt:22,37,48` |
 | 对话分段状态机：think 累加与折叠、tool.end 按 call_id 归位、提案嵌入最后一个工具段 | `ChatStateTest.kt:17,44,59` |
 | 流式渲染与确认卡：增量逐帧、确认卡状态与倒计时、预览段序 | `ChatRenderTest.kt:21,40`、`ChatUiTest.kt:22` |

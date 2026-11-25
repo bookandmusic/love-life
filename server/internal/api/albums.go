@@ -76,10 +76,11 @@ func (a *albumsAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 相册上新：站内通知另一方（自建静默，admin 不在情侣里）+ 按订阅外推
-	snapshot, _ := json.Marshal(map[string]any{"name": req.Name, "operator": claims.Username})
 	ids, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
-	a.dp.Dispatch(r.Context(), ids, "album_created", "album", id, string(snapshot),
-		"相册上新", claims.Username+" 创建了相册「"+req.Name+"」")
+	operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
+	a.dp.Dispatch(r.Context(), ids, "album_created", "album", id,
+		map[string]any{"name": req.Name, "operator": operator},
+		"相册上新", notify.AlbumCreated(operator, req.Name))
 
 	// 返回完整相册对象（R5：补齐返回值，对齐契约）
 	al, err := a.db.GetAlbum(r.Context(), id)
@@ -203,9 +204,11 @@ func (a *albumsAPI) remove(w http.ResponseWriter, r *http.Request) {
 	// 删除对方创建的手动相册 → 站内通知创建者（自删静默）。内容删除仅站内，
 	// 不走 dp.Dispatch（那会触发外部 Webhook 推送）。
 	if al.CreatedBy.Valid {
+		operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
 		_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
-			CreatorID: al.CreatedBy.Int64, DeleterID: claims.UserID, DeleterName: claims.Username,
+			CreatorID: al.CreatedBy.Int64, DeleterID: claims.UserID, DeleterName: operator,
 			EventType: "album_deleted", TargetType: "album", TargetID: id,
+			Text:  notify.Deleted(operator, "相册", al.Name),
 			Extra: map[string]any{"name": al.Name},
 		})
 	}

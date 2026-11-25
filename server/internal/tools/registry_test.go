@@ -567,12 +567,13 @@ func TestDeleteNoticesAllCarryAIMark(t *testing.T) {
 		kind  string
 		id    int64
 		event string
+		want  string // 快照 text：删除者「boy」（无昵称回退用户名）删的是 user 1 的内容
 	}{
-		{"post", postID, "post_deleted"},
-		{"comment", cmtID, "comment_deleted"},
-		{"album", albumID, "album_deleted"},
-		{"anniversary", annivID, "anniversary_deleted"},
-		{"place", pointID, "map_point_deleted"},
+		{"post", postID, "post_deleted", "boy 删除了你的动态"},
+		{"comment", cmtID, "comment_deleted", "boy 删除了你的评论"},
+		{"album", albumID, "album_deleted", "boy 删除了你的相册「旅行」"},
+		{"anniversary", annivID, "anniversary_deleted", "boy 删除了你的纪念日「她的生日」"},
+		{"place", pointID, "map_point_deleted", "boy 删除了你的足迹「西湖」"},
 	} {
 		exec(t, "propose_delete", d, 2, map[string]any{"kind": tc.kind, "id": float64(tc.id)})
 		var snap string
@@ -581,6 +582,13 @@ func TestDeleteNoticesAllCarryAIMark(t *testing.T) {
 		}
 		if !strings.Contains(snap, `"via":"ai"`) {
 			t.Fatalf("%s 删除快照应带 via=ai：%s", tc.kind, snap)
+		}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(snap), &parsed); err != nil {
+			t.Fatalf("%s 快照非法 JSON：%s", tc.kind, snap)
+		}
+		if parsed["text"] != tc.want {
+			t.Fatalf("%s 快照 text = %v，want %q", tc.kind, parsed["text"], tc.want)
 		}
 	}
 }

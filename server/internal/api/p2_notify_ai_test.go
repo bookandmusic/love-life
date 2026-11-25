@@ -83,13 +83,13 @@ func TestAINotifyMarksAIAndSkipsAutoCreatedPoint(t *testing.T) {
 	if !strings.Contains(postSnap, `"via":"ai"`) || !strings.Contains(postSnap, `"operator"`) {
 		t.Fatalf("AI 发动态快照应带 via=ai 与 operator：%s", postSnap)
 	}
-	// 快照读法：operator 恒为真实发起人用户名
+	// 快照 operator 是通知署名（昵称优先，与 REST 同口径），不是用户名
 	var snapMap map[string]any
 	if err := json.Unmarshal([]byte(postSnap), &snapMap); err != nil {
 		t.Fatalf("快照不是合法 JSON：%s", postSnap)
 	}
-	if snapMap["operator"] != "girl" {
-		t.Fatalf("快照 operator 应为真实用户名 girl：%v", snapMap["operator"])
+	if snapMap["operator"] != "她" {
+		t.Fatalf("快照 operator 应为发起人昵称「她」：%v", snapMap["operator"])
 	}
 
 	// 2) AI 代评论
@@ -115,7 +115,8 @@ func TestAINotifyMarksAIAndSkipsAutoCreatedPoint(t *testing.T) {
 	if hits != 2 {
 		t.Fatalf("AI 评论应新增一次外推：hits=%d", hits)
 	}
-	if !strings.Contains(last, "（AI）") || !strings.Contains(last, "girl") || !strings.Contains(last, "拍得真好") {
-		t.Fatalf("AI 评论推送正文应含操作者与（AI）与内容：%s", last)
+	// 群视角（测试渠道无归属）：操作者是动态作者本人 → 写「自己的动态」，不能写「你的」
+	if !strings.Contains(last, "她（AI） 评论了自己的动态：拍得真好") {
+		t.Fatalf("AI 评论推送正文不符：%s", last)
 	}
 }

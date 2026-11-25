@@ -10,6 +10,8 @@ export interface WebhookChannel {
   headers: Record<string, string>
   body_template: string
   events: string[]
+  /** 投递归属：null = 空间级（群 / 共享，订阅即推）；数字 = 该用户的私人渠道 */
+  owner_id: number | null
 }
 
 /** 订阅事件（6 类，与 server 的 externalEventKey 一一对应） */

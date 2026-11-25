@@ -374,12 +374,10 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 
 	// 新动态通知另一方（admin 不在情侣里）+ 外部推送（订阅 new_post 的渠道）
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
-	// 通知快照仅含字符串，必然可序列化。
-	snapshot, _ := json.Marshal(map[string]any{
-		"content": textutil.TruncMark(req.Content, 50), "operator": claims.Username,
-	})
-	a.dp.Dispatch(r.Context(), recipients, "post_created", "post", postID, string(snapshot),
-		"新动态", textutil.TruncMark(req.Content, 100))
+	operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
+	a.dp.Dispatch(r.Context(), recipients, "post_created", "post", postID,
+		map[string]any{"content": textutil.TruncMark(req.Content, 50), "operator": operator},
+		"新动态", notify.Posted(operator, req.Content))
 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": postID})
 }
@@ -512,9 +510,11 @@ func (a *postsAPI) deletePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 自删静默（仅作者可删，不存在「删对方内容」的通知场景；口径同 deleteMedia）
+	operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
-		CreatorID: p.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
+		CreatorID: p.AuthorID, DeleterID: claims.UserID, DeleterName: operator,
 		EventType: "post_deleted", TargetType: "post", TargetID: id,
+		Text:  notify.Deleted(operator, "动态", ""),
 		Extra: map[string]any{"content": textutil.TruncMark(p.Content, 50)},
 	})
 	// ：删除一律 204 No Content

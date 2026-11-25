@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -22,11 +23,27 @@ func postIDFromPath(r *http.Request) (int64, bool) {
 	return id, err == nil
 }
 
+// displayName 用户在通知句子里的称呼：昵称优先、回退用户名。
+// 同一句话里的操作者与内容作者都走这里，避免出现「xiaowu 评论了小六的动态」这种半截用户名。
+func displayName(ctx context.Context, db *store.DB, userID int64, fallback string) string {
+	u, err := db.GetUserByID(ctx, userID)
+	if err != nil || u == nil {
+		return fallback
+	}
+	if u.Nickname != "" {
+		return u.Nickname
+	}
+	if u.Username != "" {
+		return u.Username
+	}
+	return fallback
+}
+
 // notifyPartner 互动通知口径：允许自赞/自藏，任何一方动作（含自己
 // 赞/藏自己发布的动态）都通知另一方（传达「我在意这条内容」），评论同口径；
 // 另一方不存在时站内无收件人，外部推送仍按渠道订阅照常发送。
-// authorID 为目标动态作者：快照供客户端按「你的 / 自己的」渲染，content 同规则。
-func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targetID, authorID int64, title, content string, snapshot map[string]any) {
+// authorID 为目标动态作者：快照供客户端定位，句子由 notify 的两视角渲染。
+func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targetID, authorID int64, title string, texts notify.Texts, snapshot map[string]any) {
 	claims, ok := auth.UserFromContext(r.Context())
 	if !ok {
 		return
@@ -34,12 +51,10 @@ func (a *interactionsAPI) notifyPartner(r *http.Request, eventType string, targe
 	if snapshot == nil {
 		snapshot = map[string]any{}
 	}
-	snapshot["operator"] = claims.Username
+	snapshot["operator"] = displayName(r.Context(), a.db, claims.UserID, claims.Username)
 	snapshot["author_id"] = authorID
-	// 通知快照仅含字符串，必然可序列化。
-	b, _ := json.Marshal(snapshot)
 	recipients, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
-	a.dp.Dispatch(r.Context(), recipients, eventType, "post", targetID, string(b), title, content)
+	a.dp.Dispatch(r.Context(), recipients, eventType, "post", targetID, snapshot, title, texts)
 }
 
 func (a *interactionsAPI) toggleLike(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +79,7 @@ func (a *interactionsAPI) toggleLike(w http.ResponseWriter, r *http.Request) {
 	}
 	if liked {
 		a.notifyPartner(r, "post_liked", id, post.AuthorID, "收到点赞",
-			claims.Username+" 赞了"+notify.PossessivePost(post.AuthorID, claims.UserID), nil)
+			notify.Liked(displayName(r.Context(), a.db, claims.UserID, claims.Username), post.AuthorNickname.String, post.AuthorID == claims.UserID), nil)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"liked": liked})
 }
@@ -101,7 +116,7 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	a.notifyPartner(r, "post_commented", id, post.AuthorID, "收到评论",
-		claims.Username+" 评论了"+notify.PossessivePost(post.AuthorID, claims.UserID)+"："+textutil.TruncMark(req.Content, 50),
+		notify.Commented(displayName(r.Context(), a.db, claims.UserID, claims.Username), post.AuthorNickname.String, req.Content, post.AuthorID == claims.UserID),
 		map[string]any{"content": textutil.TruncMark(req.Content, 50)})
 	// 返回完整评论对象（R7：补齐返回值，对齐契约）
 	c, err := a.db.GetComment(r.Context(), commentID)
@@ -194,9 +209,11 @@ func (a *interactionsAPI) deleteComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	// 自删静默（仅作者可删，不存在「删对方评论」的通知场景；口径同 deleteMedia）
+	operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
-		CreatorID: c.AuthorID, DeleterID: claims.UserID, DeleterName: claims.Username,
+		CreatorID: c.AuthorID, DeleterID: claims.UserID, DeleterName: operator,
 		EventType: "comment_deleted", TargetType: "comment", TargetID: id,
+		Text: notify.Deleted(operator, "评论", ""),
 		// post_id 供客户端定位所属动态：评论删除后评论本身已不可见，
 		// 只能跳到它所属的那条动态（target_id 是评论 id，不足以定位）
 		Extra: map[string]any{"content": textutil.TruncMark(c.Content, 50), "post_id": c.PostID},

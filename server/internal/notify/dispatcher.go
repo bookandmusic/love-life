@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -45,17 +44,11 @@ func New(db *store.DB) *Dispatcher {
 	return &Dispatcher{db: db, client: &http.Client{Timeout: 10 * time.Second}}
 }
 
-// PossessivePost 互动通知归属口径：目标动态作者是操作者本人 → 「自己的动态」；
-// 作者是对方（收件人）→ 「你的动态」。单情侣模型下作者只可能是这两种。
-// REST 与 AI 代操作两条路径共用，保证站内快照与外部推送文案一致。
-func PossessivePost(authorID, operatorID int64) string {
-	if authorID == operatorID {
-		return "自己的动态"
-	}
-	return "你的动态"
-}
-
 // Dispatch 站内通知 recipientIDs（全量）+ 外部推送（订阅对应事件的渠道）。
+//
+// 文案由 texts 给出两个视角：个人渠道与站内通知用 Personal，空间级渠道（群 / 共享）
+// 用 Group。个人渠道只推给「本次收件人里正好是它主人」的那一个——外部推送与站内
+// 通知因此同口径，不会把该给对方的提醒发给操作者自己。
 //
 // 站内通知同步写库（廉价、且失败不影响主流程）；外部推送**异步**——它是副作用，
 // 不该出现在业务请求的关键路径上。渠道故障时同步推送会让每次发布都多等一个
@@ -68,9 +61,9 @@ func PossessivePost(authorID, operatorID int64) string {
 // 要求必达投递时升级为持久化队列。
 //
 // 异步部分由 Wait 收敛：关停或测试清理前先等它排空，否则推送会在库关掉之后继续写。
-func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventType, targetType string, targetID int64, snapshot string, title, content string) {
+func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventType, targetType string, targetID int64, snapshot map[string]any, title string, texts Texts) {
 	for _, uid := range recipientIDs {
-		if err := d.db.InsertNotification(ctx, uid, eventType, targetType, targetID, snapshot); err != nil {
+		if err := d.db.InsertNotification(ctx, uid, eventType, targetType, targetID, snapshotJSON(snapshot, texts.Personal)); err != nil {
 			slog.Warn("insert notification failed", "user_id", uid, "event", eventType, "err", err)
 		}
 	}
@@ -90,9 +83,43 @@ func (d *Dispatcher) Dispatch(ctx context.Context, recipientIDs []int64, eventTy
 			return
 		}
 		for _, ch := range channels {
-			d.push(ctx, ch, key, title, content)
+			if !ch.IsShared() && !containsID(recipientIDs, ch.OwnerID.Int64) {
+				continue
+			}
+			d.push(ctx, ch, key, title, texts.forChannel(ch))
 		}
 	}()
+}
+
+// snapshotJSON 站内通知快照：把渲染好的句子一并下发，客户端不再自行拼文案。
+func snapshotJSON(snapshot map[string]any, text string) string {
+	m := make(map[string]any, len(snapshot)+1)
+	for k, v := range snapshot {
+		m[k] = v
+	}
+	m["text"] = text
+	b, err := json.Marshal(m)
+	if err != nil {
+		return "{}"
+	}
+	return string(b)
+}
+
+// forChannel 按渠道归属选视角：空间级渠道用旁观者视角，个人渠道用收件人视角。
+func (t Texts) forChannel(ch *store.WebhookChannel) string {
+	if ch.IsShared() && t.Group != "" {
+		return t.Group
+	}
+	return t.Personal
+}
+
+func containsID(ids []int64, id int64) bool {
+	for _, v := range ids {
+		if v == id {
+			return true
+		}
+	}
+	return false
 }
 
 // PushTest 「发送测试」按钮：不订阅过滤，直接推测试事件。
@@ -212,13 +239,7 @@ func (d *Dispatcher) CheckAnniversaries(ctx context.Context, now time.Time) {
 		if err != nil || sent {
 			continue
 		}
-		// 站内快照同样是一段 JSON：名字走 json.Marshal 转义，控制字符不会破坏结构
-		snapshot, err := json.Marshal(map[string]string{"name": a.Name})
-		if err != nil {
-			slog.Warn("纪念日快照序列化失败", "anniversary_id", a.ID, "err", err)
-			continue
-		}
-		d.Dispatch(ctx, recipients, "anniversary_reminder", "anniversary", a.ID, string(snapshot),
-			"纪念日提醒", a.Name+" 还有 "+strconv.Itoa(days)+" 天（"+a.Date+"）")
+		d.Dispatch(ctx, recipients, "anniversary_reminder", "anniversary", a.ID,
+			map[string]any{"name": a.Name}, "纪念日提醒", AnniversarySoon(a.Name, days, a.Date))
 	}
 }

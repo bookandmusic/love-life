@@ -77,7 +77,7 @@ func TestAIReactionNotifiesPartner(t *testing.T) {
 	if snap["operator"] == nil || snap["operator"] == "" {
 		t.Fatalf("快照应带 operator，实得 %+v", snap)
 	}
-	// 快照带 author_id = 动态作者（互动归属：boy 赞 girl 的动态 → 对方视角「你的动态」）
+	// 快照带 author_id = 动态作者，text 已按收件人视角渲染（boy 赞 girl 的动态 → 「你的动态」）
 	if aid, ok := snap["author_id"].(float64); !ok || int64(aid) != authorID {
 		t.Fatalf("快照 author_id 应为动态作者 %d，实得 %+v", authorID, snap)
 	}

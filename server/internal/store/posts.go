@@ -103,7 +103,7 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 	return postID, nil
 }
 
-const postColumns = `p.id, p.author_id, p.content, p.mood, p.location_name, p.point_id, p.created_at, p.deleted_at, COALESCE(u.nickname, u.username), u.avatar_path`
+const postColumns = `p.id, p.author_id, p.content, p.mood, p.location_name, p.point_id, p.created_at, p.deleted_at, COALESCE(NULLIF(u.nickname, ''), u.username), u.avatar_path`
 
 func scanPost(row interface{ Scan(...any) error }) (*Post, error) {
 	var p Post

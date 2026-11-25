@@ -3,8 +3,16 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/bookandmusic/love-life/server/internal/auth"
+	"github.com/bookandmusic/love-life/server/internal/store"
 )
 
 func TestInteractionsAndNotifications(t *testing.T) {
@@ -89,7 +97,8 @@ func TestInteractionsAndNotifications(t *testing.T) {
 	var createdCount, likedCount int
 	var likedID int64
 	var likedSnap struct {
-		AuthorID int64 `json:"author_id"`
+		AuthorID int64  `json:"author_id"`
+		Text     string `json:"text"`
 	}
 	for _, it := range girlNotif.Items {
 		switch it.EventType {
@@ -98,7 +107,7 @@ func TestInteractionsAndNotifications(t *testing.T) {
 		case "post_liked":
 			likedCount++
 			likedID = it.ID
-			// 自赞快照必须带 author_id（= 操作者本人）：客户端据此渲染「自己的动态」而非「你的动态」
+			// 自赞快照：author_id = 操作者本人，text 按「自己的动态」渲染（不能用「你的」）
 			if err := json.Unmarshal([]byte(it.Snapshot), &likedSnap); err != nil {
 				t.Fatalf("parse liked snapshot: %v", err)
 			}
@@ -111,6 +120,9 @@ func TestInteractionsAndNotifications(t *testing.T) {
 	_ = ts.db.QueryRow(`SELECT id FROM users WHERE username = 'boy'`).Scan(&boyID)
 	if likedSnap.AuthorID != boyID {
 		t.Fatalf("post_liked snapshot author_id = %d, want boy %d（自赞归属）", likedSnap.AuthorID, boyID)
+	}
+	if !strings.Contains(likedSnap.Text, "自己的动态") {
+		t.Fatalf("自赞快照 text = %q，应写「自己的动态」", likedSnap.Text)
 	}
 
 	// 点击即删：DELETE 单条 → 列表移除、未读数减 1
@@ -388,5 +400,150 @@ func TestListCommentsLimitAndHasMore(t *testing.T) {
 	// limit=3：回 3 条且提示还有更多
 	if n, more := list("?limit=3"); n != 3 || !more {
 		t.Fatalf("limit=3 = %d,has_more=%v，want 3,true", n, more)
+	}
+}
+
+// notifyRecorder 按 URL 路径记录推送正文：同一次事件要区分落到群渠道还是某个成员的私人渠道。
+type notifyRecorder struct {
+	srv    *httptest.Server
+	mu     sync.Mutex
+	byPath map[string][]string
+}
+
+func newNotifyRecorder(t *testing.T) *notifyRecorder {
+	t.Helper()
+	r := &notifyRecorder{byPath: map[string][]string{}}
+	r.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		b, _ := io.ReadAll(req.Body)
+		var payload map[string]string
+		_ = json.Unmarshal(b, &payload)
+		r.mu.Lock()
+		r.byPath[req.URL.Path] = append(r.byPath[req.URL.Path], payload["content"])
+		r.mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(r.srv.Close)
+	return r
+}
+
+func (r *notifyRecorder) texts(path string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.byPath[path]...)
+}
+
+// waitFor 等某条路径累计到 n 条推送（外部推送是后台 goroutine，只能等不能立刻断言）。
+func (r *notifyRecorder) waitFor(path string, n int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if len(r.texts(path)) >= n {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// 群渠道用第三人称具名、私人渠道用收件人视角，且私人渠道只推给「本次收件人」。
+// 三条语义独立，任何一条错了都会让通知发错人或读起来指代不明。
+func TestInteractionNotifyTwoViews(t *testing.T) {
+	ts, _, girlToken := newPostTestEnv(t)
+	boyToken, code := loginToken(t, ts.URL, "boy", "boy-pw", "app")
+	if code != http.StatusOK {
+		t.Fatalf("boy login: %d", code)
+	}
+	realAdmin, _ := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
+	rec := newNotifyRecorder(t)
+
+	var girlID, boyID int64
+	_ = ts.db.QueryRow(`SELECT id FROM users WHERE username = 'girl'`).Scan(&girlID)
+	_ = ts.db.QueryRow(`SELECT id FROM users WHERE username = 'boy'`).Scan(&boyID)
+
+	for _, c := range []struct {
+		path  string
+		owner *int64
+	}{
+		{"/group", nil},
+		{"/girl", &girlID},
+		{"/boy", &boyID},
+	} {
+		res := doJSON(t, "POST", ts.URL+"/api/v1/admin/webhooks", realAdmin, map[string]any{
+			"name": c.path, "url": rec.srv.URL + c.path,
+			"events": []string{"new_post", "comment"}, "owner_id": c.owner,
+		})
+		res.Body.Close()
+		if res.StatusCode != http.StatusCreated {
+			t.Fatalf("create channel %s: %d", c.path, res.StatusCode)
+		}
+	}
+
+	// boy 发动态 → 收件人 girl
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "晚霞"})
+	var created struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create post: %d", res.StatusCode)
+	}
+	if !rec.waitFor("/group", 1, 3*time.Second) || !rec.waitFor("/girl", 1, 3*time.Second) {
+		t.Fatalf("新动态未推送：群=%v girl=%v", rec.texts("/group"), rec.texts("/girl"))
+	}
+
+	// girl 评论 boy 的动态 → 收件人 boy
+	res = doJSON(t, "POST", fmt.Sprintf("%s/api/v1/posts/%d/comments", ts.URL, created.ID), girlToken, map[string]any{"content": "真好看"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("comment: %d", res.StatusCode)
+	}
+	if !rec.waitFor("/group", 2, 3*time.Second) || !rec.waitFor("/boy", 1, 3*time.Second) {
+		t.Fatalf("评论未推送：群=%v boy=%v", rec.texts("/group"), rec.texts("/boy"))
+	}
+
+	// 环境里 girl 昵称「她」、boy 昵称「他」
+	if got, want := rec.texts("/group")[0], "他 发布了新动态：晚霞"; got != want {
+		t.Errorf("群·新动态 = %q，want %q", got, want)
+	}
+	if got, want := rec.texts("/group")[1], "她 评论了他的动态：真好看"; got != want {
+		t.Errorf("群·评论 = %q，want %q", got, want)
+	}
+	if got, want := rec.texts("/girl")[0], "他 发布了新动态：晚霞"; got != want {
+		t.Errorf("girl 私聊·新动态 = %q，want %q", got, want)
+	}
+	if got, want := rec.texts("/boy")[0], "她 评论了你的动态：真好看"; got != want {
+		t.Errorf("boy 私聊·评论 = %q，want %q", got, want)
+	}
+	// 私人渠道与本次收件人不匹配时必须静默：girl 收不到「自己在对方动态下的评论」
+	if got := rec.texts("/girl"); len(got) != 1 {
+		t.Errorf("girl 私聊只该有新动态 1 条，实得 %v", got)
+	}
+}
+
+// 通知里的称呼昵称优先、回退用户名：同一句话里操作者与内容作者必须同口径，
+// 否则会拼出「xiaowu 评论了小六的动态」这种半截用户名。
+func TestNotificationNamePrefersNickname(t *testing.T) {
+	ts := newTestServer(t)
+	ctx := t.Context()
+	hash, _ := auth.HashPassword("pw")
+	nickID, err := ts.db.CreateUser(ctx, &store.User{Username: "nickuser", PasswordHash: hash, Role: "girl", Nickname: "小名"})
+	if err != nil {
+		t.Fatalf("create nick user: %v", err)
+	}
+	plainID, err := ts.db.CreateUser(ctx, &store.User{Username: "plainuser", PasswordHash: hash, Role: "boy"})
+	if err != nil {
+		t.Fatalf("create plain user: %v", err)
+	}
+
+	if got := displayName(ctx, ts.db, nickID, "兜底"); got != "小名" {
+		t.Errorf("有昵称时应用昵称：%q", got)
+	}
+	if got := displayName(ctx, ts.db, plainID, "兜底"); got != "plainuser" {
+		t.Errorf("无昵称时应回退用户名：%q", got)
+	}
+	if got := displayName(ctx, ts.db, 99999, "兜底"); got != "兜底" {
+		t.Errorf("查不到用户时应回退 fallback：%q", got)
 	}
 }

@@ -117,7 +117,8 @@ func TestWaitDrainsInFlightPush(t *testing.T) {
 	dp := New(db)
 	t.Cleanup(dp.Wait) // 比 db.Close 先注册者后执行：Wait 在关库之前跑
 
-	dp.Dispatch(t.Context(), []int64{1}, "post_created", "post", 1, `{}`, "新动态", "正文")
+	dp.Dispatch(t.Context(), []int64{1}, "post_created", "post", 1, map[string]any{}, "新动态",
+		Texts{Personal: "正文", Group: "正文"})
 	dp.Wait()
 
 	// Wait 返回即「推送已完成」：没有这一条，用例只是「没崩」，测不到排空语义

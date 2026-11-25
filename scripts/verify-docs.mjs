@@ -161,7 +161,13 @@ for (const dir of ['.']) {
   }
 }
 
-const REF_RE = /`([A-Za-z0-9_./-]+\.(?:go|kt|kts|ts|vue|sql|yml|yaml|mjs|json|sh|mod)|Makefile|Dockerfile):(\d+)(?:-(\d+))?`/g;
+// 一处引用可以并列多个行号：`path:12,34-56`。只校验冒号后第一个会被整段漏掉，
+// 守卫表里「指向不存在行」的引用会静默通过。
+const REF_RE = /`([A-Za-z0-9_./-]+\.(?:go|kt|kts|ts|vue|sql|yml|yaml|mjs|json|sh|mod)|Makefile|Dockerfile):(\d+(?:-\d+)?(?:,\d+(?:-\d+)?)*)`/g;
+// 逗号后带空格（`path:1, 5`）会让 REF_RE 一个字符都不匹配——引用整段静默失效，
+// 所以单独兜一层：长得像行号引用却没被 REF_RE 解析到的，直接报格式错误。
+const LOOSE_REF_RE = /`[A-Za-z0-9_./-]+\.(?:go|kt|kts|ts|vue|sql|yml|yaml|mjs|json|sh|mod):[\d\s,-]+`/g;
+
 const resolveRef = (p) => {
   const candidates = [p, `server/internal/${p}`, `server/${p}`, `app/${p}`, `admin/${p}`, `admin/src/${p}`, `server/internal/store/migrations/${p}`];
   for (const c of candidates) if (exists(c)) return c;
@@ -177,7 +183,7 @@ for (const doc of DOCS) {
   lines.forEach((line, i) => {
     for (const m of line.matchAll(REF_RE)) {
       refCount += 1;
-      const [, p, start, end] = m;
+      const [, p, spec] = m;
       const real = resolveRef(p);
       if (!real) {
         fail(`${doc}:${i + 1} 引用文件不存在：${p}`);
@@ -185,8 +191,17 @@ for (const doc of DOCS) {
       }
       const text = fs.readFileSync(path.join(root, real), 'utf8');
       const total = text.split('\n').length - (text.endsWith('\n') ? 1 : 0);
-      const max = Number(end || start);
-      if (max > total) fail(`${doc}:${i + 1} 引用越界：${real}:${start}${end ? `-${end}` : ''}（共 ${total} 行）`);
+      // 每段都要校验：`path:10,182` 里 182 越界同样是坏引用
+      const nums = spec.split(',').flatMap((seg) => seg.split('-').map(Number));
+      const max = Math.max(...nums);
+      if (max > total) fail(`${doc}:${i + 1} 引用越界：${real}:${spec}（共 ${total} 行）`);
+      if (nums.some((n) => n < 1)) fail(`${doc}:${i + 1} 引用行号非法：${real}:${spec}`);
+    }
+    // 兜底：长得像行号引用但 REF_RE 没解析出来的（典型是逗号后带空格），
+    // 这类写法会整段跳过校验，等同于没写引用。
+    const parsed = new Set([...line.matchAll(REF_RE)].map((m) => m[0]));
+    for (const m of line.matchAll(LOOSE_REF_RE)) {
+      if (!parsed.has(m[0])) fail(`${doc}:${i + 1} 引用格式不合法（行号间不要留空格）：${m[0]}`);
     }
   });
 }

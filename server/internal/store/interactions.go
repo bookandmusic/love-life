@@ -153,7 +153,7 @@ func (d *DB) CreateComment(ctx context.Context, postID, authorID int64, content 
 
 func (d *DB) ListComments(ctx context.Context, postID int64, limit, offset int) ([]*Comment, error) {
 	rows, err := d.QueryContext(ctx, `
-		SELECT c.id, c.post_id, c.author_id, c.content, c.created_at, COALESCE(u.nickname, u.username)
+		SELECT c.id, c.post_id, c.author_id, c.content, c.created_at, COALESCE(NULLIF(u.nickname, ''), u.username)
 		FROM comments c JOIN users u ON u.id = c.author_id
 		WHERE c.post_id = ? AND c.deleted_at IS NULL
 		ORDER BY c.id DESC LIMIT ? OFFSET ?`, postID, limit, offset)
@@ -174,7 +174,7 @@ func (d *DB) ListComments(ctx context.Context, postID int64, limit, offset int) 
 
 func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	row := d.QueryRowContext(ctx, `
-		SELECT c.id, c.post_id, c.author_id, c.content, c.created_at, COALESCE(u.nickname, u.username)
+		SELECT c.id, c.post_id, c.author_id, c.content, c.created_at, COALESCE(NULLIF(u.nickname, ''), u.username)
 		FROM comments c JOIN users u ON u.id = c.author_id
 		WHERE c.id = ? AND c.deleted_at IS NULL`, id)
 	var c Comment
@@ -201,7 +201,7 @@ func (d *DB) LikersByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]
 	}
 	ph := placeholders(len(postIDs))
 	rows, err := d.QueryContext(ctx, `
-		SELECT l.post_id, u.id, COALESCE(u.nickname, u.username)
+		SELECT l.post_id, u.id, COALESCE(NULLIF(u.nickname, ''), u.username)
 		FROM likes l JOIN users u ON u.id = l.user_id
 		WHERE l.post_id IN (`+ph+`)
 		ORDER BY l.created_at`, int64Args(postIDs)...)

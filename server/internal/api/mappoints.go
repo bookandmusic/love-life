@@ -84,12 +84,11 @@ func (a *mapPointsAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if created {
 		// 足迹更新：手动/AI 报点通知另一方（同名复用静默；动态带地点自动建点不发，该次发布已有 post_created）
-		snapshot, _ := json.Marshal(map[string]any{
-			"name": req.Name, "latitude": req.Lat, "longitude": req.Lng, "operator": claims.Username,
-		})
 		ids, _ := a.db.ListPartnerIDs(r.Context(), claims.UserID)
-		a.dp.Dispatch(r.Context(), ids, "map_point_created", "map_point", p.ID, string(snapshot),
-			"足迹更新", claims.Username+"把「"+req.Name+"」记到了地图上")
+		operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
+		a.dp.Dispatch(r.Context(), ids, "map_point_created", "map_point", p.ID,
+			map[string]any{"name": req.Name, "latitude": req.Lat, "longitude": req.Lng, "operator": operator},
+			"足迹更新", notify.FootprintAdded(operator, req.Name))
 		writeJSON(w, http.StatusCreated, toMapPointItem(p))
 		return
 	}
@@ -124,9 +123,11 @@ func (a *mapPointsAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 删除对方创建的足迹 → 站内通知创建者（自删静默；内容删除仅站内）
+	operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
-		CreatorID: p.CreatedBy, DeleterID: claims.UserID, DeleterName: claims.Username,
+		CreatorID: p.CreatedBy, DeleterID: claims.UserID, DeleterName: operator,
 		EventType: "map_point_deleted", TargetType: "map_point", TargetID: id,
+		Text:  notify.Deleted(operator, "足迹", p.Name),
 		Extra: map[string]any{"name": p.Name},
 	})
 	w.WriteHeader(http.StatusNoContent)

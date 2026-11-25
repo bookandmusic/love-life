@@ -29,40 +29,40 @@
 
 ## 3. 数据模型
 
-机制：SQLite 单库 `DATA_DIR/love-life.db`（WAL、busy_timeout 5s、外键开启），启动时按文件名顺序执行内嵌迁移并记入 `schema_migrations`；`001_init.sql` 一次建出全量库，不提供增量迁移。`server/internal/store/db.go:36-39`、`server/internal/store/migrate.go:12-58`、`server/internal/store/migrations/001_init.sql:16`
+机制：SQLite 单库 `DATA_DIR/love-life.db`（WAL、busy_timeout 5s、外键开启），启动时按文件名顺序执行内嵌迁移并记入 `schema_migrations`；`001_init.sql` 是全量基线，其余 schema 变更追加同级编号的增量文件，已部署的库启动时就地升级、不重建不丢数据。`server/internal/store/db.go:36-39`、`server/internal/store/migrate.go:12-58`、`server/internal/store/migrations/001_init.sql:17`
 
 > 下表「证据」中的 `001_init.sql` 均指 `server/internal/store/migrations/001_init.sql`。
 
 | 表 | 用途 | 关键约束 / 索引 | 证据（`001_init.sql`） |
 |:--|:--|:--|:--|
-| `users` | 账号（admin / girl / boy） | `username UNIQUE`；`role CHECK`；`ai_style` 默认「文艺」 | `001_init.sql:17-28` |
-| `refresh_tokens` | 会话刷新行 | `token_hash UNIQUE`；`idx_refresh_tokens_user(user_id)`；FK users | `001_init.sql:29-38` |
-| `posts` | 动态 | 软删三件套 `deleted_at`/`deleted_by`/`deleted_by_type`；`idx_posts_created(created_at DESC)`、`idx_posts_author` | `001_init.sql:39-54` |
-| `media` | 媒体（photo/video/audio） | `post_id` FK；`kind CHECK`；尺寸/时长/缩略图；`idx_media_post` | `001_init.sql:55-72` |
-| `likes` | 点赞 | PK `(post_id, user_id)`；双向 FK | `001_init.sql:73-79` |
-| `favorites` | 收藏 | PK `(post_id, user_id)`；双向 FK | `001_init.sql:80-86` |
-| `comments` | 评论 | 软删三件套；`idx_comments_post(post_id, id DESC)` | `001_init.sql:87-100` |
-| `albums` | 相册（只有手动相册） | `cover_media_id`；软删三件套 | `001_init.sql:101-112` |
-| `album_items` | 相册-媒体 | PK `(album_id, media_id)`；`UNIQUE(media_id)` 一文件一相册 | `001_init.sql:113-121` |
-| `map_points` | 地图点位 | `source CHECK(post/manual/ai)`；`idx_map_points_name`、`idx_map_points_deleted` | `001_init.sql:122-139` |
-| `anniversaries` | 纪念日 | `type CHECK(solar/lunar)`；`is_leap`；`remind_days_before` | `001_init.sql:140-155` |
-| `webhook_channels` | 外部通知渠道 | `method CHECK(GET/POST)`；`headers_json`/`body_template`/`events_json`；空间级无用户归属 | `001_init.sql:156-166` |
-| `notifications` | 站内通知 | `idx(recipient_id, created_at DESC)`；无已读位（点击即删） | `001_init.sql:167-180` |
-| `chat_sessions` | AI 会话 | 懒创建；`pinned`；`idx(user_id, pinned DESC, updated_at DESC)` | `001_init.sql:228-237` |
-| `chat_messages` | 对话展示消息 | `role CHECK(user/assistant)`；`parts` 有序 JSON；`turn_id` 整轮回滚；`session_id` 无 FK（0 兜底） | `001_init.sql:181-206` |
-| `chat_context` | 模型上下文（与展示存储分离） | `kind` 四分类 + `pinned`；`seq`；`session_id` FK `ON DELETE CASCADE` | `001_init.sql:207-227` |
-| `chat_result_sets` | 读工具结果集句柄 | `result_id`、`ids_json`、`groups_json`；无 FK（随会话硬删同删） | `001_init.sql:257-268` |
-| `confirm_actions` | 提案卡 | `status CHECK(pending/confirmed/cancelled/expired/failed)`；`expires_at`；`preview_json` | `001_init.sql:238-256` |
-| `audit_logs` | 审计 | `actor_type CHECK(user/ai/pat)`；`params`/`result`/`latency_ms`；`idx(created_at DESC)` | `001_init.sql:269-285` |
-| `personal_access_tokens` | PAT | `tier CHECK(readonly/readwrite)`；`status CHECK`；`token_hash UNIQUE` | `001_init.sql:286-299` |
-| `ai_usage_logs` | 模型调用用量 | `provider_id`（无 FK）；tokens；`status CHECK`；`idx(created_at DESC)` | `001_init.sql:300-313` |
-| `restore_logs` | 回收站恢复日志 | 不可删、永久保留；`idx(created_at DESC)` | `001_init.sql:314-322` |
-| `space` | 情侣空间 | 单行 `CHECK (id = 1)`；`name`/`signature`/`love_start_date` | `001_init.sql:323-330` |
-| `map_sources` | 地图源 | `type CHECK(public/tianditu)`；`enabled=1` 部分唯一索引 | `001_init.sql:331-344` |
-| `model_providers` | 模型供应商 | `api_type` 四值；`api_key_enc` 加密存储；`header_timeout_sec` 可空 | `001_init.sql:345-361` |
-| `provider_models` | 模型条目（两条链） | `kind CHECK(chat/embedding)`；`chain_order` 全局链序；`UNIQUE(provider_id, kind, model_id)`；FK CASCADE | `001_init.sql:362-383` |
-| `output_styles` | 输出风格 | `name UNIQUE`；`builtin`；种子 3 行（文艺/幽默/简洁） | `001_init.sql:384-399` |
-| `app_settings` | 全局单值配置 | `key` 主键；`default_style_id`、`recycle_retention_days` | `001_init.sql:400-404` |
+| `users` | 账号（admin / girl / boy） | `username UNIQUE`；`role CHECK`；`ai_style` 默认「文艺」 | `001_init.sql:18-28` |
+| `refresh_tokens` | 会话刷新行 | `token_hash UNIQUE`；`idx_refresh_tokens_user(user_id)`；FK users | `001_init.sql:30-36` |
+| `posts` | 动态 | 软删三件套 `deleted_at`/`deleted_by`/`deleted_by_type`；`idx_posts_created(created_at DESC)`、`idx_posts_author` | `001_init.sql:40-52` |
+| `media` | 媒体（photo/video/audio） | `post_id` FK；`kind CHECK`；尺寸/时长/缩略图；`idx_media_post` | `001_init.sql:56-71` |
+| `likes` | 点赞 | PK `(post_id, user_id)`；双向 FK | `001_init.sql:74-79` |
+| `favorites` | 收藏 | PK `(post_id, user_id)`；双向 FK | `001_init.sql:81-86` |
+| `comments` | 评论 | 软删三件套；`idx_comments_post(post_id, id DESC)` | `001_init.sql:88-97` |
+| `albums` | 相册（只有手动相册） | `cover_media_id`；软删三件套 | `001_init.sql:102-112` |
+| `album_items` | 相册-媒体 | PK `(album_id, media_id)`；`UNIQUE(media_id)` 一文件一相册 | `001_init.sql:114-120` |
+| `map_points` | 地图点位 | `source CHECK(post/manual/ai)`；`idx_map_points_name`、`idx_map_points_deleted` | `001_init.sql:123-137` |
+| `anniversaries` | 纪念日 | `type CHECK(solar/lunar)`；`is_leap`；`remind_days_before` | `001_init.sql:141-154` |
+| `webhook_channels` | 外部通知渠道 | `method CHECK(GET/POST)`；`headers_json`/`body_template`/`events_json`；`owner_id` 为空 = 空间级（群 / 共享，订阅即推），非空 = 该用户的私人渠道 | `001_init.sql:157-166` + `002_webhook_channel_owner.sql` |
+| `notifications` | 站内通知 | `idx(recipient_id, created_at DESC)`；无已读位（点击即删） | `001_init.sql:168-176` |
+| `chat_sessions` | AI 会话 | 懒创建；`pinned`；`idx(user_id, pinned DESC, updated_at DESC)` | `001_init.sql:229-236` |
+| `chat_messages` | 对话展示消息 | `role CHECK(user/assistant)`；`parts` 有序 JSON；`turn_id` 整轮回滚；`session_id` 无 FK（0 兜底） | `001_init.sql:182-201` |
+| `chat_context` | 模型上下文（与展示存储分离） | `kind` 四分类 + `pinned`；`seq`；`session_id` FK `ON DELETE CASCADE` | `001_init.sql:208-224` |
+| `chat_result_sets` | 读工具结果集句柄 | `result_id`、`ids_json`、`groups_json`；无 FK（随会话硬删同删） | `001_init.sql:258-267` |
+| `confirm_actions` | 提案卡 | `status CHECK(pending/confirmed/cancelled/expired/failed)`；`expires_at`；`preview_json` | `001_init.sql:239-251` |
+| `audit_logs` | 审计 | `actor_type CHECK(user/ai/pat)`；`params`/`result`/`latency_ms`；`idx(created_at DESC)` | `001_init.sql:270-282` |
+| `personal_access_tokens` | PAT | `tier CHECK(readonly/readwrite)`；`status CHECK`；`token_hash UNIQUE` | `001_init.sql:287-297` |
+| `ai_usage_logs` | 模型调用用量 | `provider_id`（无 FK）；tokens；`status CHECK`；`idx(created_at DESC)` | `001_init.sql:301-311` |
+| `restore_logs` | 回收站恢复日志 | 不可删、永久保留；`idx(created_at DESC)` | `001_init.sql:315-320` |
+| `space` | 情侣空间 | 单行 `CHECK (id = 1)`；`name`/`signature`/`love_start_date` | `001_init.sql:324-329` |
+| `map_sources` | 地图源 | `type CHECK(public/tianditu)`；`enabled=1` 部分唯一索引 | `001_init.sql:332-341` |
+| `model_providers` | 模型供应商 | `api_type` 四值；`api_key_enc` 加密存储；`header_timeout_sec` 可空 | `001_init.sql:346-356` |
+| `provider_models` | 模型条目（两条链） | `kind CHECK(chat/embedding)`；`chain_order` 全局链序；`UNIQUE(provider_id, kind, model_id)`；FK CASCADE | `001_init.sql:363-382` |
+| `output_styles` | 输出风格 | `name UNIQUE`；`builtin`；种子 3 行（文艺/幽默/简洁） | `001_init.sql:385-392` |
+| `app_settings` | 全局单值配置 | `key` 主键；`default_style_id`、`recycle_retention_days` | `001_init.sql:401-404` |
 
 ```mermaid
 erDiagram
@@ -124,7 +124,7 @@ erDiagram
 | 事项 | 代码依据 |
 |:--|:--|
 | 自助注册 / 找回密码 | 认证路由只有 login / refresh / logout / me（`server/internal/api/router.go:31-34`）；账号由 admin 建（`router.go:40`）或首启 env bootstrap（`server/cmd/server/main.go:318-341`）；无 register 处理函数 |
-| 多空间 / 多租户 | `space` 表 `CHECK (id = 1)` 单行（`001_init.sql:323-330`），全部业务表无 `space_id` 列 |
+| 多空间 / 多租户 | `space` 表 `CHECK (id = 1)` 单行（`001_init.sql:324-329`），全部业务表无 `space_id` 列 |
 | Cookie 会话 / CSRF 面 | 认证只走 `Authorization` 头，CORS 注释明确「无 Cookie」（`server/internal/api/router.go:292-296`） |
 | 服务端 TLS | 只用 `srv.ListenAndServe`（`server/cmd/server/main.go:174-190`），配置项无证书字段（`server/internal/config/config.go:13-20`） |
 | 后台前端单独部署 | `admin/dist` 不入库、构建时拷入 `go:embed`（`Makefile:121-131`、`server/internal/webui/embed.go:10-15`），请求由 `spaHandler` 兜底（`server/internal/api/router.go:316`） |
@@ -132,9 +132,9 @@ erDiagram
 | 对话保留期 / 自动清理对话 | 安全设置只有 `recycle_retention_days` 一项，无 `chat_retention_days`（`server/internal/store/recycle.go:13-21`、`server/internal/api/security.go:41-44`） |
 | ORM 与迁移框架 | 内嵌 20 行迁移实现 + `schema_migrations`（`server/internal/store/migrate.go:12-58`），直接 `database/sql`（`server/internal/store/db.go:36-50`） |
 | CGO / 外部数据库 | `CGO_ENABLED=0`（`Makefile:131`）；SQLite 用纯 Go 驱动（`server/internal/store/db.go:9`、`server/go.mod:10`），无 Postgres/Redis/队列依赖 |
-| 通知已读位 | `notifications` 无 `is_read`/`read_at`，点击即删（`001_init.sql:14,167-180`；`server/internal/api/router.go:230-231`） |
-| 月度相册实体行 | 按月分组不落行：时间轴每行带 `month_key`，APP 按它分组（无月度详情端点，`001_init.sql:99-100`） |
-| `temperature` 参数 | 模型参数面不含温度：现役模型思考恒开，且与 anthropic 的 temperature 互斥（`001_init.sql:360-361`） |
+| 通知已读位 | `notifications` 无 `is_read`/`read_at`，点击即删（`001_init.sql:15,168-176`；`server/internal/api/router.go:230-231`） |
+| 月度相册实体行 | 按月分组不落行：时间轴每行带 `month_key`，APP 按它分组（无月度详情端点，`001_init.sql:100-101`） |
+| `temperature` 参数 | 模型参数面不含温度：现役模型思考恒开，且与 anthropic 的 temperature 互斥（`001_init.sql:361-362`） |
 | 删除类工具对外 / admin 持令牌 | `AppOnly` 不对任何令牌开放（`server/internal/tools/registry.go:8`、`server/internal/mcp/service.go:6`）；PAT 不给 admin 签发（`server/internal/store/pat.go:15-19`） |
 | HEIC 等格式 | 照片仅 jpg/png/webp（`server/internal/media/media.go:34`），无 HEIC 解码路径 |
 | 后台登录页的注册/重置入口 | 登录只有密码模式；无注册/重置视图（`admin/src/views/_builtin/login/index.vue:26-30`），服务端也无对应路由（`server/internal/api/router.go:31-34`） |

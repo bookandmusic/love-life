@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,16 +127,18 @@ func (a *anniversariesAPI) remove(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 删除对方创建的纪念日 → 站内通知创建者（自删静默；内容删除仅站内）
+	operator := displayName(r.Context(), a.db, claims.UserID, claims.Username)
 	_ = a.db.NotifyContentDeleted(r.Context(), store.DeletedNotice{
-		CreatorID: ann.CreatedBy, DeleterID: claims.UserID, DeleterName: claims.Username,
+		CreatorID: ann.CreatedBy, DeleterID: claims.UserID, DeleterName: operator,
 		EventType: "anniversary_deleted", TargetType: "anniversary", TargetID: id,
+		Text:  notify.Deleted(operator, "纪念日", ann.Name),
 		Extra: map[string]any{"name": ann.Name},
 	})
 	// ：删除一律 204 No Content
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// ---- Webhook 渠道（空间级，admin 后台配置） ----
+// ---- Webhook 渠道（admin 后台配置） ----
 
 type webhooksAPI struct {
 	db *store.DB
@@ -158,9 +161,10 @@ func (a *webhooksAPI) decode(r *http.Request) (*store.WebhookChannel, error) {
 		Headers      map[string]string `json:"headers"`
 		BodyTemplate string            `json:"body_template"`
 		Events       []string          `json:"events"`
+		OwnerID      *int64            `json:"owner_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		return nil, err
+		return nil, errBadWebhook{"请求格式错误"}
 	}
 	if req.Method == "" {
 		req.Method = "POST"
@@ -179,20 +183,49 @@ func (a *webhooksAPI) decode(r *http.Request) (*store.WebhookChannel, error) {
 	if req.Headers == nil {
 		req.Headers = map[string]string{}
 	}
-	return &store.WebhookChannel{
+	ch := &store.WebhookChannel{
 		Name: req.Name, Method: req.Method, URL: req.URL,
 		Headers: req.Headers, BodyTemplate: req.BodyTemplate, Events: req.Events,
-	}, nil
+	}
+	// owner_id 省略 / null = 空间级渠道（群 / 共享）；给出则必须是真实用户，
+	// 否则该个人渠道的归属永远不在收件人里，等于静默丢通知。
+	// 管理员同样拒绝：两个收件人查询都排除 admin，配上去也是永久静默。
+	if req.OwnerID != nil {
+		u, err := a.db.GetUserByID(r.Context(), *req.OwnerID)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, errBadWebhook{"通知对象不存在"}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if u.Role == "admin" {
+			return nil, errBadWebhook{"管理员不在情侣里，不作为通知对象"}
+		}
+		ch.OwnerID = sql.NullInt64{Int64: *req.OwnerID, Valid: true}
+	}
+	return ch, nil
 }
 
 type errBadWebhook struct{ msg string }
 
 func (e errBadWebhook) Error() string { return e.msg }
 
+// writeDecodeErr 渠道入参解码失败的统一回写：业务校验错误是 400 并回原话，
+// 查询用户等内部故障走 500 并记日志——把库故障说成「通知对象不存在」会误导排障。
+// 用 errors.As 而非类型断言：返回点写成指针形态（&errBadWebhook{}）时断言会静默漏掉。
+func writeDecodeErr(w http.ResponseWriter, r *http.Request, err error) {
+	var bad errBadWebhook
+	if errors.As(err, &bad) {
+		writeError(w, http.StatusBadRequest, bad.Error())
+		return
+	}
+	writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
+}
+
 func (a *webhooksAPI) create(w http.ResponseWriter, r *http.Request) {
 	ch, err := a.decode(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeDecodeErr(w, r, err)
 		return
 	}
 	id, err := a.db.CreateWebhookChannel(r.Context(), ch)
@@ -217,10 +250,11 @@ func (a *webhooksAPI) list(w http.ResponseWriter, r *http.Request) {
 		Headers      map[string]string `json:"headers"`
 		BodyTemplate string            `json:"body_template"`
 		Events       []string          `json:"events"`
+		OwnerID      *int64            `json:"owner_id"`
 	}
 	items := make([]item, 0, len(list))
 	for _, c := range list {
-		items = append(items, item{ID: c.ID, Name: c.Name, Method: c.Method, URL: c.URL, Headers: c.Headers, BodyTemplate: c.BodyTemplate, Events: c.Events})
+		items = append(items, item{ID: c.ID, Name: c.Name, Method: c.Method, URL: c.URL, Headers: c.Headers, BodyTemplate: c.BodyTemplate, Events: c.Events, OwnerID: ownerIDPtr(c.OwnerID)})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
@@ -233,7 +267,7 @@ func (a *webhooksAPI) update(w http.ResponseWriter, r *http.Request) {
 	}
 	ch, err := a.decode(r)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeDecodeErr(w, r, err)
 		return
 	}
 	ch.ID = id
@@ -285,4 +319,13 @@ func (a *webhooksAPI) test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ownerIDPtr 渠道归属的 JSON 形态：NULL 输出 null（空间级渠道），否则输出用户 id。
+func ownerIDPtr(v sql.NullInt64) *int64 {
+	if !v.Valid {
+		return nil
+	}
+	id := v.Int64
+	return &id
 }

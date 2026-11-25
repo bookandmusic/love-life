@@ -85,7 +85,7 @@ Go 1.25 + net/http + SQLite（modernc，纯 Go）；单个静态二进制内嵌�
 | GET | `/api/v1/channels` | 统一选路 + 权重（绿联与备用地址都在这一条里下发） |
 | GET | `/api/v1/app/update/latest` · `/download` | 本地已就绪的更新元数据 / APK（登录） |
 
-后台 `/api/v1/admin/*`（仅 admin）：users（列表/新建情侣/改资料/重置密码/头像/生日）、webhooks（含 `/{id}/test`）、map-config（含 `/probe`、`/{id}/enable`）、model-providers（含 `/fetch-models`、`/{id}/key`）、models（chat 与 embedding 两链 + `/order` 排序）、styles + `/styles/default` + system-prompt、security、recycle（列表按 `?limit=&offset=` 分页，默认 50、上限 200，返回 `items`/`total`/`has_more`；单条与批量恢复；恢复日志）、mcp-tools（清单 + 单项启停）、tokens（PAT 列表/签发/吊销）、dashboard（stats/activity/ai-usage/alerts）、audit、uglink/config、appupdate（config/check/download/remove）、backup-addresses、logs。
+后台 `/api/v1/admin/*`（仅 admin）：users（列表/新建情侣/改资料/重置密码/头像/生日）、webhooks（含 `/{id}/test`；`owner_id` 省略 = 空间级，给出则须是现存情侣成员）、map-config（含 `/probe`、`/{id}/enable`）、model-providers（含 `/fetch-models`、`/{id}/key`）、models（chat 与 embedding 两链 + `/order` 排序）、styles + `/styles/default` + system-prompt、security、recycle（列表按 `?limit=&offset=` 分页，默认 50、上限 200，返回 `items`/`total`/`has_more`；单条与批量恢复；恢复日志）、mcp-tools（清单 + 单项启停）、tokens（PAT 列表/签发/吊销）、dashboard（stats/activity/ai-usage/alerts）、audit、uglink/config、appupdate（config/check/download/remove）、backup-addresses、logs。
 
 ### 2.3 横切
 
@@ -226,7 +226,7 @@ SSE 事件（语义事件，无带内信令）：`session`（仅懒创建）、`
 | 包 | 要点 + 关键约束 |
 |:--|:--|
 | `search` | chromem 持久库 + 供应商 embeddings；相关性下限 0.5；未配置不报错而是回落关键词（`search.go:28,71-84,221-262`）；集合按「端点+模型」指纹命名，换模型即删原集合，防混维度越界（`search.go:265-297,328-332`） |
-| `notify` | 站内全量入库 + 外部按事件订阅推送；6 类事件映射（`dispatcher.go:18-26`）；推送异步、总预算 30s、单渠道 10s（`:28-30,45,81-95`）；纪念日按「当日已发」幂等（`:192-224`） |
+| `notify` | 站内全量入库 + 外部按事件订阅推送；6 类事件映射（`dispatcher.go:18-26`）；推送异步、总预算 30s、单渠道 10s（`:29,43,64-93`）；纪念日按「当日已发」幂等（`:220-251`）。通知句子只在 `text.go` 生成两个视角：个人渠道与站内通知用收件人视角（「你的动态」），空间级渠道（群 / 共享）用第三人称具名（「小五的动态」）；渠道 `owner_id` 非空时只在该主人属于本次收件人时推送，故外部推送与站内同口径、不会把该给对方的提醒发给操作者自己（`dispatcher.go:64-93,109-115`、`text.go:52-89`）；站内快照带渲染好的 `text`，客户端不再自行拼文案；快照 `operator` 是署名（昵称优先、回退用户名，与文案同口径），不是登录名 |
 | `geo` | 内嵌地级市多边形，点入多边形判定；按名称排序保证重叠时结果确定（`geo.go:15-61`）；地名候选 20 条内置表，包含匹配取前 8（`places.go:14-56`、`api/geocode.go:13-14`） |
 | `uglink` | 五步握手拿 `ugreen-proxy-token`（`login.go:1-7`）；会话缓存 TTL 1h，到期后下一次 Session 重新登录（`session.go:10-13`）；保存/删除配置时 `Invalidate` 丢弃缓存会话（`api/uglink.go:148,158`）；后台「测试」走 `Refresh` 强制重登（`api/uglink.go:163-170`、`session.go:68-72`）；并发登录串行化防风控，失败退避 10 分钟 / 20 分钟 / 1 小时（`session.go:114-174`） |
 | `appupdate` | 版本号取 tag 并把 `/`、`\` 收成 `_` 后才拼缓存目录（`server/internal/appupdate/appupdate.go:353-364`）；`x*1e6+y*1e3+z` 量纲须与 APK 一致（`server/internal/appupdate/appupdate.go:366-381`）；APK 只由后台手动触发下载并落盘，APP 只下本地已有包（`api/appupdate.go:26-33`）；回源 5 次重试 + `.part` 续传（`server/internal/appupdate/fetch.go:57-192,273`）；代理仅作用于 GitHub 出站 |
@@ -263,6 +263,9 @@ SSE 事件（语义事件，无带内信令）：`session`（仅懒创建）、`
 | 错误响应必须是合法 JSON 且 `Content-Type: application/json`；消息里的引号/换行由 encoder 转义，不能手拼字面量 | `chat/error_response_test.go:12` |
 | 仪表盘「今天/昨天」按本地日历日比较，不能用 `time.Since/24`（23 小时前可能是昨天） | `api/dashboard_test.go:232` |
 | GET 推送渠道的 URL 可能自带 query，追加参数必须解析后合并，不能直接拼 `?` | `notify/dispatcher_test.go:14` |
+| 通知句子只在 `notify/text.go` 生成两个视角：群 / 共享渠道不得出现「你」（群里没有收件人，写「你的」等于对所有人说），私人渠道与站内通知必须用收件人视角；无正文的动态不得留空冒号 | `notify/text_test.go:10`、`notify/dispatcher_route_test.go:182`、`notify/text_test.go:84` |
+| 私人渠道（`owner_id` 非空）只在那位主人属于本次收件人时推送；空间级渠道（`owner_id` 为 NULL）不受收件人影响 | `notify/dispatcher_route_test.go:82,138` |
+| schema 变更加增量文件而非重建库：001 是唯一基线，其余按版本号连续递增，已部署的库就地升级且不丢数据 | `store/migration_test.go:28`（规则）、`store/migration_test.go:325`（就地升级） |
 | CORS 必须放行 `Authorization` / `Content-Type` / `Range` / `X-Upload-*`，暴露 `Content-Disposition`；非 `/api` 路径不加 CORS 头 | `api/cors_test.go:12` |
 | 卡片校验失败不静默降级：回灌错误码让模型重写，连续两次失败才放弃并审计 | `api/chat_card_test.go:56,87` |
 | 回收站对 AI 不可见（语义检索、详情、删除预览） | `api/recycle_ai_hidden_test.go:26,68` |
