@@ -113,6 +113,7 @@ erDiagram
 | `ci.yml` | push `main` / tag `v*`、任意 PR、手动 | Go 1.25 + Node 22 + pnpm 11；`make deps`；`make -k verify` = 文档/注释门禁（`Makefile:71-72`）+ 后端 build+vet+test+gofmt（`Makefile:74-79`）+ admin typecheck/eslint/样式守卫（`Makefile:87-88`） |
 | `app-ci.yml` | push `main`/`feat/app*`、PR，且改动 `app/**`、`server/internal/limits/**`、`Makefile` 或本 workflow；可手动 | JDK 25 + Android SDK；`make verify-app`（资源/编译 + `:app`/`:core:designsystem` 单测 + Lint），并归档 Lint 报告 |
 | `android-build.yml` | push tag `v*` | 先 `make verify-app` 再出包；版本号取 tag；注入 `APP_DEFAULT_BASE`；签名 release APK；`aapt2` 回读产物核对版本；发 GitHub Release |
+| `app-beat-build.yml` | push `beat`、手动 | 开发包：与正式版相同的签名与验证；内置写死的开发地址；版本号取最近正式 tag 前三段 + `run_number`；回读核对版本与内置地址；只传 workflow artifact，不发 Release |
 | `docker-publish.yml` | push tag `v*` | 先 `make -k verify`（独立 job，失败即不发布）；buildx 多架构（linux/amd64、linux/arm64）构建并推送 GHCR；tag 规则 semver + `sha-<短SHA>`，并把 `latest` 指向最新发布（`docker-compose.yml` 用的就是它） |
 
 注：`make verify` 含文档门禁、后端与 admin；APP 由 `app-ci.yml` 单独跑（`Makefile:68`、`.github/workflows/app-ci.yml:1-25`）。

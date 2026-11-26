@@ -36,6 +36,14 @@
 2. **APP 出包必须给 `APP_DEFAULT_BASE`**：仓库内不写死任何服务地址（`app/app/build.gradle.kts:35-38`）。
 3. **版本号唯一源是 git tag `v*`**：CI 从 tag 传入并回读产物核对；版本号换算与构建期门禁在 `app/app/build.gradle.kts:11-24`。
 
+### 2.1 分支与出包
+
+- **`main` 是发布分支**：只有完整功能才合进来。合入后推 `v*` tag 才触发正式发布（`android-build.yml` + `docker-publish.yml`），版本号由 tag 决定。
+- **`beat` 是开发分支**：日常开发在这里。push 即触发 `app-beat-build.yml` 出开发包，产物只进 workflow artifact（保留 30 天），**不发 Release**——正式版的「应用更新」读 `releases/latest`，开发包进 Release 就有被真实用户下载的风险。
+- **开发包版本号**：最近正式 tag 的前三段 + 第 4 段 `run_number`。`versionCode` 只取前三段，与正式版同号；开发包内置开发地址，收不到正式版的更新提示。
+- **开发包内置地址写死在 `app-beat-build.yml` 的 `APP_DEV_BASE`**：开发地址不进仓库变量，因为只有开发容器所在网络能访问它。
+- **改 `app/` 的验证口径不变**：`make verify-app` 照常在本地跑，CI 出包只是把「看一眼效果」这件事挪到云端，不能代替验收。
+
 ## 3. 改动流程
 
 1. **先读后写**：改哪端先读该端文档与相关代码；需求有歧义就问，一次只问一个决策点，给推荐项。

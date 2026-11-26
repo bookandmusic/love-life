@@ -1,0 +1,143 @@
+name: build-android-beat
+
+# 开发分支（beat）的 APK：手动或 push 触发 → 出签名包 → 只上传 workflow artifact。
+#
+# 与 android-build.yml（正式版）的三处差异，改动时不要抹平：
+#   1. 不发 GitHub Release：正式版走 releases/latest，管理后台「应用更新」会看到它。
+#      开发包只进 Actions 的 artifact，不进 Release 列表，管理员不会误下载给真实用户。
+#   2. 内置地址是开发服务地址（写死在本文件），正式版内置 APP_DEFAULT_BASE。
+#      开发包连不到生产服务，测试不会污染真实数据。
+#   3. 版本号在正式版基础上加第 4 段（run_number），前三段与当前正式版一致。
+#      versionCode 只取前三段，因此与正式版同号；开发包内置的是开发地址，
+#      不会收到正式版的更新提示，两者互不干扰。
+on:
+  workflow_dispatch:
+  push:
+    branches: [beat]
+    paths:
+      - 'app/**'
+      - 'server/internal/limits/**'
+      - 'Makefile'
+      - '.github/workflows/app-beat-build.yml'
+
+permissions:
+  contents: read
+
+env:
+  # 开发服务地址：测试时在本机或局域网起后端，用这个地址出包。
+  # 只有能与该地址互通的环境（本机模拟器 / 同网段真机）装得上号，故直接写死而非用仓库变量。
+  APP_DEV_BASE: http://10.10.2.2:8080
+
+jobs:
+  build-beat:
+    runs-on: ubuntu-latest
+    steps:
+      # 默认 checkout 是 depth=1 的单提交克隆，取不到 beat 上的历史，
+      # git describe 拿不到 v* tag，版本号会静默退回 0.0.0。必须显式取全量与 tag。
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: 设置 JDK 25（temurin）
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      # compileSdk 37 的平台包名是 android-37.0（不是 android-37），构建工具用 36.0.0；
+      # 这与本地实测可出包的组合一致，不要凭 compileSdk 数字直推包名。
+      - name: 设置 Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'tools platform-tools platforms;android-37.0 build-tools;36.0.0'
+
+      - name: 设置 Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 跑 APP 验证
+        run: make verify-app
+
+      # 复用与正式版相同的签名密钥：签名不一致的包无法覆盖安装正式版，
+      # 「开发包 → 正式版」的升级路径就测不出来了。
+      - name: 写入签名密钥
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "缺少 ANDROID_KEYSTORE_BASE64 secret，无法签名构建" >&2
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/keystore.jks"
+          {
+            printf 'keyAlias=%s\n' "$KEY_ALIAS"
+            printf 'password=%s\n' "$KEY_PASSWORD"
+            printf 'storeFile=%s\n' "$RUNNER_TEMP/keystore.jks"
+          } > app/keystore.properties
+
+      - name: 构建开发包
+        run: |
+          set -euo pipefail
+          # 版本号 = 最近正式 tag 的前三段 + 第 4 段用 run_number。
+          # 最近 tag 取不到时用 0.0.0，保证仍能出包（开发包不发布，号不完美无妨）。
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          if [ -n "$LAST_TAG" ]; then
+            BASE="${LAST_TAG#v}"
+            # 只取前三段：tag 形如 v1.2.3，若含第 4 段也丢弃
+            BASE="$(echo "$BASE" | cut -d. -f1-3)"
+          else
+            BASE="0.0.0"
+            echo "未找到 v* tag，开发包版本号从 0.0.0 起算" >&2
+          fi
+          DEV_VERSION="${BASE}.${GITHUB_RUN_NUMBER}"
+          echo "开发包版本：${DEV_VERSION}（基线 ${BASE}，run ${GITHUB_RUN_NUMBER}）"
+          # 地址走 APP_DEFAULT_BASE（make 与 gradle 都校验的注入口），APP_DEV_BASE 只是本文件的来源。
+          APP_DEFAULT_BASE="$APP_DEV_BASE" \
+            make build-apk NATIVE_VARIANT=release NATIVE_VERSION="${DEV_VERSION}"
+
+      # 回读产物核对版本号，防止 NATIVE_VERSION 注入没生效就静默出个兜底号的包
+      - name: 校验产物版本
+        run: |
+          set -euo pipefail
+          BADGING=$("${ANDROID_HOME}/build-tools/36.0.0/aapt2" dump badging bin/apk/lovelife-native-release.apk | head -1)
+          echo "$BADGING"
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          BASE="${LAST_TAG#v}"; BASE="$(echo "${BASE:-0.0.0}" | cut -d. -f1-3)"
+          EXPECT="${BASE}.${GITHUB_RUN_NUMBER}"
+          case "$BADGING" in
+            *"versionName='${EXPECT}'"*) echo "开发包版本 = ${EXPECT}" ;;
+            *) echo "产物版本与期望 ${EXPECT} 不一致：NATIVE_VERSION 注入没生效" >&2; exit 1 ;;
+          esac
+
+      - name: 校验内置地址
+        run: |
+          set -euo pipefail
+          # 开发包必须内置开发地址；内置成生产地址会把测试写进真实数据。
+          # dex 是二进制，用 grep -a 按文本扫（不依赖 dex 解析工具）。
+          if ! unzip -p bin/apk/lovelife-native-release.apk 'classes*.dex' | grep -a -F -q "$APP_DEV_BASE"; then
+            echo "APK 内未找到开发地址 $APP_DEV_BASE" >&2
+            exit 1
+          fi
+          echo "内置地址校验通过：$APP_DEV_BASE"
+
+      - name: 收集产物
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts
+          LAST_TAG="$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+          BASE="${LAST_TAG#v}"; BASE="$(echo "${BASE:-0.0.0}" | cut -d. -f1-3)"
+          cp bin/apk/lovelife-native-release.apk \
+            "artifacts/love-life-${BASE}.${GITHUB_RUN_NUMBER}-app-beat.apk"
+          ls -la artifacts
+
+      - name: 上传 artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: love-life-android-beat-${{ github.run_number }}
+          path: artifacts/*
+          # 开发包 30 天足够：超过这个时间的构建通常已被后续提交取代
+          retention-days: 30
