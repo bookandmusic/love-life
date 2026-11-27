@@ -66,7 +66,7 @@ func (a *dashboardAPI) stats(w http.ResponseWriter, r *http.Request) {
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
-	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media WHERE kind = 'photo' AND deleted_at IS NULL`).Scan(&photos); err != nil {
+	if err := a.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM media WHERE kind = 'photo' AND owner_type = 'post' AND deleted_at IS NULL`).Scan(&photos); err != nil {
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
@@ -125,7 +125,7 @@ func (a *dashboardAPI) activity(w http.ResponseWriter, r *http.Request) {
 			UNION ALL
 			SELECT 'message-square', '发布了一条新动态', created_at, id FROM posts WHERE deleted_at IS NULL
 			UNION ALL
-			SELECT 'image', '上传了照片', created_at, id FROM media WHERE kind = 'photo' AND deleted_at IS NULL
+			SELECT 'image', '上传了照片', created_at, id FROM media WHERE kind = 'photo' AND owner_type = 'post' AND deleted_at IS NULL
 			UNION ALL
 			SELECT 'message-circle', '发表了评论', c.created_at, c.id
 				FROM comments c JOIN posts p ON p.id = c.post_id

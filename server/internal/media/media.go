@@ -478,6 +478,14 @@ func (p *Pipeline) moveToFinal(src, root string) (string, error) {
 // Delete 物理删除主文件与缩略图（回收站永久清除时调用）。
 // Delete 删除数据目录内的相对路径；越界路径（脏数据或构造路径）直接跳过，避免误删数据目录外的文件。
 // 主文件与缩略图由调用方一并传入。
+// DiscardPromoted 回滚一批已转正但最终没落库的媒体（发布/评论失败时清理磁盘）。
+// 与 Delete 的区别只是入参形态：直接吃 Promote 的返回值，调用方不必自己拆字段。
+func (p *Pipeline) DiscardPromoted(promoted []*Promoted) {
+	for _, pr := range promoted {
+		p.Delete(pr.FilePath, pr.ThumbPath)
+	}
+}
+
 func (p *Pipeline) Delete(relPaths ...string) {
 	for _, rel := range relPaths {
 		if rel == "" {

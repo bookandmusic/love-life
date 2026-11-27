@@ -96,7 +96,7 @@ func TestRecycleListAndRestore(t *testing.T) {
 	if err := ts.db.QueryRow(`INSERT INTO posts (author_id, content) VALUES (1, '周末一起去海边散步看日落') RETURNING id`).Scan(&postID); err != nil {
 		t.Fatalf("seed post: %v", err)
 	}
-	if _, err := ts.db.Exec(`INSERT INTO media (post_id, kind, file_path) VALUES (?, 'photo', 'media/2026/IMG_001.jpg')`, postID); err != nil {
+	if _, err := ts.db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', ?, 'photo', 'media/2026/IMG_001.jpg')`, postID); err != nil {
 		t.Fatalf("seed media: %v", err)
 	}
 	// 用户软删除（user 归属）→ 动态 + 其媒体均进回收站
@@ -181,7 +181,7 @@ func TestRecycleListAndRestore(t *testing.T) {
 	// 恢复动态必须连带恢复其级联删除的媒体：否则动态「复活」但照片不可见。
 	// （SoftDeletePost 会把媒体一并软删；此处锁住该不变式，防止回归。）
 	var mediaStillDeleted int
-	if err := ts.db.QueryRow(`SELECT COUNT(*) FROM media WHERE post_id = ? AND deleted_at IS NOT NULL`, postID).Scan(&mediaStillDeleted); err != nil {
+	if err := ts.db.QueryRow(`SELECT COUNT(*) FROM media WHERE owner_type = 'post' AND owner_id = ? AND deleted_at IS NOT NULL`, postID).Scan(&mediaStillDeleted); err != nil {
 		t.Fatal(err)
 	}
 	if mediaStillDeleted != 0 {
@@ -190,7 +190,7 @@ func TestRecycleListAndRestore(t *testing.T) {
 
 	// 拿照片条目的合成 id 调恢复 → 404（照片不可单独恢复；校验前置，不做半恢复）
 	var mediaID int64
-	if err := ts.db.QueryRow(`SELECT id FROM media WHERE post_id = ? LIMIT 1`, postID).Scan(&mediaID); err != nil {
+	if err := ts.db.QueryRow(`SELECT id FROM media WHERE owner_type = 'post' AND owner_id = ? LIMIT 1`, postID).Scan(&mediaID); err != nil {
 		t.Fatal(err)
 	}
 	photoEnc := int64(3)*1_000_000_000 + mediaID // 照片在 recycleSources 的表序号 2（0 基）→ (3)*stride

@@ -174,11 +174,16 @@ fun MediaViewer(
             }
 
             // ===== 底部 chrome：一行类型提示（加载/失败态也常驻）=====
+            // 只提当前真正可用的手势：onLongPress 为 null 时长按不挂任何动作（如评论图），
+            // 写「长按可保存」会指向一个不存在的交互。
             val hint = buildString {
+                if (onLongPress != null) {
+                    append("长按可保存或删除 · ")
+                }
                 append(
                     when (current.kind) {
-                        "video", "audio" -> "长按可保存或删除 · 点击播放"
-                        else -> "长按可保存或删除 · 双击缩放"
+                        "video", "audio" -> "点击播放"
+                        else -> "双击缩放"
                     }
                 )
                 if (media.size > 1) append(" · 左右滑动切换")

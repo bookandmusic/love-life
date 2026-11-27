@@ -38,10 +38,10 @@
 | `users` | 账号（admin / girl / boy） | `username UNIQUE`；`role CHECK`；`ai_style` 默认「文艺」 | `001_init.sql:18-28` |
 | `refresh_tokens` | 会话刷新行 | `token_hash UNIQUE`；`idx_refresh_tokens_user(user_id)`；FK users | `001_init.sql:30-36` |
 | `posts` | 动态 | 软删三件套 `deleted_at`/`deleted_by`/`deleted_by_type`；`idx_posts_created(created_at DESC)`、`idx_posts_author` | `001_init.sql:40-52` |
-| `media` | 媒体（photo/video/audio） | `post_id` FK；`kind CHECK`；尺寸/时长/缩略图；`idx_media_post` | `001_init.sql:56-71` |
+| `media` | 媒体（photo/video/audio） | 归属 `(owner_type, owner_id)` 多态两列（`post` / `comment`），不随实体数量加列、`owner_type` 无 CHECK（加实体零迁移）；`kind CHECK`；`cascade_deleted` 区分级联删除与单独删除；尺寸/时长/缩略图；`idx_media_owner` | `003_media_owner_type.sql` |
 | `likes` | 点赞 | PK `(post_id, user_id)`；双向 FK | `001_init.sql:74-79` |
 | `favorites` | 收藏 | PK `(post_id, user_id)`；双向 FK | `001_init.sql:81-86` |
-| `comments` | 评论 | 软删三件套；`idx_comments_post(post_id, id DESC)` | `001_init.sql:88-97` |
+| `comments` | 评论 | 软删三件套；`idx_comments_post(post_id, id DESC)`；可附最多 9 张图片（挂在 `media` 上，`owner_type='comment'`） | `001_init.sql:88-97` |
 | `albums` | 相册（只有手动相册） | `cover_media_id`；软删三件套 | `001_init.sql:102-112` |
 | `album_items` | 相册-媒体 | PK `(album_id, media_id)`；`UNIQUE(media_id)` 一文件一相册 | `001_init.sql:114-120` |
 | `map_points` | 地图点位 | `source CHECK(post/manual/ai)`；`idx_map_points_name`、`idx_map_points_deleted` | `001_init.sql:123-137` |
@@ -68,7 +68,8 @@
 erDiagram
   users ||--o{ refresh_tokens : "user_id"
   users ||--o{ posts : "author_id"
-  posts ||--o{ media : "post_id"
+  posts ||--o{ media : "owner_id (owner_type=post)"
+  comments ||--o{ media : "owner_id (owner_type=comment)"
   posts ||--o{ likes : "post_id"
   posts ||--o{ favorites : "post_id"
   posts ||--o{ comments : "post_id"

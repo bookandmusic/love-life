@@ -89,6 +89,8 @@ data class CreatedId(val id: Long)
 @Serializable
 data class MediaDeleteResponse(
     @SerialName("post_deleted") val postDeleted: Boolean = false,
+    // 评论图：删掉最后一张且评论无正文时，评论本身也被软删
+    @SerialName("comment_deleted") val commentDeleted: Boolean = false,
 )
 
 /** 单条媒体（kind: photo/video/audio；地址已换签拼 base，可直接加载/播放）。 */
@@ -179,9 +181,13 @@ object PostsRepository {
         ApiClient.api<Unit>("/api/v1/posts/$postId", "DELETE")
     }
 
-    /** 单独删除一条媒体（仅作者）；返回 true = 所属动态也因无媒体且无正文而一并被删 */
-    suspend fun deleteMedia(mediaId: Long): Boolean =
-        ApiClient.api<MediaDeleteResponse>("/api/v1/media/$mediaId", "DELETE").postDeleted
+    /**
+     * 单独删除一条媒体（仅作者）。返回值：
+     * - postDeleted = 所属动态因无媒体且无正文而一并被删
+     * - commentDeleted = 所属评论因无图且无正文而一并被删（评论图场景）
+     */
+    suspend fun deleteMedia(mediaId: Long): MediaDeleteResponse =
+        ApiClient.api("/api/v1/media/$mediaId", "DELETE")
 
     /**
      * 媒体签名 URL 批量重签（签名 15 分钟 TTL）：播放/另存前对临期地址换新。

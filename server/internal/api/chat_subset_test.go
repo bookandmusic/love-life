@@ -297,7 +297,7 @@ func TestChatQuotedSubsetRejectsWrongKind(t *testing.T) {
 		_ = json.NewDecoder(res.Body).Decode(&pc)
 		res.Body.Close()
 		var id int64
-		if err := ts.db.QueryRow(`SELECT id FROM media WHERE post_id=?`, pc.ID).Scan(&id); err != nil {
+		if err := ts.db.QueryRow(`SELECT id FROM media WHERE owner_type = 'post' AND owner_id = ?`, pc.ID).Scan(&id); err != nil {
 			t.Fatal(err)
 		}
 		mediaIDs = append(mediaIDs, id)

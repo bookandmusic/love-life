@@ -275,19 +275,24 @@ func (a *postsAPI) buildPostResponse(p *store.Post, medias []*store.MediaRow, in
 		CommentCount: inter.CommentCount,
 	}
 	for _, m := range medias {
-		item := mediaResponse{
-			ID: m.ID, Kind: m.Kind, Width: m.Width, Height: m.Height,
-			URL:      a.mp.SignedURL(m.ID, "raw"),
-			ThumbURL: a.mp.SignedURL(m.ID, "thumb"),
-			AuthorID: m.AuthorID,
-		}
-		if m.Duration.Valid {
-			d := m.Duration.Float64
-			item.Duration = &d
-		}
-		resp.Media = append(resp.Media, item)
+		resp.Media = append(resp.Media, buildMediaResponse(a.mp, m))
 	}
 	return resp
+}
+
+// buildMediaResponse 单条媒体的对外形态（动态九宫格与评论图共用一套结构与签名）。
+func buildMediaResponse(mp *media.Pipeline, m *store.MediaRow) mediaResponse {
+	item := mediaResponse{
+		ID: m.ID, Kind: m.Kind, Width: m.Width, Height: m.Height,
+		URL:      mp.SignedURL(m.ID, "raw"),
+		ThumbURL: mp.SignedURL(m.ID, "thumb"),
+		AuthorID: m.AuthorID,
+	}
+	if m.Duration.Valid {
+		d := m.Duration.Float64
+		item.Duration = &d
+	}
+	return item
 }
 
 func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
@@ -348,7 +353,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 	for _, token := range req.MediaTokens {
 		p, err := a.mp.Promote(token, claims.UserID)
 		if err != nil {
-			a.cleanupPromoted(promoted)
+			a.mp.DiscardPromoted(promoted)
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -367,7 +372,7 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 		LocationName: nullStr(locName), PointID: pointID,
 	}, medias)
 	if err != nil {
-		a.cleanupPromoted(promoted)
+		a.mp.DiscardPromoted(promoted)
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
@@ -380,12 +385,6 @@ func (a *postsAPI) createPost(w http.ResponseWriter, r *http.Request) {
 		"新动态", notify.Posted(operator, req.Content))
 
 	writeJSON(w, http.StatusCreated, map[string]any{"id": postID})
-}
-
-func (a *postsAPI) cleanupPromoted(promoted []*media.Promoted) {
-	for _, p := range promoted {
-		a.mp.Delete(p.FilePath, p.ThumbPath)
-	}
 }
 
 func (a *postsAPI) listPosts(w http.ResponseWriter, r *http.Request) {
@@ -769,12 +768,13 @@ func (a *postsAPI) deleteMedia(w http.ResponseWriter, r *http.Request) {
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
-	// 有明确用户属性的数据只能删自己的：仅动态作者可删其媒体
+	// 有明确用户属性的数据只能删自己的：动态图=动态作者，评论图=评论作者
+	// （GetMedia 已按 owner_type 取到正确作者）。
 	if m.AuthorID != claims.UserID {
-		writeError(w, http.StatusForbidden, "只能删除自己动态的媒体")
+		writeError(w, http.StatusForbidden, "只能删除自己发布的内容里的媒体")
 		return
 	}
-	_, postGone, err := a.db.SoftDeleteMedia(r.Context(), id, store.ActorTypeUser, claims.UserID)
+	_, postGone, commentGone, err := a.db.SoftDeleteMedia(r.Context(), id, store.ActorTypeUser, claims.UserID)
 	if errors.Is(err, store.ErrNotFound) {
 		writeError(w, http.StatusNotFound, "媒体不存在")
 		return
@@ -783,5 +783,7 @@ func (a *postsAPI) deleteMedia(w http.ResponseWriter, r *http.Request) {
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"post_deleted": postGone})
+	// comment_deleted：删掉评论最后一张图且评论无正文时，评论本身也进了回收站，
+	// 客户端据此把整条评论从列表移除（与 post_deleted 同口径）。
+	writeJSON(w, http.StatusOK, map[string]any{"post_deleted": postGone, "comment_deleted": commentGone})
 }

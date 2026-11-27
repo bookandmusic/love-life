@@ -16,6 +16,7 @@ var mediaJSON []byte
 
 type mediaLimits struct {
 	MaxMediaPerPost        int   `json:"maxMediaPerPost"`
+	MaxMediaPerComment     int   `json:"maxMediaPerComment"`
 	MaxMediaPerChatMessage int   `json:"maxMediaPerChatMessage"`
 	UploadChunkBytes       int64 `json:"uploadChunkBytes"`
 }
@@ -25,6 +26,9 @@ var media = mustParseMedia(mediaJSON)
 // MaxMediaPerPost 单条动态的媒体文件数上限（单条最多 9 个）。
 // 用 var 而非 const：值来自运行时解析的共享 JSON（改上限只改 media.json，不动代码）。
 var MaxMediaPerPost = media.MaxMediaPerPost
+
+// MaxMediaPerComment 单条评论的图片数上限（与发动态对齐）。
+var MaxMediaPerComment = media.MaxMediaPerComment
 
 // MaxMediaPerChatMessage 单条聊天消息的媒体引用上限（与发动态上限对齐）。
 var MaxMediaPerChatMessage = media.MaxMediaPerChatMessage
@@ -39,7 +43,7 @@ func mustParseMedia(b []byte) mediaLimits {
 	if err := json.Unmarshal(b, &m); err != nil {
 		panic("limits: 解析 media.json 失败: " + err.Error())
 	}
-	if m.MaxMediaPerPost <= 0 || m.MaxMediaPerChatMessage <= 0 || m.UploadChunkBytes <= 0 {
+	if m.MaxMediaPerPost <= 0 || m.MaxMediaPerComment <= 0 || m.MaxMediaPerChatMessage <= 0 || m.UploadChunkBytes <= 0 {
 		panic("limits: media.json 的上限必须为正整数")
 	}
 	return m

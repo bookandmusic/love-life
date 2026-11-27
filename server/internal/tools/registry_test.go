@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 	"time"
@@ -708,7 +712,7 @@ func seedPostAt(t *testing.T, db *store.DB, content, createdAt string) int64 {
 
 func seedMedia(t *testing.T, db *store.DB, postID int64, kind, takenAt string) int64 {
 	t.Helper()
-	res, err := db.Exec("INSERT INTO media (post_id, kind, file_path, thumb_path, taken_at) VALUES (?, ?, ?, ?, ?)",
+	res, err := db.Exec("INSERT INTO media (owner_type, owner_id, kind, file_path, thumb_path, taken_at) VALUES ('post', ?, ?, ?, ?, ?)",
 		postID, kind, "media/x."+kind, "media/x.thumb", takenAt)
 	if err != nil {
 		t.Fatalf("seed media: %v", err)
@@ -845,5 +849,132 @@ func TestRegistryDocCommentMatchesRegistry(t *testing.T) {
 	wantPkg := fmt.Sprintf("%d 个工具（读 %d / 提案 %d / 删除 %d）", total, reads, proposals, deletes)
 	if !strings.Contains(f.Doc.Text(), wantPkg) {
 		t.Fatalf("包注释与实际注册不符\n注释：%s\n应为：%s", strings.TrimSpace(f.Doc.Text()), wantPkg)
+	}
+}
+
+// genPNG 生成一张最小合法 PNG（Finalize 会真解码并生成缩略图，不能塞垃圾字节）。
+func genPNG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for x := 0; x < 8; x++ {
+		for y := 0; y < 8; y++ {
+			img.Set(x, y, color.RGBA{R: 200, G: 120, B: 160, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encode png: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// seedMediaToken 上传一张图到临时区，返回 media_token（评论/动态执行阶段要用它转正）。
+func seedMediaToken(t *testing.T, d *Deps, userID int64) string {
+	t.Helper()
+	up, err := d.MP.SaveTemp(bytes.NewReader(genPNG(t)), "c.png", userID)
+	if err != nil {
+		t.Fatalf("save temp: %v", err)
+	}
+	return up.Token
+}
+
+// propose_comment 带图：提案预览显示张数、执行时 token 转正落库、非图片被拒。
+func TestProposeCommentWithMedia(t *testing.T) {
+	db := newToolDB(t)
+	d := &Deps{DB: db, DP: testNotify(t, db), MP: newTestPipeline(t)}
+	ctx := t.Context()
+	pID := seedPostAt(t, db, "被评论的动态", "2026-08-10 10:00:00")
+
+	// 提案：卡阶段只有引用元数据，没有 token
+	out := propose(t, "propose_comment", d, 1, map[string]any{
+		"post_id": float64(pID),
+		"media_refs": []any{
+			map[string]any{"name": "a.png", "type": "image/png", "size": float64(1024)},
+			map[string]any{"name": "b.png", "type": "image/png", "size": float64(1024)},
+		},
+	})
+	body, _ := json.Marshal(out.Proposal.Preview.Body)
+	if !strings.Contains(string(body), "attachments") {
+		t.Fatalf("预览应带附件引用：%s", body)
+	}
+	if len(out.Proposal.Attachments) != 2 {
+		t.Fatalf("提案附件数 = %d, want 2", len(out.Proposal.Attachments))
+	}
+	if !strings.Contains(out.Proposal.Summary, "2") {
+		t.Errorf("摘要应体现张数：%q", out.Proposal.Summary)
+	}
+
+	// 执行：resolve 时注入 media_tokens
+	tok1 := seedMediaToken(t, d, 1)
+	tok2 := seedMediaToken(t, d, 1)
+	execArgs := out.Proposal.Params
+	execArgs["media_tokens"] = []any{tok1, tok2}
+	res := exec(t, "propose_comment", d, 1, execArgs)
+	if res.Record == nil || res.Record.Kind != "comment" {
+		t.Fatalf("record = %+v", res.Record)
+	}
+	byComment, err := db.ListMediaByCommentIDs(ctx, []int64{res.Record.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(byComment[res.Record.ID]) != 2 {
+		t.Fatalf("评论应落 2 张图，实得 %d", len(byComment[res.Record.ID]))
+	}
+	for _, m := range byComment[res.Record.ID] {
+		if m.OwnerType != store.MediaOwnerComment || m.OwnerID != res.Record.ID {
+			t.Errorf("归属应为 comment/%d，实得 %s/%d", res.Record.ID, m.OwnerType, m.OwnerID)
+		}
+	}
+
+	// 纯图片提案（content 为空）合法
+	out = propose(t, "propose_comment", d, 1, map[string]any{
+		"post_id":    float64(pID),
+		"media_refs": []any{map[string]any{"name": "c.png", "type": "image/png", "size": float64(1024)}},
+	})
+	if out.Proposal == nil {
+		t.Fatal("纯图片评论应能出卡")
+	}
+
+	// 文字与图片都没有 → 拒绝
+	if _, err := findTool(t, "propose_comment").Invoke(ctx, d, 1,
+		map[string]any{"post_id": float64(pID)}, ModePropose); err == nil {
+		t.Fatal("文字与图片都空应报错")
+	}
+
+	// 超 9 张 → 拒绝（与 REST 评论接口同源的上限）
+	refs := make([]any, 10)
+	for i := range refs {
+		refs[i] = map[string]any{"name": "x.png", "type": "image/png", "size": float64(1024)}
+	}
+	if _, err := findTool(t, "propose_comment").Invoke(ctx, d, 1,
+		map[string]any{"post_id": float64(pID), "media_refs": refs}, ModePropose); err == nil {
+		t.Fatal("超过单条评论图片上限应报错")
+	}
+}
+
+// 评论只收图片：AI 路径传入视频 token 时整条拒绝，且已转正的文件要清理掉。
+func TestProposeCommentRejectsNonPhoto(t *testing.T) {
+	db := newToolDB(t)
+	mp := newTestPipeline(t)
+	d := &Deps{DB: db, DP: testNotify(t, db), MP: mp}
+	pID := seedPostAt(t, db, "动态", "2026-08-10 10:00:00")
+
+	// 先造一个视频临时件（扩展名决定 kind）
+	up, err := mp.SaveTemp(bytes.NewReader([]byte("fake-mp4-bytes")), "v.mp4", 1)
+	if err != nil {
+		t.Fatalf("save temp video: %v", err)
+	}
+	out := propose(t, "propose_comment", d, 1, map[string]any{"post_id": float64(pID), "content": "看这个"})
+	execArgs := out.Proposal.Params
+	execArgs["media_tokens"] = []any{up.Token}
+
+	if _, err := findTool(t, "propose_comment").Invoke(t.Context(), d, 1, execArgs, ModeExecute); err == nil {
+		t.Fatal("评论不接受视频，应报错")
+	}
+	// 评论未落库
+	var n int
+	_ = db.QueryRow(`SELECT COUNT(*) FROM comments`).Scan(&n)
+	if n != 0 {
+		t.Fatalf("拒绝后不应留下评论，实得 %d 条", n)
 	}
 }

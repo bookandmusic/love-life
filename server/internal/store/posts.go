@@ -23,9 +23,19 @@ type Post struct {
 	AuthorAvatar   sql.NullString // 联表：users.avatar_path（相对数据目录，空=无头像）
 }
 
+// 媒体归属实体的类型（media.owner_type）。新增可挂图的实体时在这里加一个取值，
+// 并同步 migrations 里 media 表的 CHECK 约束（SQLite 改 CHECK 同样要重建表）。
+const (
+	MediaOwnerPost    = "post"
+	MediaOwnerComment = "comment"
+)
+
 type MediaRow struct {
-	ID        int64
-	PostID    int64
+	ID int64
+	// OwnerType / OwnerID 媒体归属：'post' → 动态自己的图，'comment' → 评论里附的图。
+	// 两列覆盖任意实体，不必随实体数量加列。
+	OwnerType string
+	OwnerID   int64
 	Kind      string
 	FilePath  string
 	ThumbPath sql.NullString
@@ -35,7 +45,10 @@ type MediaRow struct {
 	Duration  sql.NullFloat64
 	TakenAt   sql.NullString
 	CreatedAt string
-	AuthorID  int64 // 经 JOIN posts 取（媒体无独立作者，口径=动态作者）
+	// PostID 媒体经归属链指向的动态（评论图 → 所属评论 → 动态），供「按动态聚合」的读路径用。
+	// 不是表列，由查询 JOIN 算出。
+	PostID   int64
+	AuthorID int64 // 归属实体的作者：动态图取动态作者，评论图取评论作者
 }
 
 // SortTime 时间轴排序键：taken_at 优先，回退 created_at。
@@ -49,6 +62,29 @@ func (m *MediaRow) SortTime() string {
 // NullStr 构造可空字符串字段（供 API 与 AI 工具层使用）。
 func NullStr(s string) sql.NullString {
 	return sql.NullString{String: s, Valid: s != ""}
+}
+
+// mediaSelect 媒体行的统一 SELECT 片段（列序须与 scanMediaRow 一致）。
+//
+// 归属是 (owner_type, owner_id) 两列；无论归属动态还是评论，都要能解出
+// 「最终所属动态」与「作者」，供按动态聚合的读路径与权限判断使用：
+//   - post   → 动态就是自己，作者是动态作者
+//   - comment → 经 comments.post_id 上溯到动态，作者是评论作者
+//
+// p 一律指向**最终所属动态**（评论图取评论的动态），所以 p.deleted_at 对两类媒体
+// 都表示「所属动态是否已删」——时间轴的「所属实体未删」判断因此可以统一写。
+const mediaSelect = `SELECT m.id, m.owner_type, m.owner_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
+		m.duration, m.taken_at, m.created_at,
+		COALESCE(c.post_id, m.owner_id) AS post_id,
+		COALESCE(c.author_id, p.author_id) AS author_id
+	FROM media m
+	LEFT JOIN comments c ON m.owner_type = 'comment' AND c.id = m.owner_id
+	LEFT JOIN posts p ON p.id = CASE m.owner_type WHEN 'comment' THEN c.post_id ELSE m.owner_id END`
+
+// mediaOwnedBy 拼「归属某类实体」的媒体条件。
+// 不带表别名：`FROM media m` 的查询里 media 也可用裸列名，而 UPDATE/DELETE 语境没有别名。
+func mediaOwnedBy(ownerType, ownerExpr string) string {
+	return `owner_type = '` + ownerType + `' AND owner_id = ` + ownerExpr
 }
 
 // indexPost / unindexPost 转发索引钩子。索引是派生数据：
@@ -90,9 +126,7 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 		return 0, err
 	}
 	for _, m := range medias {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO media (post_id, kind, file_path, thumb_path, width, height, size, duration, taken_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			postID, m.Kind, m.FilePath, m.ThumbPath, m.Width, m.Height, m.Size, m.Duration, m.TakenAt); err != nil {
+		if err := insertMediaTx(ctx, tx, MediaOwnerPost, postID, m); err != nil {
 			return 0, err
 		}
 	}
@@ -101,6 +135,16 @@ func (d *DB) CreatePostWithMedia(ctx context.Context, p *Post, medias []MediaRow
 	}
 	d.indexPost(ctx, postID, p.Content, p.LocationName.String)
 	return postID, nil
+}
+
+// insertMediaTx 写一行媒体并把归属绑到 (ownerType, ownerID)。
+// 动态图与评论图走同一条写入路径，只是归属参数不同。
+func insertMediaTx(ctx context.Context, tx *sql.Tx, ownerType string, ownerID int64, m MediaRow) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO media (owner_type, owner_id, kind, file_path, thumb_path, width, height, size, duration, taken_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ownerType, ownerID, m.Kind, m.FilePath, m.ThumbPath, m.Width, m.Height, m.Size, m.Duration, m.TakenAt)
+	return err
 }
 
 const postColumns = `p.id, p.author_id, p.content, p.mood, p.location_name, p.point_id, p.created_at, p.deleted_at, COALESCE(NULLIF(u.nickname, ''), u.username), u.avatar_path`
@@ -135,7 +179,10 @@ func (d *DB) ListPostsSampled(ctx context.Context, page, pageSize int, memories,
 			` AND strftime('%Y', p.created_at, 'localtime') < strftime('%Y', 'now', 'localtime')`
 	}
 	if hasMedia != nil {
-		sub := `EXISTS (SELECT 1 FROM media m WHERE m.post_id = p.id AND m.deleted_at IS NULL)`
+		// 只算动态自己的图：评论里的图不属于「这条动态带媒体」
+		sub := `EXISTS (SELECT 1 FROM media m WHERE ` + mediaOwnedBy(MediaOwnerPost, "p.id") + ` AND m.deleted_at IS NULL)`
+		// mediaOwnedBy 不带别名，这里外层有 p，须避免 owner_id 落到 p 上——p 没有 owner_id 列，故无歧义；
+		// 但 deleted_at 两表都有，故上面显式写 m.deleted_at。
 		if !*hasMedia {
 			sub = `NOT ` + sub
 		}
@@ -221,20 +268,17 @@ func (d *DB) SoftDeletePost(ctx context.Context, id int64, actorType string, act
 	return d.softDeleteKindTx(ctx, "post", id, actorType, actorID)
 }
 
+// GetMediaByPostIDs 动态**自己的**媒体（九宫格）；评论里附的图不在此列。
 func (d *DB) GetMediaByPostIDs(ctx context.Context, postIDs []int64) (map[int64][]*MediaRow, error) {
 	out := map[int64][]*MediaRow{}
 	if len(postIDs) == 0 {
 		return out, nil
 	}
-	placeholders := strings.Repeat("?,", len(postIDs))
-	placeholders = placeholders[:len(placeholders)-1]
-	args := make([]any, len(postIDs))
-	for i, id := range postIDs {
-		args[i] = id
-	}
-	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
-			m.duration, m.taken_at, m.created_at, p.author_id
-		FROM media m JOIN posts p ON p.id = m.post_id WHERE m.post_id IN (`+placeholders+`) AND m.deleted_at IS NULL ORDER BY m.id`, args...)
+	ops := placeholders(len(postIDs))
+	args := int64Args(postIDs)
+	rows, err := d.QueryContext(ctx, mediaSelect+`
+		WHERE `+mediaOwnedBy(MediaOwnerPost, "m.owner_id")+
+		` AND m.owner_id IN (`+ops+`) AND m.deleted_at IS NULL ORDER BY m.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -249,12 +293,37 @@ func (d *DB) GetMediaByPostIDs(ctx context.Context, postIDs []int64) (map[int64]
 	return out, rows.Err()
 }
 
-// scanMediaRow 统一 MediaRow 行扫描（12 列序见各查询 SELECT：id/post_id/kind/file_path/
-// thumb_path/width/height/size/duration/taken_at/created_at/author_id）。
+// ListMediaByCommentIDs 批量取评论附带的图片（评论列表回显用）。
+// 只取归属 comment 的媒体；动态自己的图不会混进来。
+func (d *DB) ListMediaByCommentIDs(ctx context.Context, commentIDs []int64) (map[int64][]*MediaRow, error) {
+	out := map[int64][]*MediaRow{}
+	if len(commentIDs) == 0 {
+		return out, nil
+	}
+	ph := placeholders(len(commentIDs))
+	rows, err := d.QueryContext(ctx, mediaSelect+`
+		WHERE `+mediaOwnedBy(MediaOwnerComment, "m.owner_id")+
+		` AND m.owner_id IN (`+ph+`) AND m.deleted_at IS NULL ORDER BY m.id`, int64Args(commentIDs)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		m, err := scanMediaRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out[m.OwnerID] = append(out[m.OwnerID], m)
+	}
+	return out, rows.Err()
+}
+
+// scanMediaRow 统一行扫描（列序见 mediaSelect：id/owner_type/owner_id/kind/file_path/
+// thumb_path/width/height/size/duration/taken_at/created_at/post_id/author_id）。
 func scanMediaRow(row interface{ Scan(...any) error }) (*MediaRow, error) {
 	var m MediaRow
-	err := row.Scan(&m.ID, &m.PostID, &m.Kind, &m.FilePath, &m.ThumbPath, &m.Width, &m.Height, &m.Size,
-		&m.Duration, &m.TakenAt, &m.CreatedAt, &m.AuthorID)
+	err := row.Scan(&m.ID, &m.OwnerType, &m.OwnerID, &m.Kind, &m.FilePath, &m.ThumbPath, &m.Width, &m.Height, &m.Size,
+		&m.Duration, &m.TakenAt, &m.CreatedAt, &m.PostID, &m.AuthorID)
 	return &m, err
 }
 
@@ -265,9 +334,7 @@ func (d *DB) GetMediaByIDs(ctx context.Context, ids []int64) ([]*MediaRow, error
 	}
 	ph := placeholders(len(ids))
 	args := int64Args(ids)
-	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
-			m.duration, m.taken_at, m.created_at, p.author_id
-		FROM media m JOIN posts p ON p.id = m.post_id WHERE m.id IN (`+ph+`) AND m.deleted_at IS NULL ORDER BY m.id`, args...)
+	rows, err := d.QueryContext(ctx, mediaSelect+` WHERE m.id IN (`+ph+`) AND m.deleted_at IS NULL ORDER BY m.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -284,9 +351,7 @@ func (d *DB) GetMediaByIDs(ctx context.Context, ids []int64) ([]*MediaRow, error
 }
 
 func (d *DB) GetMedia(ctx context.Context, id int64) (*MediaRow, error) {
-	row := d.QueryRowContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
-			m.duration, m.taken_at, m.created_at, p.author_id
-		FROM media m JOIN posts p ON p.id = m.post_id WHERE m.id = ? AND m.deleted_at IS NULL`, id)
+	row := d.QueryRowContext(ctx, mediaSelect+` WHERE m.id = ? AND m.deleted_at IS NULL`, id)
 	m, err := scanMediaRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
@@ -400,58 +465,100 @@ type PeriodCount struct {
 	Count  int64
 }
 
-// SoftDeleteMedia 单独软删一条媒体；若删完后所属动态「无任何未删媒体且正文为空」，
-// 则在同一事务内把动态一并软删（用户需求：空动态不留壳）。
-// 返回 postGone 表示所属动态是否也被删除，供客户端决定移除整条还是就地去掉该媒体。
-func (d *DB) SoftDeleteMedia(ctx context.Context, mediaID int64, actorType string, actorID int64) (postID int64, postGone bool, err error) {
+// SoftDeleteMedia 单独软删一条媒体（动态自己的图或评论里的图）。
+//
+// 删完若归属实体失去全部内容，同一事务内把实体一并软删（用户需求：空壳不留）：
+//   - 动态：无任何未删媒体且正文为空 → 动态进回收站，postGone=true
+//   - 评论：无任何未删图片且正文为空 → 评论进回收站，commentGone=true
+//
+// 返回值里的 postID 恒为媒体最终所属的动态（评论图会经所属评论上溯），
+// 供客户端定位「该刷新哪条动态的评论列表」。
+func (d *DB) SoftDeleteMedia(ctx context.Context, mediaID int64, actorType string, actorID int64) (postID int64, postGone bool, commentGone bool, err error) {
 	tx, err := d.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var content string
-	err = tx.QueryRowContext(ctx,
-		`SELECT m.post_id, COALESCE(p.content, '') FROM media m JOIN posts p ON p.id = m.post_id
-		 WHERE m.id = ? AND m.deleted_at IS NULL AND p.deleted_at IS NULL`, mediaID).Scan(&postID, &content)
+	// 一次取全：媒体归属 + 归属实体（动态或评论）的正文与所属动态。
+	// 两条归属链在这里归一，后续分支只差「空壳判定作用在哪张表」。
+	var ownerType string
+	var ownerID, cPostID int64
+	var postContent, commentContent string
+	err = tx.QueryRowContext(ctx, `
+		SELECT m.owner_type, m.owner_id,
+		       COALESCE(c.post_id, 0), COALESCE(p.content, ''), COALESCE(c.content, '')
+		FROM media m
+		LEFT JOIN comments c ON m.owner_type = 'comment' AND c.id = m.owner_id
+		LEFT JOIN posts p ON m.owner_type = 'post' AND p.id = m.owner_id
+		WHERE m.id = ? AND m.deleted_at IS NULL
+		  AND (CASE m.owner_type
+		        WHEN 'comment' THEN c.deleted_at IS NULL
+		        ELSE p.deleted_at IS NULL END)`, mediaID).
+		Scan(&ownerType, &ownerID, &cPostID, &postContent, &commentContent)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, ErrNotFound
+		return 0, false, false, ErrNotFound
 	}
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
+	}
+	if ownerType == MediaOwnerComment {
+		postID = cPostID
+	} else {
+		postID = ownerID
 	}
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE media SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
 		actorID, actorType, mediaID)
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
-		return 0, false, ErrNotFound
+		return 0, false, false, ErrNotFound
 	}
 
-	// 删完是否还有媒体：统计该动态剩余未删媒体。
+	// 空壳判定：只数同一归属实体下剩余的媒体。
 	var remain int
 	if err := tx.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM media WHERE post_id = ? AND deleted_at IS NULL`, postID).Scan(&remain); err != nil {
-		return 0, false, err
+		`SELECT COUNT(*) FROM media WHERE `+mediaOwnedBy(ownerType, "?")+` AND deleted_at IS NULL`, ownerID).Scan(&remain); err != nil {
+		return 0, false, false, err
 	}
-	// 无媒体且正文为空（trim 后）→ 动态失去全部内容，一并软删。
-	if remain == 0 && strings.TrimSpace(content) == "" {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE posts SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
-			actorID, actorType, postID); err != nil {
-			return 0, false, err
+	if remain > 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, false, false, err
 		}
-		postGone = true
+		return postID, false, false, nil
+	}
+
+	switch ownerType {
+	case MediaOwnerComment:
+		// 评论既无图又无正文 → 评论进回收站（其图已在此处全部软删，无需再级联）。
+		if strings.TrimSpace(commentContent) == "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE comments SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
+				actorID, actorType, ownerID); err != nil {
+				return 0, false, false, err
+			}
+			commentGone = true
+		}
+	default:
+		// 动态失去全部内容 → 动态一并软删。
+		if strings.TrimSpace(postContent) == "" {
+			if _, err := tx.ExecContext(ctx,
+				`UPDATE posts SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE id = ? AND deleted_at IS NULL`,
+				actorID, actorType, postID); err != nil {
+				return 0, false, false, err
+			}
+			postGone = true
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
-		return 0, false, err
+		return 0, false, false, err
 	}
 	if postGone {
 		d.unindexPost(ctx, postID)
 	}
-	return postID, postGone, nil
+	return postID, postGone, commentGone, nil
 }

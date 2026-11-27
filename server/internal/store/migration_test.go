@@ -63,14 +63,14 @@ func TestFullSchema(t *testing.T) {
 	}
 
 	// 不变式 1：media.kind CHECK 收 audio（011 收敛）
-	if _, err := db.Exec(`INSERT INTO media (post_id, kind, file_path, duration) VALUES (1, 'audio', 'a/3.mp3', 3.5)`); err != nil {
+	if _, err := db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path, duration) VALUES ('post', 1, 'audio', 'a/3.mp3', 3.5)`); err != nil {
 		t.Fatalf("audio kind must be accepted: %v", err)
 	}
 	var dur float64
 	if err := db.QueryRow(`SELECT duration FROM media WHERE file_path = 'a/3.mp3'`).Scan(&dur); err != nil || dur != 3.5 {
 		t.Fatalf("duration persisted: %v err=%v", dur, err)
 	}
-	if _, err := db.Exec(`INSERT INTO media (post_id, kind, file_path) VALUES (1, 'weird', 'a/x.png')`); err == nil {
+	if _, err := db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', 1, 'weird', 'a/x.png')`); err == nil {
 		t.Fatal("invalid kind must be rejected")
 	}
 
@@ -320,6 +320,85 @@ func TestFullSchema(t *testing.T) {
 	}
 }
 
+// 真实部署形态的升级回归：老库由本程序（foreign_keys=ON）写出，里面有相册归属，
+// 升级到 003 重建 media 表后，album_items 的行一行都不能少。
+//
+// 这条测试守的是「重建父表时外键处理」：SQLite 改约束只能建新表搬数据，
+// 而 DROP TABLE media 在子表引用它时会被拒（外键 ON）或级联清空子表（外键 OFF 且带 ON DELETE 语义），
+// 两种结局都会让「照片还在、相册归属没了」——磁盘上有文件、界面上找不到，属于最难排查的一类数据丢失。
+func TestUpgradeKeepsAlbumItemsAndConstraints(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "love-life.db")
+
+	// 用与 Open 完全相同的打开参数造老库：否则外键行为与真实部署不一致，测不出真问题。
+	old, err := sql.Open("sqlite", "file:"+path+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)")
+	if err != nil {
+		t.Fatalf("open old db: %v", err)
+	}
+	baseline, err := migrationFS.ReadFile("migrations/001_init.sql")
+	if err != nil {
+		_ = old.Close()
+		t.Fatalf("read baseline: %v", err)
+	}
+	if _, err := old.Exec(string(baseline)); err != nil {
+		_ = old.Close()
+		t.Fatalf("apply baseline: %v", err)
+	}
+	seed := func(query string, args ...any) {
+		t.Helper()
+		if _, err := old.Exec(query, args...); err != nil {
+			_ = old.Close()
+			t.Fatalf("seed %q: %v", query, err)
+		}
+	}
+	seed(`CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`)
+	seed(`INSERT INTO schema_migrations (version) VALUES ('001_init')`)
+	seed(`INSERT INTO users (username, password_hash, role) VALUES ('old', 'x', 'boy')`)
+	seed(`INSERT INTO posts (author_id, content) VALUES (1, '老动态')`)
+	seed(`INSERT INTO media (id, post_id, kind, file_path) VALUES (1, 1, 'photo', 'media/old.jpg')`)
+	seed(`INSERT INTO albums (id, name, created_by) VALUES (1, '老相册', 1)`)
+	seed(`INSERT INTO album_items (album_id, media_id, added_by) VALUES (1, 1, 1)`)
+	// WAL 落盘后再关：模拟进程正常退出，避免「数据其实还在 WAL 里」的假象
+	if _, err := old.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
+		_ = old.Close()
+		t.Fatalf("checkpoint: %v", err)
+	}
+	if err := old.Close(); err != nil {
+		t.Fatalf("close old db: %v", err)
+	}
+
+	db, err := Open(dir)
+	if err != nil {
+		t.Fatalf("升级失败: %v", err)
+	}
+	defer db.Close()
+
+	var items int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM album_items WHERE album_id = 1 AND media_id = 1`).Scan(&items); err != nil {
+		t.Fatalf("查 album_items: %v", err)
+	}
+	if items != 1 {
+		t.Fatalf("相册归属丢失：album_items 应为 1 行，实得 %d", items)
+	}
+
+	// 重建后外键与 CHECK 约束都必须还在（重建表最容易连约束一起丢掉）
+	if _, err := db.Exec(`INSERT INTO album_items (album_id, media_id, added_by) VALUES (1, 99999, 1)`); err == nil {
+		t.Error("album_items.media_id 的外键约束在重建后丢失")
+	}
+	if _, err := db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', 1, 'weird', 'x.jpg')`); err == nil {
+		t.Error("media.kind 的 CHECK 约束在重建后丢失")
+	}
+	// owner_type 刻意不加 CHECK：新增可挂图的实体（纪念日、点位…）只需在 Go 侧加一个
+	// 常量即可落库，不必再重建表。这里锁住「加实体零迁移」这条承诺。
+	if _, err := db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('anniversary', 1, 'photo', 'y.jpg')`); err != nil {
+		t.Fatalf("新增 owner_type 应可落库（加实体零迁移），实得 %v", err)
+	}
+	// 但 kind 的 CHECK 必须还在：那是真正防止脏数据的一条
+	if _, err := db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', 1, 'weird', 'z.jpg')`); err == nil {
+		t.Error("media.kind 的 CHECK 约束在重建后丢失")
+	}
+}
+
 // 已部署的库（只有基线 001）能就地升级到最新 schema：加列不重建、不丢既有数据。
 // 这是「增量文件」的核心承诺——没有这条守卫，某个 002 写成需要重建库的改动也没人发现。
 func TestMigrateUpgradesExistingDBInPlace(t *testing.T) {
@@ -355,6 +434,35 @@ func TestMigrateUpgradesExistingDBInPlace(t *testing.T) {
 		_ = old.Close()
 		t.Fatalf("seed old channel: %v", err)
 	}
+	// 老库里已有媒体：003 重建 media 表后，旧数据必须**逐列**原样搬过去。
+	// 必须先把作者写进 users——重建后要跑 foreign_key_check，悬挂引用会被判失败。
+	if _, err := old.Exec(`INSERT INTO users (username, password_hash, role) VALUES ('old', 'x', 'boy')`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed old user: %v", err)
+	}
+	if _, err := old.Exec(`INSERT INTO posts (author_id, content) VALUES (1, '老动态')`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed old post: %v", err)
+	}
+	// 除归属与路径外，尺寸/时长/缩略图/软删三件套全给非默认值：
+	// 重建表时任何一列搬漏或默认值回落，这里都会露馅。
+	if _, err := old.Exec(`INSERT INTO media
+		(id, post_id, kind, file_path, thumb_path, width, height, size, duration, taken_at, created_at, deleted_at, deleted_by, deleted_by_type)
+		VALUES (1, 1, 'video', 'media/old.mp4', 'media/old.thumb.jpg', 1920, 1080, 5242880, 42.5,
+		        '2025-06-01 08:00:00', '2025-06-01 09:00:00', '2025-07-01 10:00:00', 1, 'user')`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed old media: %v", err)
+	}
+	// album_items 引用 media(id)：重建 media 时若外键约束没真正关掉，
+	// DROP TABLE 会按 ON DELETE 语义清掉这里的行——相册归属静默丢失。
+	if _, err := old.Exec(`INSERT INTO albums (id, name, created_by) VALUES (1, '老相册', 1)`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed old album: %v", err)
+	}
+	if _, err := old.Exec(`INSERT INTO album_items (album_id, media_id, added_by) VALUES (1, 1, 1)`); err != nil {
+		_ = old.Close()
+		t.Fatalf("seed old album item: %v", err)
+	}
 	if err := old.Close(); err != nil {
 		t.Fatalf("close old db: %v", err)
 	}
@@ -376,7 +484,62 @@ func TestMigrateUpgradesExistingDBInPlace(t *testing.T) {
 		t.Fatalf("老渠道应保留且默认为空间级：%+v", list[0])
 	}
 	var applied int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 2 {
-		t.Fatalf("schema_migrations = %d err=%v, want 2", applied, err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&applied); err != nil || applied != 3 {
+		t.Fatalf("schema_migrations = %d err=%v, want 3", applied, err)
+	}
+	// 003 是重建表迁移：归属改成 owner_type='post' + owner_id=原 post_id，其余列逐列不变。
+	var (
+		gotOwnerType, gotKind, gotPath, gotThumb, gotTakenAt, gotCreatedAt string
+		gotDeletedAt, gotDeletedByType                                     string
+		gotDeletedBy                                                       sql.NullInt64
+		gotOwnerID, gotWidth, gotHeight, gotSize                           int64
+		gotDuration                                                        sql.NullFloat64
+	)
+	err = db.QueryRow(`SELECT owner_type, owner_id, kind, file_path, COALESCE(thumb_path,''),
+			width, height, size, duration, COALESCE(taken_at,''), created_at,
+			COALESCE(deleted_at,''), deleted_by, COALESCE(deleted_by_type,'')
+		FROM media WHERE id = 1`).
+		Scan(&gotOwnerType, &gotOwnerID, &gotKind, &gotPath, &gotThumb,
+			&gotWidth, &gotHeight, &gotSize, &gotDuration, &gotTakenAt, &gotCreatedAt,
+			&gotDeletedAt, &gotDeletedBy, &gotDeletedByType)
+	if err != nil {
+		t.Fatalf("读取迁移后的媒体: %v", err)
+	}
+	if gotOwnerType != "post" || gotOwnerID != 1 {
+		t.Errorf("归属应迁成 ('post',1)，实得 (%q,%d)", gotOwnerType, gotOwnerID)
+	}
+	// 逐列核对：任一列搬漏都会在这里失败
+	if gotKind != "video" || gotPath != "media/old.mp4" || gotThumb != "media/old.thumb.jpg" {
+		t.Errorf("基础列不一致: kind=%q path=%q thumb=%q", gotKind, gotPath, gotThumb)
+	}
+	if gotWidth != 1920 || gotHeight != 1080 || gotSize != 5242880 {
+		t.Errorf("尺寸/体积不一致: %dx%d size=%d", gotWidth, gotHeight, gotSize)
+	}
+	if !gotDuration.Valid || gotDuration.Float64 != 42.5 {
+		t.Errorf("时长应为 42.5，实得 %+v", gotDuration)
+	}
+	if gotTakenAt != "2025-06-01 08:00:00" || gotCreatedAt != "2025-06-01 09:00:00" {
+		t.Errorf("时间列不一致: taken_at=%q created_at=%q", gotTakenAt, gotCreatedAt)
+	}
+	if gotDeletedAt != "2025-07-01 10:00:00" || !gotDeletedBy.Valid || gotDeletedBy.Int64 != 1 || gotDeletedByType != "user" {
+		t.Errorf("软删三件套丢失: deleted_at=%q deleted_by=%+v type=%q",
+			gotDeletedAt, gotDeletedBy, gotDeletedByType)
+	}
+
+	// album_items 的行必须还在（重建 media 时外键没真关掉的话会被级联清空）
+	var albumItems int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM album_items WHERE media_id = 1`).Scan(&albumItems); err != nil {
+		t.Fatalf("查 album_items: %v", err)
+	}
+	if albumItems != 1 {
+		t.Fatalf("album_items 应保留 1 行，实得 %d（重建 media 时外键没关掉，子表被级联删除）", albumItems)
+	}
+
+	// 外键约束必须仍然有效：插入不存在的 media_id 要被拒
+	if _, err := db.Exec(`INSERT INTO album_items (album_id, media_id, added_by) VALUES (1, 99999, 1)`); err == nil {
+		t.Fatal("album_items.media_id 的外键约束在重建后丢失了")
+	}
+	if _, err := db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', 1, 'weird', 'x.jpg')`); err == nil {
+		t.Fatal("media.kind 的 CHECK 约束在重建后丢失了")
 	}
 }

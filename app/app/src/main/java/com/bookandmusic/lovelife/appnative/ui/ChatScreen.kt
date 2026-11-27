@@ -863,7 +863,9 @@ data class PendingMedia(
 )
 
 /** 会吃附件的提案意图：只有这几种才认领「未认领的附件」 */
-private val MEDIA_INTENTS = setOf("propose_post", "propose_album", "propose_album_members")
+// 这些意图在确认时会把本轮媒体转正（上传换 token 后随 resolve 提交）。
+// 评论同样可附图，漏掉它会让「AI 帮你把这几张图评论到那条动态」静默丢图。
+internal val MEDIA_INTENTS = setOf("propose_post", "propose_album", "propose_album_members", "propose_comment")
 
 // ---------- 顶栏 ----------
 

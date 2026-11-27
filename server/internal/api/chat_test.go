@@ -526,7 +526,7 @@ func TestChatAlbumTools(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&pc)
 	res.Body.Close()
 	var mediaID int64
-	_ = ts.db.QueryRow(`SELECT id FROM media WHERE post_id=?`, pc.ID).Scan(&mediaID)
+	_ = ts.db.QueryRow(`SELECT id FROM media WHERE owner_type = 'post' AND owner_id = ?`, pc.ID).Scan(&mediaID)
 
 	// 相册工具：create_album → confirm → 相册存在；add_photos → confirm → media 归入相册
 	fakeScript := fmt.Sprintf(`{"message":{"content":"","tool_calls":[{"id":"a2","type":"function","function":{"name":"propose_album_members","arguments":"{\"album_id\":1,\"add_media_ids\":[%d]}"}}]}}`, mediaID)
@@ -728,7 +728,7 @@ func TestChatAlbumToolsReject(t *testing.T) {
 	_ = json.NewDecoder(res.Body).Decode(&pc)
 	res.Body.Close()
 	var mediaID int64
-	_ = ts.db.QueryRow(`SELECT id FROM media WHERE post_id=?`, pc.ID).Scan(&mediaID)
+	_ = ts.db.QueryRow(`SELECT id FROM media WHERE owner_type = 'post' AND owner_id = ?`, pc.ID).Scan(&mediaID)
 
 	// fake 脚本：[create_album, add_photos, add_photos]（第三次起复用最后一次脚本）
 	script := fmt.Sprintf(`{"message":{"content":"","tool_calls":[{"id":"a2","type":"function","function":{"name":"propose_album_members","arguments":"{\"album_id\":1,\"add_media_ids\":[%d]}"}}]}}`, mediaID)

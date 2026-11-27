@@ -56,7 +56,7 @@ func TestPurgeExpiredRecycle(t *testing.T) {
 	// 过期动态：媒体（主文件+缩略图）+ 未软删的 live 评论 + 点赞 + 收藏
 	p1 := purgeInsert(t, db, "INSERT INTO posts (author_id, content) VALUES (1, '过期动态')")
 	purgeSetDeleted(t, db, "posts", p1, expired)
-	m1 := purgeInsert(t, db, "INSERT INTO media (post_id, kind, file_path, thumb_path) VALUES (?, 'photo', 'media/a.jpg', 'media/a_thumb.jpg')", p1)
+	m1 := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path, thumb_path) VALUES ('post', ?, 'photo', 'media/a.jpg', 'media/a_thumb.jpg')", p1)
 	purgeSetDeleted(t, db, "media", m1, expired)
 	purgeInsert(t, db, "INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '过期动态下的 live 评论')", p1)
 	purgeInsert(t, db, "INSERT INTO likes (post_id, user_id) VALUES (?, 1)", p1)
@@ -72,7 +72,7 @@ func TestPurgeExpiredRecycle(t *testing.T) {
 
 	// 活跃动态 P4：挂着「自身超期的独立媒体」与「自身超期的评论」
 	p4 := purgeInsert(t, db, "INSERT INTO posts (author_id, content) VALUES (1, '活跃动态')")
-	m2 := purgeInsert(t, db, "INSERT INTO media (post_id, kind, file_path) VALUES (?, 'photo', 'media/b.jpg')", p4)
+	m2 := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', ?, 'photo', 'media/b.jpg')", p4)
 	purgeSetDeleted(t, db, "media", m2, expired)
 	c2 := purgeInsert(t, db, "INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '自身超期的评论')", p4)
 	purgeSetDeleted(t, db, "comments", c2, expired)
@@ -81,7 +81,7 @@ func TestPurgeExpiredRecycle(t *testing.T) {
 	al1 := purgeInsert(t, db, "INSERT INTO albums (name, created_by) VALUES ('活跃相册', 1)")
 	al2 := purgeInsert(t, db, "INSERT INTO albums (name, created_by) VALUES ('过期相册', 1)")
 	purgeSetDeleted(t, db, "albums", al2, expired)
-	m3 := purgeInsert(t, db, "INSERT INTO media (post_id, kind, file_path) VALUES (?, 'photo', 'media/c.jpg')", p4)
+	m3 := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', ?, 'photo', 'media/c.jpg')", p4)
 	purgeInsert(t, db, "INSERT INTO album_items (album_id, media_id, added_by) VALUES (?, ?, 1)", al1, m1)
 	purgeInsert(t, db, "INSERT INTO album_items (album_id, media_id, added_by) VALUES (?, ?, 1)", al1, m2)
 	purgeInsert(t, db, "INSERT INTO album_items (album_id, media_id, added_by) VALUES (?, ?, 1)", al2, m3)
@@ -229,7 +229,7 @@ func TestPurgeExpiredRecycleNullsAlbumCover(t *testing.T) {
 	expired := now.AddDate(0, 0, -44)
 
 	post := purgeInsert(t, db, "INSERT INTO posts (author_id, content) VALUES (1, '活跃动态')")
-	m := purgeInsert(t, db, "INSERT INTO media (post_id, kind, file_path) VALUES (?, 'photo', 'media/cover.jpg')", post)
+	m := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post', ?, 'photo', 'media/cover.jpg')", post)
 	purgeSetDeleted(t, db, "media", m, expired)
 	al := purgeInsert(t, db, "INSERT INTO albums (name, created_by, cover_media_id) VALUES ('活跃相册', 1, ?)", m)
 
@@ -242,5 +242,140 @@ func TestPurgeExpiredRecycleNullsAlbumCover(t *testing.T) {
 	}
 	if cover.Valid {
 		t.Fatalf("封面应置空（媒体已永久删除），got %d", cover.Int64)
+	}
+}
+
+// 每日清理的评论图路径：评论软删超期时，它名下的图必须一并物理删除。
+//
+// 这条守的是顺序依赖——清理顺序是 comments 先于 media，之后再上溯
+// 「属于过期评论的媒体」就查不到评论了。实现为此先把待删媒体物化成临时表；
+// 去掉那层物化，这里的图会变成永久孤儿（磁盘有文件、库里无引用）。
+func TestPurgeExpiredCommentMedia(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	seedPostAuthor(t, db)
+	ctx := context.Background()
+
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30)
+	expired := now.AddDate(0, 0, -44)
+	recent := now.AddDate(0, 0, -3)
+
+	// 动态本身活着；其下有一条超期软删的评论，评论带两张图
+	p := purgeInsert(t, db, "INSERT INTO posts (author_id, content) VALUES (1, '活着的动态')")
+	c1 := purgeInsert(t, db, "INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '过期评论')", p)
+	purgeSetDeleted(t, db, "comments", c1, expired)
+	cm1 := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path, thumb_path) VALUES ('comment', ?, 'photo', 'media/c1.jpg', 'media/c1_thumb.jpg')", c1)
+	cm2 := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('comment', ?, 'photo', 'media/c2.jpg')", c1)
+	purgeSetDeleted(t, db, "media", cm1, expired)
+	purgeSetDeleted(t, db, "media", cm2, expired)
+
+	// 对照：未超期的评论图必须保留
+	c2 := purgeInsert(t, db, "INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '未到期评论')", p)
+	purgeSetDeleted(t, db, "comments", c2, recent)
+	cm3 := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('comment', ?, 'photo', 'media/keep.jpg')", c2)
+	purgeSetDeleted(t, db, "media", cm3, recent)
+
+	res, err := db.PurgeExpiredRecycle(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+
+	// 超期评论图：行没了，路径进了待删列表（含缩略图）
+	if got := purgeCount(t, db, `SELECT COUNT(*) FROM media WHERE id = ?`, cm1); got != 0 {
+		t.Errorf("过期评论图 cm1 应被物理删除，仍剩 %d 行", got)
+	}
+	if got := purgeCount(t, db, `SELECT COUNT(*) FROM media WHERE id = ?`, cm2); got != 0 {
+		t.Errorf("过期评论图 cm2 应被物理删除，仍剩 %d 行", got)
+	}
+	want := map[string]bool{"media/c1.jpg": true, "media/c1_thumb.jpg": true, "media/c2.jpg": true}
+	for _, p := range res.MediaPaths {
+		delete(want, p)
+	}
+	if len(want) != 0 {
+		t.Errorf("待删文件列表缺少：%v（实际 %v）", want, res.MediaPaths)
+	}
+
+	// 未超期的评论图必须还在
+	if got := purgeCount(t, db, `SELECT COUNT(*) FROM media WHERE id = ?`, cm3); got != 1 {
+		t.Errorf("未到期评论图不应被删除，实得 %d 行", got)
+	}
+	if got := purgeCount(t, db, `SELECT COUNT(*) FROM comments WHERE id = ?`, c2); got != 1 {
+		t.Errorf("未到期评论不应被删除，实得 %d 行", got)
+	}
+}
+
+// 动态超期时，连带删掉它下面的评论图（经 posts 上溯的那条分支）。
+func TestPurgeExpiredPostCascadesCommentMedia(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	seedPostAuthor(t, db)
+	ctx := context.Background()
+
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30)
+	expired := now.AddDate(0, 0, -44)
+
+	// 动态超期软删；其评论本身没被单独软删（级联删除只标动态，评论的 deleted_at 为空）
+	p := purgeInsert(t, db, "INSERT INTO posts (author_id, content) VALUES (1, '过期动态')")
+	purgeSetDeleted(t, db, "posts", p, expired)
+	c := purgeInsert(t, db, "INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '随动态一起走')", p)
+	m := purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('comment', ?, 'photo', 'media/cm.jpg')", c)
+
+	res, err := db.PurgeExpiredRecycle(ctx, cutoff)
+	if err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	// 评论随动态删；评论图也要删（若不物化，评论已删就再也查不到这张图）
+	if got := purgeCount(t, db, `SELECT COUNT(*) FROM comments WHERE id = ?`, c); got != 0 {
+		t.Errorf("动态超期应级联删评论，仍剩 %d 行", got)
+	}
+	if got := purgeCount(t, db, `SELECT COUNT(*) FROM media WHERE id = ?`, m); got != 0 {
+		t.Errorf("动态超期应级联删其评论图，仍剩 %d 行", got)
+	}
+	found := false
+	for _, path := range res.MediaPaths {
+		if path == "media/cm.jpg" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("待删文件列表未包含评论图：%v", res.MediaPaths)
+	}
+}
+
+// 清理任务会重复跑（启动补跑 + 每日定时），必须可重入：
+// 待删媒体的 TEMP 表属于连接而非事务，第二轮不能因「表已存在」失败。
+func TestPurgeExpiredRecycleIsRerunnable(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	seedPostAuthor(t, db)
+	ctx := context.Background()
+
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	cutoff := now.AddDate(0, 0, -30)
+	expired := now.AddDate(0, 0, -44)
+
+	p := purgeInsert(t, db, "INSERT INTO posts (author_id, content) VALUES (1, '过期动态')")
+	purgeSetDeleted(t, db, "posts", p, expired)
+	c := purgeInsert(t, db, "INSERT INTO comments (post_id, author_id, content) VALUES (?, 1, '评论')", p)
+	purgeInsert(t, db, "INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('comment', ?, 'photo', 'media/cm.jpg')", c)
+
+	// 第一轮
+	if _, err := db.PurgeExpiredRecycle(ctx, cutoff); err != nil {
+		t.Fatalf("第一轮清理失败: %v", err)
+	}
+	// 第二轮：同一条连接上必须还能跑（TEMP 表已存在）
+	if _, err := db.PurgeExpiredRecycle(ctx, cutoff); err != nil {
+		t.Fatalf("第二轮清理失败（TEMP 表未清理）：%v", err)
 	}
 }

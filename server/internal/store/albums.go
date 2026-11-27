@@ -110,6 +110,14 @@ func (e *MediaOwnedError) Error() string {
 	return fmt.Sprintf("媒体 %d 已归属相册 #%d，一文件只能归属一个手动相册", e.MediaID, e.OwnedBy)
 }
 
+// MediaRejectedError 媒体本身不符合加入相册的条件（不存在 / 已软删 / 所属动态已删 / 是评论图）。
+// 这些都是调用方输入问题，API 层应映射成 400 而不是 500。
+type MediaRejectedError struct {
+	Reason string // 完整文案（单源此处，含媒体 id）
+}
+
+func (e *MediaRejectedError) Error() string { return e.Reason }
+
 // AddAlbumItems 加入相册：媒体存在且未软删预检 → 跨相册预检（活跃手动相册口径）→ 409；同相册重复幂等（INSERT OR IGNORE）。
 // 预检与插入同事务：并发跨相册归属由事务串行排除预检-插入间隙（TOCTOU），album_items UNIQUE(media_id) 兜底。
 func (d *DB) AddAlbumItems(ctx context.Context, albumID, userID int64, mediaIDs []int64) error {
@@ -130,20 +138,32 @@ func addAlbumItemsTx(ctx context.Context, tx *sql.Tx, albumID, userID int64, med
 		return nil
 	}
 	for _, mid := range mediaIDs {
-		// 媒体与所属动态各自可被单独软删（两者都进回收站）：任一已删都不能加入相册
+		// 媒体与所属动态各自可被单独软删（两者都进回收站）：任一已删都不能加入相册。
+		// 归属先按 media 自身取，再按 owner_type 分别找「所属动态」的软删状态。
 		var md, pd sql.NullString
-		err := tx.QueryRowContext(ctx, `SELECT m.deleted_at, p.deleted_at FROM media m JOIN posts p ON p.id = m.post_id WHERE m.id = ?`, mid).Scan(&md, &pd)
+		var ownerType string
+		var ownerID int64
+		err := tx.QueryRowContext(ctx, `SELECT m.deleted_at, m.owner_type, m.owner_id FROM media m WHERE m.id = ?`, mid).
+			Scan(&md, &ownerType, &ownerID)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("媒体 %d 不存在", mid)
+			return &MediaRejectedError{Reason: fmt.Sprintf("媒体 %d 不存在", mid)}
 		}
 		if err != nil {
 			return err
 		}
+		if ownerType == MediaOwnerComment {
+			// 评论里的图不参与相册归集：随评论走，进相册会在删评论后留下孤儿归属
+			return &MediaRejectedError{Reason: fmt.Sprintf("媒体 %d 是评论里的图片，不能加入相册", mid)}
+		}
+		err = tx.QueryRowContext(ctx, `SELECT p.deleted_at FROM posts p WHERE p.id = ?`, ownerID).Scan(&pd)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
 		if md.Valid && md.String != "" {
-			return fmt.Errorf("媒体 %d 已删除（回收站），不能加入相册", mid)
+			return &MediaRejectedError{Reason: fmt.Sprintf("媒体 %d 已删除（回收站），不能加入相册", mid)}
 		}
 		if pd.Valid && pd.String != "" {
-			return fmt.Errorf("媒体 %d 所属动态已删除（回收站），不能加入相册", mid)
+			return &MediaRejectedError{Reason: fmt.Sprintf("媒体 %d 所属动态已删除（回收站），不能加入相册", mid)}
 		}
 		var owner int64
 		err = tx.QueryRowContext(ctx, `SELECT i.album_id FROM album_items i
@@ -226,9 +246,8 @@ func (d *DB) UpdateAlbumMembers(ctx context.Context, albumID, userID int64, addI
 
 // ListAlbumMedia 相册内媒体（未删除、按加入倒序）。
 func (d *DB) ListAlbumMedia(ctx context.Context, albumID int64) ([]*MediaRow, error) {
-	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
-			m.duration, m.taken_at, m.created_at, p.author_id
-		FROM album_items i JOIN media m ON m.id = i.media_id JOIN posts p ON p.id = m.post_id
+	rows, err := d.QueryContext(ctx, mediaSelect+`
+		JOIN album_items i ON i.media_id = m.id
 		WHERE i.album_id = ? AND m.deleted_at IS NULL ORDER BY i.added_at DESC, m.id DESC`, albumID)
 	if err != nil {
 		return nil, err
@@ -251,22 +270,33 @@ func notInAlbum(alias string) string {
 	  WHERE i.media_id = ` + alias + `.id AND a.deleted_at IS NULL)`
 }
 
-// ListTimelineMediaPaged 时间轴分页视图（page/size + 归属字段）。
-// 口径：时间轴 = 未归档媒体——已归属任一活跃手动相册的媒体不出现；
-// 从相册移出（解除归属）即回到时间轴。includeFiled=true 供选图器场景（需全部媒体做灰显）。
+// ListTimelineMediaPaged 媒体列表，两种口径共用一个入口：
+//
+//   - includeFiled=false：**时间轴**。全部媒体——动态里发的、评论里附的都算，
+//     只要自身与所属实体未删。这是「我传过的所有照片」的全景视图。
+//     已归属活跃手动相册的不出现（它们在相册里有位置），移出即回到时间轴。
+//   - includeFiled=true：**相册选图器**。要全部媒体做「已归档 / 已归属他册」灰显，
+//     但**排除评论图**——评论图不参与相册归集（随评论走，进相册会在删评论后留孤儿
+//     归属）。列出来只会让用户点中一个注定被 400 拒绝的选项。
 func (d *DB) ListTimelineMediaPaged(ctx context.Context, page, size int, includeFiled bool) ([]*MediaRow, int, error) {
-	where := `m.deleted_at IS NULL AND p.deleted_at IS NULL`
-	if !includeFiled {
+	// 所属实体未删：mediaSelect 里 p 已统一指向「最终所属动态」，
+	// 评论图另需评论本身未删（评论软删会级联软删其图，这里再兜一层）。
+	live := `p.deleted_at IS NULL AND (m.owner_type <> 'comment' OR c.deleted_at IS NULL)`
+	where := `m.deleted_at IS NULL AND ` + live
+	if includeFiled {
+		// 选图器：只要动态图（可入册的那些）
+		where += ` AND ` + mediaOwnedBy(MediaOwnerPost, "m.owner_id")
+	} else {
 		where += ` AND ` + notInAlbum("m")
 	}
 	var total int
-	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.post_id
+	if err := d.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m
+		LEFT JOIN comments c ON m.owner_type = 'comment' AND c.id = m.owner_id
+		LEFT JOIN posts p ON p.id = CASE m.owner_type WHEN 'comment' THEN c.post_id ELSE m.owner_id END
 		WHERE `+where).Scan(&total); err != nil {
 		return nil, 0, err
 	}
-	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
-			m.duration, m.taken_at, m.created_at, p.author_id
-		FROM media m JOIN posts p ON p.id = m.post_id
+	rows, err := d.QueryContext(ctx, mediaSelect+`
 		WHERE `+where+`
 		ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?`, size, (page-1)*size)
 	if err != nil {
@@ -332,7 +362,7 @@ type GroupCandidate struct {
 // 媒体类型（可空）列分组候选。只取**未归档**媒体（与时间轴口径一致）：已归属手动相册的
 // 媒体不得再被推荐入册——一文件一相册（UNIQUE(media_id)），推荐它们只会撞 409。
 func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location, mediaType string) ([]GroupCandidate, error) {
-	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND ` + notInAlbum("m")
+	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND ` + mediaOwnedBy(MediaOwnerPost, "m.owner_id") + ` AND ` + notInAlbum("m")
 	args := []any{}
 	if from != "" {
 		where += ` AND COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')) >= ?`
@@ -353,7 +383,7 @@ func (d *DB) ListMediaGroupCandidates(ctx context.Context, from, to, location, m
 	rows, err := d.QueryContext(ctx, `SELECT m.id, m.kind,
 			COALESCE(NULLIF(strftime('%Y-%m-%d', m.taken_at), ''), strftime('%Y-%m-%d', m.created_at, 'localtime')),
 			COALESCE(p.location_name,'')
-		FROM media m JOIN posts p ON p.id = m.post_id`+where+` ORDER BY 3 DESC, m.id`, args...)
+		FROM media m JOIN posts p ON p.id = m.owner_id`+where+` ORDER BY 3 DESC, m.id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -381,7 +411,7 @@ type MediaFilter struct {
 // mediaFilterWhere find_media 过滤条件共用骨架（列表与 COUNT 下推同一条 WHERE）。
 // AlbumID 非零 = 指定相册内媒体（已归档也能查，补上 propose_album_members 的 remove 路径）。
 func mediaFilterWhere(f MediaFilter) (string, []any, error) {
-	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`
+	where := ` WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND ` + mediaOwnedBy(MediaOwnerPost, "m.owner_id")
 	if f.AlbumID > 0 {
 		where += fmt.Sprintf(` AND EXISTS (SELECT 1 FROM album_items i WHERE i.album_id = %d AND i.media_id = m.id)`, f.AlbumID)
 	} else if f.Unfiled {
@@ -414,7 +444,7 @@ func (d *DB) CountMediaFiltered(ctx context.Context, f MediaFilter) (int, error)
 		return 0, err
 	}
 	var n int
-	err = d.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.post_id`+where, args...).Scan(&n)
+	err = d.QueryRowContext(ctx, `SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.owner_id`+where, args...).Scan(&n)
 	return n, err
 }
 
@@ -427,9 +457,7 @@ func (d *DB) ListMediaFiltered(ctx context.Context, f MediaFilter, limit, offset
 	if offset < 0 {
 		offset = 0
 	}
-	rows, err := d.QueryContext(ctx, `SELECT m.id, m.post_id, m.kind, m.file_path, m.thumb_path, m.width, m.height, m.size,
-			m.duration, m.taken_at, m.created_at, p.author_id
-		FROM media m JOIN posts p ON p.id = m.post_id`+where+`
+	rows, err := d.QueryContext(ctx, mediaSelect+where+`
 		ORDER BY COALESCE(NULLIF(m.taken_at,''), m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...)
 	if err != nil {

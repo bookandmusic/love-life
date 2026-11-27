@@ -244,13 +244,36 @@ data class CommentDto(
     val author_id: Long = 0,
     val content: String,
     val created_at: String = "",
+    /** 评论附带的图片（评论只收图片；纯文字评论为空） */
+    val media: List<MediaDto> = emptyList(),
 )
+
+/** 评论图 → 展示模型：签名 URL 拼通道 base（与动态媒体同一口径）。 */
+fun List<MediaDto>.toPostMediaUi(): List<PostMediaUi> {
+    if (isEmpty()) return emptyList()
+    val base = Channel.base().trimEnd('/')
+    return map { m ->
+        PostMediaUi(
+            id = m.id,
+            kind = m.kind,
+            thumbUrl = m.thumb_url?.let { base + it },
+            url = m.url?.let { base + it },
+            durationText = null, // 评论只收图片，无时长角标
+            width = m.width,
+            height = m.height,
+            authorId = m.author_id,
+        )
+    }
+}
 
 @Serializable
 data class CommentListDto(val items: List<CommentDto> = emptyList())
 
 @Serializable
-data class CreateCommentRequest(val content: String)
+data class CreateCommentRequest(
+    val content: String = "",
+    val media_tokens: List<String> = emptyList(),
+)
 
 object CommentsRepository {
     /** 删除本人评论（仅作者） */
@@ -258,8 +281,12 @@ object CommentsRepository {
         ApiClient.api<Unit>("/api/v1/comments/$id", "DELETE")
     }
 
-    suspend fun create(postId: Long, content: String): CommentDto {
-        val body = ApiClient.json.encodeToString(CreateCommentRequest.serializer(), CreateCommentRequest(content))
+    /** 发表评论：文字与图片至少一项（纯图片评论合法） */
+    suspend fun create(postId: Long, content: String, mediaTokens: List<String> = emptyList()): CommentDto {
+        val body = ApiClient.json.encodeToString(
+            CreateCommentRequest.serializer(),
+            CreateCommentRequest(content, mediaTokens),
+        )
         return ApiClient.api("/api/v1/posts/$postId/comments", "POST", body)
     }
 

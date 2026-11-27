@@ -2,12 +2,16 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
 	"github.com/bookandmusic/love-life/server/internal/auth"
+	"github.com/bookandmusic/love-life/server/internal/limits"
+	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
 	"github.com/bookandmusic/love-life/server/internal/store"
 	"github.com/bookandmusic/love-life/server/internal/textutil"
@@ -15,6 +19,7 @@ import (
 
 type interactionsAPI struct {
 	db *store.DB
+	mp *media.Pipeline
 	dp *notify.Dispatcher
 }
 
@@ -92,14 +97,24 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Content string `json:"content"`
+		Content     string   `json:"content"`
+		MediaTokens []string `json:"media_tokens"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Content == "" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, errBadRequest)
+		return
+	}
+	// 文字与图片至少一项：纯图片评论合法（与「纯媒体动态」同口径）
+	if req.Content == "" && len(req.MediaTokens) == 0 {
 		writeError(w, http.StatusBadRequest, "评论内容不能为空")
 		return
 	}
 	if len([]rune(req.Content)) > 500 {
 		writeError(w, http.StatusBadRequest, "评论最多 500 字")
+		return
+	}
+	if len(req.MediaTokens) > limits.MaxMediaPerComment {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("单条评论最多 %d 张图片", limits.MaxMediaPerComment))
 		return
 	}
 	post, err := a.db.GetPost(r.Context(), id)
@@ -110,28 +125,82 @@ func (a *interactionsAPI) createComment(w http.ResponseWriter, r *http.Request) 
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
-	commentID, err := a.db.CreateComment(r.Context(), id, claims.UserID, req.Content)
+	medias, promoted, err := a.promoteCommentMedia(claims.UserID, req.MediaTokens)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	commentID, err := a.db.CreateCommentWithMedia(r.Context(), id, claims.UserID, req.Content, medias)
+	if err != nil {
+		a.mp.DiscardPromoted(promoted)
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}
 	a.notifyPartner(r, "post_commented", id, post.AuthorID, "收到评论",
 		notify.Commented(displayName(r.Context(), a.db, claims.UserID, claims.Username), post.AuthorNickname.String, req.Content, post.AuthorID == claims.UserID),
-		map[string]any{"content": textutil.TruncMark(req.Content, 50)})
+		map[string]any{"content": textutil.TruncMark(req.Content, 50), "media_count": len(req.MediaTokens)})
 	// 返回完整评论对象（R7：补齐返回值，对齐契约）
 	c, err := a.db.GetComment(r.Context(), commentID)
 	if err != nil {
 		writeJSON(w, http.StatusCreated, map[string]any{"id": commentID, "post_id": id, "author_id": claims.UserID, "content": req.Content})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
+	writeJSON(w, http.StatusCreated, a.commentResponse(c))
+}
+
+// commentResponse 评论 + 它的图片（签名 URL）。
+// 图片走与动态媒体同一套 mediaResponse 结构与签名，客户端复用同一个加载/查看组件。
+func (a *interactionsAPI) commentResponse(c *store.Comment) map[string]any {
+	medias := make([]mediaResponse, 0, len(c.Media))
+	for _, m := range c.Media {
+		medias = append(medias, buildMediaResponse(a.mp, m))
+	}
+	return map[string]any{
 		"id":         c.ID,
 		"post_id":    c.PostID,
 		"author_id":  c.AuthorID,
 		"author":     nullStrText(c.AuthorNickname),
 		"content":    c.Content,
 		"created_at": c.CreatedAt,
-	})
+		"media":      medias,
+	}
+}
+
+// promoteCommentMedia 把 media token 转正为评论图片。
+// 评论只收图片：视频/音频在这里拒掉并清理已转正的文件，避免留下孤儿。
+func (a *interactionsAPI) promoteCommentMedia(userID int64, tokens []string) ([]store.MediaRow, []*media.Promoted, error) {
+	medias := make([]store.MediaRow, 0, len(tokens))
+	promoted := make([]*media.Promoted, 0, len(tokens))
+	for _, token := range tokens {
+		p, err := a.mp.Promote(token, userID)
+		if err != nil {
+			a.mp.DiscardPromoted(promoted)
+			return nil, nil, err
+		}
+		if p.Kind != "photo" {
+			a.mp.Delete(p.FilePath, p.ThumbPath)
+			a.mp.DiscardPromoted(promoted)
+			return nil, nil, fmt.Errorf("评论只支持图片，不支持%s", kindLabel(p.Kind))
+		}
+		promoted = append(promoted, p)
+		medias = append(medias, store.MediaRow{
+			Kind: p.Kind, FilePath: p.FilePath, ThumbPath: nullStr(p.ThumbPath),
+			Width: p.Width, Height: p.Height, Size: p.Size,
+			Duration: sql.NullFloat64{Float64: p.Duration, Valid: p.Duration > 0},
+			TakenAt:  nullStr(p.TakenAt),
+		})
+	}
+	return medias, promoted, nil
+}
+
+func kindLabel(kind string) string {
+	switch kind {
+	case "video":
+		return "视频"
+	case "audio":
+		return "音频"
+	}
+	return "文件"
 }
 
 // listComments 评论列表：limit 默认 100、上限 200（不传时保持原有条数语义）；
@@ -165,15 +234,20 @@ func (a *interactionsAPI) listComments(w http.ResponseWriter, r *http.Request) {
 		Author string `json:"author"`
 		// AuthorID 供 APP 判断「是否对方发布」：删对方评论时补「对方会收到一条通知。」
 		// （客户端设计「删除交互统一规范」：删对方内容才提示，自删静默）
-		AuthorID  int64  `json:"author_id"`
-		Content   string `json:"content"`
-		CreatedAt string `json:"created_at"`
+		AuthorID  int64           `json:"author_id"`
+		Content   string          `json:"content"`
+		CreatedAt string          `json:"created_at"`
+		Media     []mediaResponse `json:"media"`
 	}
 	items := make([]item, 0, len(comments))
 	for _, c := range comments {
+		media := make([]mediaResponse, 0, len(c.Media))
+		for _, m := range c.Media {
+			media = append(media, buildMediaResponse(a.mp, m))
+		}
 		items = append(items, item{
 			ID: c.ID, Author: c.AuthorNickname.String, AuthorID: c.AuthorID,
-			Content: c.Content, CreatedAt: c.CreatedAt,
+			Content: c.Content, CreatedAt: c.CreatedAt, Media: media,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore})

@@ -153,7 +153,7 @@ func TestRunPurgeDeletesExpiredMediaAndLogs(t *testing.T) {
 		t.Fatalf("seed post: %v", err)
 	}
 	postID, _ := res.LastInsertId()
-	if _, err := db.Exec("INSERT INTO media (post_id, kind, file_path, thumb_path, deleted_at, deleted_by_type) VALUES (?, 'photo', 'media/e2e.jpg', 'media/e2e-thumb.jpg', datetime('now','-40 days'), 'user')", postID); err != nil {
+	if _, err := db.Exec("INSERT INTO media (owner_type, owner_id, kind, file_path, thumb_path, deleted_at, deleted_by_type) VALUES ('post', ?, 'photo', 'media/e2e.jpg', 'media/e2e-thumb.jpg', datetime('now','-40 days'), 'user')", postID); err != nil {
 		t.Fatalf("seed media: %v", err)
 	}
 	for _, rel := range []string{"media/e2e.jpg", "media/e2e-thumb.jpg"} {

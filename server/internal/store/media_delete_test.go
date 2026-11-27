@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
@@ -20,7 +21,7 @@ func TestSoftDeleteMedia(t *testing.T) {
 		keep := seedPhoto(t, db, postID, "media/keep.jpg")
 		gone := seedPhoto(t, db, postID, "media/gone.jpg")
 
-		gotPost, postGone, err := db.SoftDeleteMedia(ctx, gone, ActorTypeUser, 1)
+		gotPost, postGone, _, err := db.SoftDeleteMedia(ctx, gone, ActorTypeUser, 1)
 		if err != nil {
 			t.Fatalf("SoftDeleteMedia: %v", err)
 		}
@@ -42,7 +43,7 @@ func TestSoftDeleteMedia(t *testing.T) {
 		postID := seedSoftDelete(t, db, `INSERT INTO posts (author_id, content) VALUES (1, '只有一句话')`)
 		only := seedPhoto(t, db, postID, "media/only.jpg")
 
-		_, postGone, err := db.SoftDeleteMedia(ctx, only, ActorTypeUser, 1)
+		_, postGone, _, err := db.SoftDeleteMedia(ctx, only, ActorTypeUser, 1)
 		if err != nil {
 			t.Fatalf("SoftDeleteMedia: %v", err)
 		}
@@ -58,7 +59,7 @@ func TestSoftDeleteMedia(t *testing.T) {
 		postID := seedSoftDelete(t, db, `INSERT INTO posts (author_id, content) VALUES (1, '   ')`)
 		only := seedPhoto(t, db, postID, "media/last.jpg")
 
-		_, postGone, err := db.SoftDeleteMedia(ctx, only, ActorTypeUser, 1)
+		_, postGone, _, err := db.SoftDeleteMedia(ctx, only, ActorTypeUser, 1)
 		if err != nil {
 			t.Fatalf("SoftDeleteMedia: %v", err)
 		}
@@ -73,10 +74,10 @@ func TestSoftDeleteMedia(t *testing.T) {
 	t.Run("重复删除返回 ErrNotFound", func(t *testing.T) {
 		postID := seedSoftDelete(t, db, `INSERT INTO posts (author_id, content) VALUES (1, 'x')`)
 		m := seedPhoto(t, db, postID, "media/twice.jpg")
-		if _, _, err := db.SoftDeleteMedia(ctx, m, ActorTypeUser, 1); err != nil {
+		if _, _, _, err := db.SoftDeleteMedia(ctx, m, ActorTypeUser, 1); err != nil {
 			t.Fatalf("首次删除: %v", err)
 		}
-		if _, _, err := db.SoftDeleteMedia(ctx, m, ActorTypeUser, 1); !errors.Is(err, ErrNotFound) {
+		if _, _, _, err := db.SoftDeleteMedia(ctx, m, ActorTypeUser, 1); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("重复删除应 ErrNotFound，得到 %v", err)
 		}
 	})
@@ -97,7 +98,7 @@ func TestRecycleListsDetachedMediaOnly(t *testing.T) {
 	keepA := seedPhoto(t, db, postA, "media/a1.jpg")
 	goneA := seedPhoto(t, db, postA, "media/a2.jpg")
 	_ = keepA
-	if _, _, err := db.SoftDeleteMedia(ctx, goneA, ActorTypeUser, 1); err != nil {
+	if _, _, _, err := db.SoftDeleteMedia(ctx, goneA, ActorTypeUser, 1); err != nil {
 		t.Fatalf("SoftDeleteMedia: %v", err)
 	}
 
@@ -141,5 +142,63 @@ func TestRecycleListsDetachedMediaOnly(t *testing.T) {
 	}
 	if n := purgeCount(t, db, `SELECT COUNT(*) FROM media WHERE id = ? AND deleted_at IS NULL`, goneA); n != 1 {
 		t.Fatal("恢复后媒体应重新可见")
+	}
+}
+
+// 评论图可以单独软删；删掉最后一张且评论无正文时，评论本身也进回收站。
+func TestSoftDeleteCommentMedia(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if _, err := db.Exec(`INSERT INTO users (username, password_hash, role) VALUES ('u','x','girl')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO posts (author_id, content) VALUES (1, '动态正文')`); err != nil {
+		t.Fatal(err)
+	}
+
+	// 有文字 + 两图：删一张，评论仍在
+	c1, err := db.CreateCommentWithMedia(ctx, 1, 1, "有正文", []MediaRow{
+		{Kind: "photo", FilePath: "media/a.jpg"}, {Kind: "photo", FilePath: "media/b.jpg"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1Media, err := db.ListMediaByCommentIDs(ctx, []int64{c1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c1Media[c1]) != 2 {
+		t.Fatalf("应有 2 张图，实得 %d", len(c1Media[c1]))
+	}
+	gotPost, postGone, commentGone, err := db.SoftDeleteMedia(ctx, c1Media[c1][0].ID, ActorTypeUser, 1)
+	if err != nil {
+		t.Fatalf("delete comment media: %v", err)
+	}
+	if gotPost != 1 || postGone || commentGone {
+		t.Fatalf("删一张图：postID=%d postGone=%v commentGone=%v（都应为 false，评论还有图）", gotPost, postGone, commentGone)
+	}
+	if _, err := db.GetComment(ctx, c1); err != nil {
+		t.Fatalf("评论应仍可见：%v", err)
+	}
+
+	// 纯图评论只剩一张：删掉它 → 评论一起进回收站
+	c2, err := db.CreateCommentWithMedia(ctx, 1, 1, "", []MediaRow{{Kind: "photo", FilePath: "media/c.jpg"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2Media, _ := db.ListMediaByCommentIDs(ctx, []int64{c2})
+	_, _, commentGone, err = db.SoftDeleteMedia(ctx, c2Media[c2][0].ID, ActorTypeUser, 1)
+	if err != nil {
+		t.Fatalf("delete last comment media: %v", err)
+	}
+	if !commentGone {
+		t.Fatal("删掉纯图评论的最后一张图，评论应一并软删")
+	}
+	if _, err := db.GetComment(ctx, c2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("评论应已不可见，实得 err=%v", err)
 	}
 }

@@ -114,7 +114,7 @@ func TestPostsSampleCanStratifyByMedia(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := ts.db.ExecContext(ctx,
-		`INSERT INTO media (post_id, kind, file_path, thumb_path) VALUES (?, 'photo', 'media/a.jpg', 'media/a_th.jpg')`, postID); err != nil {
+		`INSERT INTO media (owner_type, owner_id, kind, file_path, thumb_path) VALUES ('post', ?, 'photo', 'media/a.jpg', 'media/a_th.jpg')`, postID); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 40; i++ {

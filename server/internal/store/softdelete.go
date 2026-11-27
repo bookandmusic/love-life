@@ -34,8 +34,18 @@ func softDeleteKind(ctx context.Context, ex sqlExec, kind string, id int64, acto
 	}
 	switch kind {
 	case "post":
+		// cascade_deleted=1：标记「因父实体被删而连带删除」，恢复时据此只捞这批。
+		// 用户先前单独删掉的图（cascade_deleted=0）不会被连带恢复。
 		_, err := ex.ExecContext(ctx,
-			`UPDATE media SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ? WHERE post_id = ? AND deleted_at IS NULL`,
+			`UPDATE media SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ?, cascade_deleted = 1
+			 WHERE `+mediaOwnedBy(MediaOwnerPost, "?")+` AND deleted_at IS NULL`,
+			actorID, actorType, id)
+		return err
+	case "comment":
+		// 评论图随评论走：评论软删即软删它名下的图（恢复评论时一并恢复，见 recycle.go）。
+		_, err := ex.ExecContext(ctx,
+			`UPDATE media SET deleted_at = datetime('now'), deleted_by = ?, deleted_by_type = ?, cascade_deleted = 1
+			 WHERE `+mediaOwnedBy(MediaOwnerComment, "?")+` AND deleted_at IS NULL`,
 			actorID, actorType, id)
 		return err
 	case "album":

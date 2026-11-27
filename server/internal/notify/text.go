@@ -56,10 +56,15 @@ func Liked(operator, author string, selfAuthored bool) Texts {
 }
 
 // Commented 评论：「小六 评论了你的动态：…」／「小六 评论了小五的动态：…」。
+// 纯图片评论没有正文，句末不留空冒号（与 Posted 同口径）。
 func Commented(operator, author, content string, selfAuthored bool) Texts {
 	text := textutil.TruncMark(content, 50)
 	return twoViews(func(v View) string {
-		return operator + " 评论了" + owner(v, author, selfAuthored) + "：" + text
+		head := operator + " 评论了" + owner(v, author, selfAuthored)
+		if text == "" {
+			return head
+		}
+		return head + "：" + text
 	})
 }
 

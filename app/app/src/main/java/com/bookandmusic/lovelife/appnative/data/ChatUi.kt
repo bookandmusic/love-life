@@ -171,6 +171,8 @@ object ChatUi {
             "comment" -> {
                 text = str("content").orEmpty()
                 rec("post")?.let { lines.add(Line("动态", it.text.ifEmpty { "#${it.id}" })) }
+                // 评论也可附图片：确认卡显示张数，与 post 的附件口径一致
+                mediaCount = recs("attachments").size
             }
             "album" -> {
                 text = str("name").orEmpty()

@@ -100,6 +100,20 @@ func TestCommentedTruncatesContent(t *testing.T) {
 	}
 }
 
+// 纯图片评论没有正文：句末不留空冒号（与 Posted 的纯媒体动态同口径）。
+func TestCommentedWithoutContentHasNoColon(t *testing.T) {
+	got := Commented("小六", "小五", "", false)
+	if got.Personal != "小六 评论了你的动态" {
+		t.Fatalf("个人视角 = %q", got.Personal)
+	}
+	if got.Group != "小六 评论了小五的动态" {
+		t.Fatalf("群视角 = %q", got.Group)
+	}
+	if strings.Contains(got.Personal, "：") || strings.Contains(got.Group, "：") {
+		t.Fatal("无正文评论不应带冒号")
+	}
+}
+
 // 删除文案带内容名，无名字的类型不留空括号。
 func TestDeletedText(t *testing.T) {
 	if got := Deleted("小六", "动态", ""); got != "小六 删除了你的动态" {

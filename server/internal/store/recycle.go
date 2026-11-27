@@ -87,11 +87,15 @@ type recycleSource struct {
 }
 
 // 摘要口径：动态/评论取正文，相册/纪念日/点位取名称，照片取文件名。
-// 照片单独删除后可单独恢复；所属动态已删时不单列（随动态条目整体恢复）。
+// 照片（动态图与评论图都算）单独删除后可单独恢复。
+// 判据是 cascade_deleted：因父实体（动态 / 评论）被删而连带删除的媒体不单列——
+// 它们随父条目整体恢复，列出来会让同一张图出现两次。
+// 用户单独删掉的（cascade_deleted=0）一律单列，不论归属哪类实体；
+// 早期只认 owner_type='post' 时，单独删掉的评论图在回收站里彻底查不到。
 var recycleSources = []recycleSource{
 	{"动态", "posts", "p", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true, "post", ""},
 	{"评论", "comments", "c", `CASE WHEN length(content) > 20 THEN substr(content, 1, 20) || '...' ELSE content END`, true, "comment", ""},
-	{"照片", "media", "m", `COALESCE(NULLIF(file_path, ''), '')`, true, "media", `post_id NOT IN (SELECT id FROM posts WHERE deleted_at IS NOT NULL)`},
+	{"照片", "media", "m", `COALESCE(NULLIF(file_path, ''), '')`, true, "media", `m.cascade_deleted = 0`},
 	{"相册", "albums", "a", `name`, true, "album", ""},
 	{"纪念日", "anniversaries", "an", `name`, true, "anniversary", ""},
 	{"地图点位", "map_points", "mp", `name`, true, "place", ""},
@@ -282,12 +286,21 @@ func (d *DB) RestoreRecycle(ctx context.Context, ids []int64) (*RestoreResult, e
 
 			// 恢复动态须连带恢复其级联删除的媒体：SoftDeletePost 把媒体一并软删，
 			// 若此处只恢复动态本身，动态会「复活」但照片仍不可见（媒体标记未清）。
-			if s.table == "posts" {
+			// 评论同理：评论图随评论软删，恢复评论要把图一起捞回来。
+			if s.table == "posts" || s.table == "comments" {
 				// 只回填本次真正恢复的行（含已未删的 id 会多打一次嵌入）
-				restoredPostIDs = append(restoredPostIDs, restoredIDs...)
+				ownerType := MediaOwnerPost
+				if s.table == "comments" {
+					ownerType = MediaOwnerComment
+				}
+				if s.table == "posts" {
+					restoredPostIDs = append(restoredPostIDs, restoredIDs...)
+				}
+				// 只捞「因本次父实体删除而级联删掉」的媒体（cascade_deleted=1）：
+				// 用户先前单独删掉的图是两个独立意图，不该被父实体的恢复一并复活。
 				if _, err := tx.ExecContext(ctx, fmt.Sprintf(
-					`UPDATE media SET deleted_at = NULL, deleted_by = NULL, deleted_by_type = NULL
-					 WHERE post_id IN (%s) AND deleted_at IS NOT NULL`, ph), args...); err != nil {
+					`UPDATE media SET deleted_at = NULL, deleted_by = NULL, deleted_by_type = NULL, cascade_deleted = 0
+					 WHERE owner_type = '%s' AND owner_id IN (%s) AND deleted_at IS NOT NULL AND cascade_deleted = 1`, ownerType, ph), args...); err != nil {
 					return nil, err
 				}
 			}
@@ -404,14 +417,42 @@ func (d *DB) PurgeExpiredRecycle(ctx context.Context, cutoff time.Time) (*PurgeR
 	const (
 		// 归一化比较：历史库可能残留 RFC3339 格式（见 scripts/sql/fix-time-format.sql），
 		// 裸字符串比较会把同日更早的时间误判成更晚而漏删。牺牲索引换正确性（每日一轮、万行量级）。
-		expiredAt            = `deleted_at IS NOT NULL AND datetime(deleted_at) < datetime(?)`
-		belongsToExpiredPost = `post_id IN (SELECT id FROM posts WHERE ` + expiredAt + `)`
-		mediaToDelete        = `(SELECT id FROM media WHERE ` + expiredAt + ` OR ` + belongsToExpiredPost + `)`
+		expiredAt = `deleted_at IS NOT NULL AND datetime(deleted_at) < datetime(?)`
+		// 行级条件：评论 / 点赞 / 收藏这些直接带 post_id 的表，随之删除。
+		rowOfExpiredPost = `post_id IN (SELECT id FROM posts WHERE ` + expiredAt + `)`
+		// 媒体归属条件：动态级联其图；评论级联其图。
+		// 评论图有两条上溯路径，缺一不可：
+		//   1) 评论自身超期软删（用户单独删了这条评论）
+		//   2) 评论所属动态超期软删（动态被删时只标 posts.deleted_at，评论行本身仍「未删」）
+		// 只写 1) 会让第 2 种场景下的评论图永远留在磁盘：动态和评论都物理删了，
+		// 图的行还在、文件还在，却没有任何界面能再引用到它。
+		mediaOfExpiredPost    = `(owner_type = 'post' AND owner_id IN (SELECT id FROM posts WHERE ` + expiredAt + `))`
+		mediaOfExpiredComment = `(owner_type = 'comment' AND owner_id IN (
+			SELECT id FROM comments WHERE ` + expiredAt + `
+			   OR post_id IN (SELECT id FROM posts WHERE ` + expiredAt + `)))`
 	)
+
+	// 待删媒体先物化成临时表：下面的删除顺序是 comments(2) 先于 media(4)，
+	// 之后再上溯「属于过期评论的媒体」就查不到评论了。先算一次、全程复用。
+	//
+	// TEMP 表属于连接而非事务：事务提交后它仍在，而清理任务会重复跑
+	// （启动补跑 + 每日定时），所以不能裸 CREATE——第二次会报 table already exists。
+	// IF NOT EXISTS + 先清空，让每轮都从干净状态开始。
+	if _, err := tx.ExecContext(ctx, `CREATE TEMP TABLE IF NOT EXISTS dsh_purge_media (id INTEGER)`); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM dsh_purge_media`); err != nil {
+		return nil, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO dsh_purge_media (id)
+		SELECT id FROM media WHERE `+expiredAt+` OR `+mediaOfExpiredPost+` OR `+mediaOfExpiredComment, ts, ts, ts, ts); err != nil {
+		return nil, err
+	}
+	mediaToDelete := `(SELECT id FROM dsh_purge_media)`
 
 	// 先取待删媒体路径（必须在删行之前）。
 	rows, err := tx.QueryContext(ctx,
-		`SELECT file_path, COALESCE(thumb_path, '') FROM media WHERE `+expiredAt+` OR `+belongsToExpiredPost, ts, ts)
+		`SELECT file_path, COALESCE(thumb_path, '') FROM media WHERE id IN `+mediaToDelete)
 	if err != nil {
 		return nil, err
 	}
@@ -454,22 +495,22 @@ func (d *DB) PurgeExpiredRecycle(ctx context.Context, cutoff time.Time) (*PurgeR
 	}
 
 	// 2) comments：过期动态下的全部（含未软删）+ 自身超期。
-	n, err := del("comments", belongsToExpiredPost+` OR (`+expiredAt+`)`, ts, ts)
+	n, err := del("comments", rowOfExpiredPost+` OR (`+expiredAt+`)`, ts, ts)
 	if err != nil {
 		return nil, err
 	}
 	res.ByType[recycleLabelOf("comments")] = n
 
 	// 3) 纯关联表：点赞 / 收藏（无回收站语义，随动态物理删除）。
-	if _, err := del("likes", belongsToExpiredPost, ts); err != nil {
+	if _, err := del("likes", rowOfExpiredPost, ts); err != nil {
 		return nil, err
 	}
-	if _, err := del("favorites", belongsToExpiredPost, ts); err != nil {
+	if _, err := del("favorites", rowOfExpiredPost, ts); err != nil {
 		return nil, err
 	}
 
-	// 4) media：自身超期 或 属于过期动态。
-	n, err = del("media", `(`+expiredAt+`) OR `+belongsToExpiredPost, ts, ts)
+	// 4) media：预先物化的待删集合（自身超期 / 属于过期动态 / 属于过期评论）。
+	n, err = del("media", `id IN `+mediaToDelete)
 	if err != nil {
 		return nil, err
 	}

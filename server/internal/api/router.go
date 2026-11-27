@@ -209,7 +209,7 @@ func NewRouter(cfg config.Config, db *store.DB, tm *auth.TokenManager, encSeed [
 
 	// 动态与媒体（登录用户）
 	postsAPI := &postsAPI{db: db, mp: mp, dp: dp}
-	interAPI := &interactionsAPI{db: db, dp: dp}
+	interAPI := &interactionsAPI{db: db, mp: mp, dp: dp}
 	// reurl 批量重签：客户端可见媒体签名 URL 临期刷新（主 mux 直挂，避免与 {id} 通配冲突）
 	mux.Handle("POST /api/v1/media/reurl", couple(http.HandlerFunc(postsAPI.reurlMedia)))
 	mux.Handle("POST /api/v1/media/upload", couple(http.HandlerFunc(postsAPI.uploadMedia)))

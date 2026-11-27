@@ -1,5 +1,7 @@
 package com.bookandmusic.lovelife.appnative.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -53,11 +55,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.bookandmusic.lovelife.appnative.data.CommentDto
 import com.bookandmusic.lovelife.appnative.data.CommentsRepository
+import com.bookandmusic.lovelife.appnative.data.MediaRepository
 import com.bookandmusic.lovelife.appnative.data.PostMediaUi
+import com.bookandmusic.lovelife.appnative.data.toPostMediaUi
 import com.bookandmusic.lovelife.appnative.data.PostUi
 import com.bookandmusic.lovelife.appnative.data.PostsRepository
 import com.bookandmusic.lovelife.appnative.data.errText
@@ -403,8 +408,8 @@ fun TimelineScreen(
                 onConfirm = {
                     scope.launch {
                         runCatching { PostsRepository.deleteMedia(media.id) }
-                            .onSuccess { postGone ->
-                                if (postGone) {
+                            .onSuccess { res ->
+                                if (res.postDeleted) {
                                     posts = posts?.filter { it.id != target.id }
                                     total = (total - 1).coerceAtLeast(0)
                                     viewer = null
@@ -664,6 +669,17 @@ private fun CommentLikeBlock(
     var comments by remember(post.id) { mutableStateOf<List<CommentDto>?>(null) }
     var pending by remember(post.id) { mutableStateOf<CommentDto?>(null) }
     var pendingDelete by remember(post.id) { mutableStateOf<CommentDto?>(null) }
+    // 评论图全屏查看：整屏一个播放器状态（与动态媒体同一组件）
+    var viewer by remember(post.id) { mutableStateOf<Pair<List<PostMediaUi>, Int>?>(null) }
+    // 评论图长按的动作单 / 待确认的单图删除
+    var commentMediaMenu by remember(post.id) { mutableStateOf<Pair<List<PostMediaUi>, Int>?>(null) }
+    var pendingCommentMediaDelete by remember(post.id) { mutableStateOf<PostMediaUi?>(null) }
+    // 媒体 id → 评论作者 id（长按菜单判断「删除」项是否可见）
+    val commentOwners = remember(comments) {
+        comments.orEmpty().flatMap { c -> c.media.map { it.id to c.author_id } }.toMap()
+    }
+    // 评论图「保存到本机」复用与动态媒体同一个 saver
+    val saveCommentMedia = rememberMediaSaver({ onToast(it) }) { commentMediaMenu = null }
     var myId by remember { mutableStateOf<Long?>(null) }
     val scope = rememberCoroutineScope()
     val colors = LocalAppColors.current
@@ -711,6 +727,7 @@ private fun CommentLikeBlock(
             val mine = myId != null && myId == c.author_id
             CommentRow(
                 c,
+                onOpenImage = { index -> viewer = c.media.toPostMediaUi() to index },
                 modifier = Modifier.appClickAndLongPress(
                     onClick = {},
                     onLongPress = { pending = c },
@@ -740,15 +757,18 @@ private fun CommentLikeBlock(
             visible = true,
             title = target.author,
             items = buildList {
-                add(
-                    AppMenuItem(label = "复制文字", icon = Icons.Outlined.ContentCopy) {
-                        val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
-                            as android.content.ClipboardManager
-                        cm.setPrimaryClip(android.content.ClipData.newPlainText("评论", target.content))
-                        onToast("已复制")
-                        pending = null
-                    }
-                )
+                // 纯图片评论没有文字可复制，不给出空操作
+                if (target.content.isNotEmpty()) {
+                    add(
+                        AppMenuItem(label = "复制文字", icon = Icons.Outlined.ContentCopy) {
+                            val cm = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE)
+                                as android.content.ClipboardManager
+                            cm.setPrimaryClip(android.content.ClipData.newPlainText("评论", target.content))
+                            onToast("已复制")
+                            pending = null
+                        }
+                    )
+                }
                 if (mine) {
                     add(
                         AppMenuItem(label = "删除", icon = Icons.Outlined.Delete, danger = true) {
@@ -786,6 +806,89 @@ private fun CommentLikeBlock(
             onDismiss = { pendingDelete = null },
         )
     }
+
+    // 评论图全屏查看（与动态媒体同一个 MediaViewer）。
+    // 长按给「保存到本机」；本人发的评论另给「删除」（与动态媒体同口径）。
+    viewer?.let { (media, index) ->
+        MediaViewer(
+            media = media,
+            initialIndex = index,
+            onDismiss = { viewer = null },
+            onLongPress = { m ->
+                val idx = media.indexOf(m)
+                if (idx >= 0) commentMediaMenu = media to idx
+            },
+        )
+    }
+
+    // 评论图的动作单：保存人人可用；删除仅评论作者
+    commentMediaMenu?.let { (media, index) ->
+        val target = media.getOrNull(index) ?: return@let
+        val owner = commentOwners[target.id]
+        val mine = myId != null && owner != null && myId == owner
+        AppActionSheet(
+            visible = true,
+            title = "照片",
+            items = buildList {
+                add(
+                    AppMenuItem(label = "保存到本机", icon = Icons.Outlined.Download) {
+                        saveCommentMedia(target)
+                    }
+                )
+                if (mine) {
+                    add(
+                        AppMenuItem(label = "删除", icon = Icons.Outlined.Delete, danger = true) {
+                            pendingCommentMediaDelete = target
+                            commentMediaMenu = null
+                        }
+                    )
+                }
+            },
+            onDismiss = { commentMediaMenu = null },
+        )
+    }
+
+    // 删除单张评论图：图删完且评论无正文时，评论本身也会进回收站
+    pendingCommentMediaDelete?.let { target ->
+        // 找到这张图所属的评论，按它的实际剩余数量判断「是否最后一张且无正文」
+        val ownerComment = comments.orEmpty().firstOrNull { c -> c.media.any { it.id == target.id } }
+        val lastOne = ownerComment != null && ownerComment.media.size == 1 && ownerComment.content.isBlank()
+        AppConfirmSheet(
+            visible = true,
+            title = "移入回收站",
+            message = if (lastOne) {
+                "这是评论里的最后一张图，评论没有文字，删除后整条评论会一起移入回收站。"
+            } else {
+                "这张图片将移入回收站，仅后台可恢复。"
+            },
+            confirmText = "移入回收站",
+            onConfirm = {
+                scope.launch {
+                    runCatching { PostsRepository.deleteMedia(target.id) }
+                        .onSuccess { res ->
+                            viewer = null
+                            commentMediaMenu = null
+                            pendingCommentMediaDelete = null
+                            if (res.commentDeleted) {
+                                // 评论没了：整条从列表移除（图已在服务端一并软删）
+                                comments = comments?.filter { c -> c.media.none { it.id == target.id } }
+                                onToast("已移入回收站")
+                            } else {
+                                // 就地移除这一张
+                                comments = comments?.map { c ->
+                                    if (c.media.any { it.id == target.id }) {
+                                        c.copy(media = c.media.filter { it.id != target.id })
+                                    } else c
+                                }
+                                onToast("已移入回收站")
+                            }
+                        }
+                        .onFailure { onToast("删除失败：${errText(it, "")}") }
+                }
+            },
+            onDismiss = { pendingCommentMediaDelete = null },
+        )
+    }
 }
 
 /**
@@ -801,10 +904,23 @@ private fun CommentComposer(
 ) {
     var text by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
+    var images by remember { mutableStateOf<List<android.net.Uri>>(emptyList()) }
     val scope = rememberCoroutineScope()
     val colors = LocalAppColors.current
+    val context = LocalContext.current
     val focus = remember { FocusRequester() }
     LaunchedEffect(Unit) { focus.requestFocus() }
+
+    // 只选图片：评论不接受视频 / 音频（服务端同样硬校验 kind == photo）
+    val pickImages = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            images = (images + uris).take(COMMENT_MAX_IMAGES)
+        }
+    }
+
+    val canSend = (text.isNotBlank() || images.isNotEmpty()) && !sending
 
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onDismiss,
@@ -826,84 +942,175 @@ private fun CommentComposer(
                         indication = null,
                     ) { onDismiss() }
             )
-            Row(
+            Column(
                 Modifier
                     .fillMaxWidth()
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
-                ) {
-                    if (text.isEmpty()) {
-                        Text(
-                            "说点什么…",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    BasicTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
-                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                        modifier = Modifier.fillMaxWidth().focusRequester(focus),
-                    )
-                }
-                Box(
-                    Modifier
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(
-                            if (text.isBlank() || sending) {
-                                MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            }
-                        )
-                        .clickable(enabled = text.isNotBlank() && !sending) {
-                            val content = text.trim()
-                            if (content.isEmpty()) return@clickable
-                            sending = true
-                            scope.launch {
-                                runCatching { CommentsRepository.create(postId, content) }
-                                    .onSuccess { onPosted(it) }
-                                    .onFailure { onToast(errText(it, "评论失败")) }
-                                sending = false
+                // 已选图片横排预览，可逐个移除
+                if (images.isNotEmpty()) {
+                    Row(
+                        Modifier.padding(bottom = 8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        images.forEachIndexed { index, uri ->
+                            Box(Modifier.size(56.dp)) {
+                                coil.compose.AsyncImage(
+                                    model = uri,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(8.dp)),
+                                )
+                                // 移除角标
+                                Box(
+                                    Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(2.dp)
+                                        .size(18.dp)
+                                        .clip(RoundedCornerShape(999.dp))
+                                        .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                                        .clickable { images = images.filterIndexed { i, _ -> i != index } },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text("×", style = MaterialTheme.typography.labelMedium, color = colors.onSolid)
+                                }
                             }
                         }
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    Text("发送", style = MaterialTheme.typography.bodyMedium, color = colors.onSolid)
+                    Box(
+                        Modifier
+                            .size(36.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .clickable(enabled = images.size < COMMENT_MAX_IMAGES && !sending) {
+                                pickImages.launch(arrayOf("image/*"))
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "+",
+                            style = MaterialTheme.typography.titleLarge,
+                            color = if (images.size < COMMENT_MAX_IMAGES) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                            },
+                        )
+                    }
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    ) {
+                        if (text.isEmpty()) {
+                            Text(
+                                "说点什么…",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        BasicTextField(
+                            value = text,
+                            onValueChange = { text = it },
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                            modifier = Modifier.fillMaxWidth().focusRequester(focus),
+                        )
+                    }
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(
+                                if (!canSend) {
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.4f)
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                }
+                            )
+                            .clickable(enabled = canSend) {
+                                val content = text.trim()
+                                if (content.isEmpty() && images.isEmpty()) return@clickable
+                                sending = true
+                                scope.launch {
+                                    // 先逐张上传换 token；任一张失败整条不发（与发动态同口径）。
+                                    // 已传成功的 token 要撤销：否则临时区留下孤文件，虽然服务端
+                                    // 24h 后会清，但用户重试几次就攒一批。
+                                    val uploaded = mutableListOf<String>()
+                                    runCatching {
+                                        images.forEach { uri ->
+                                            uploaded += MediaRepository.upload(context, uri).media_token
+                                        }
+                                        uploaded.toList()
+                                    }.onFailure {
+                                        if (uploaded.isNotEmpty()) MediaRepository.discard(uploaded)
+                                        onToast("图片上传失败：${errText(it, "")}")
+                                        sending = false
+                                        return@launch
+                                    }.onSuccess { tokens ->
+                                        runCatching { CommentsRepository.create(postId, content, tokens) }
+                                            .onSuccess { onPosted(it) }
+                                            .onFailure { onToast(errText(it, "评论失败")) }
+                                        sending = false
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 16.dp, vertical = 10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("发送", style = MaterialTheme.typography.bodyMedium, color = colors.onSolid)
+                    }
                 }
             }
         }
     }
 }
 
+/** 单条评论最多几张图片（与服务端 limits/media.json 的 maxMediaPerComment 对齐）。 */
+private const val COMMENT_MAX_IMAGES = 9
+
 @Composable
-private fun CommentRow(c: CommentDto, modifier: Modifier = Modifier) {
+private fun CommentRow(
+    c: CommentDto,
+    onOpenImage: (Int) -> Unit = {},
+    modifier: Modifier = Modifier,
+) {
     val colors = LocalAppColors.current
-    // 昵称嵌在正文前（微信朋友圈式），不用固定宽列把内容挤到右边
-    Text(
-        buildAnnotatedString {
-            withStyle(SpanStyle(color = colors.authorName, fontWeight = FontWeight.Medium)) {
-                append(c.author)
-            }
-            append("：")
-            withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface)) {
-                append(c.content)
-            }
-        },
-        style = MaterialTheme.typography.bodySmall,
-        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
-    )
+    // 签名 URL 需要拼通道 base：一次转换后同时供缩略图与查看器使用
+    val media = remember(c.media) { c.media.toPostMediaUi() }
+    Column(modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+        // 昵称嵌在正文前（微信朋友圈式），不用固定宽列把内容挤到右边。
+        // 纯图片评论没有正文：只渲染昵称，不留「昵称：」的悬空冒号。
+        Text(
+            buildAnnotatedString {
+                withStyle(SpanStyle(color = colors.authorName, fontWeight = FontWeight.Medium)) {
+                    append(c.author)
+                }
+                if (c.content.isNotEmpty()) {
+                    append("：")
+                    withStyle(SpanStyle(color = MaterialTheme.colorScheme.onSurface)) {
+                        append(c.content)
+                    }
+                }
+            },
+            style = MaterialTheme.typography.bodySmall,
+        )
+        // 评论图走与动态同一个九宫格组件；长按不给删除（图随评论走，删整条即可）
+        if (media.isNotEmpty()) {
+            AppMediaGrid(
+                items = media.map { it.toGridItem() },
+                onOpen = onOpenImage,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
 }
 
 internal fun com.bookandmusic.lovelife.appnative.data.PostMediaUi.toGridItem(): AppMediaItem =

@@ -13,6 +13,11 @@ func TestMediaLimitsLoaded(t *testing.T) {
 	if MaxMediaPerChatMessage != MaxMediaPerPost {
 		t.Errorf("聊天引用上限 %d 应与发动态上限 %d 同口径", MaxMediaPerChatMessage, MaxMediaPerPost)
 	}
+	// 评论图片上限：APP 侧 `COMMENT_MAX_IMAGES` 是同一数值的副本（无构建期同步），
+	// 改这里要同步改 TimelineScreen.kt，否则用户在选到第 10 张时才被服务端拒。
+	if MaxMediaPerComment != 9 {
+		t.Errorf("MaxMediaPerComment = %d，应为 9（单条评论最多 9 张图片）", MaxMediaPerComment)
+	}
 }
 
 func TestMustParseMediaRejectsBadInput(t *testing.T) {

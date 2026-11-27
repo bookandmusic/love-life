@@ -48,3 +48,6 @@ app/captures/
 
 # 参考图（视觉对齐用的外部截图，只作本地对照，不入库）
 app/docs/refs/
+
+# 安卓模拟器验证的临时产物（从 CI 下载的 APK、截图、logcat、输入法 APK）
+.dsh-android/

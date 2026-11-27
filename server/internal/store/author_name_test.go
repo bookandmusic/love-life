@@ -23,7 +23,7 @@ func TestEmptyNicknameFallsBackToUsername(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create post: %v", err)
 	}
-	commentID, err := db.CreateComment(ctx, postID, uid, "自己评论")
+	commentID, err := db.CreateCommentWithMedia(ctx, postID, uid, "自己评论", nil)
 	if err != nil {
 		t.Fatalf("create comment: %v", err)
 	}

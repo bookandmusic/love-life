@@ -99,7 +99,7 @@ func TestDownloadNameLocalDate(t *testing.T) {
 	if _, err := ts.db.Exec(`UPDATE media SET created_at = ?, taken_at = NULL WHERE id = ?`, utcStamp, mediaID); err != nil {
 		t.Fatalf("set media created_at: %v", err)
 	}
-	if _, err := ts.db.Exec(`UPDATE posts SET created_at = ? WHERE id = (SELECT post_id FROM media WHERE id = ?)`, utcStamp, mediaID); err != nil {
+	if _, err := ts.db.Exec(`UPDATE posts SET created_at = ? WHERE id = (SELECT owner_id FROM media WHERE id = ? AND owner_type = 'post')`, utcStamp, mediaID); err != nil {
 		t.Fatalf("set post created_at: %v", err)
 	}
 

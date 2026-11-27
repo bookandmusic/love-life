@@ -64,7 +64,7 @@ Go 1.25 + net/http + SQLite（modernc，纯 Go）；单个静态二进制内嵌�
 | POST · GET | `/api/v1/posts` | 发动态（`media_tokens` 转正）/ 列表 |
 | GET · DELETE | `/api/v1/posts/{id}` | 详情 / 软删进回收站 |
 | POST | `/api/v1/posts/{id}/like` | 点赞切换 |
-| POST · GET · DELETE | `/api/v1/posts/{id}/comments`、`/comments/{id}` | 发评论、评论列表（`limit` 默认 100 / 上限 200，返回 `has_more`）、软删 |
+| POST · GET · DELETE | `/api/v1/posts/{id}/comments`、`/comments/{id}` | 发评论（`content` 与 `media_tokens` 至少一项，图片上限 `maxMediaPerComment`，只收 photo）、评论列表（每项带 `media`；`limit` 默认 100 / 上限 200，返回 `has_more`）、软删（级联软删其图） |
 | GET | `/api/v1/notifications`、`/notifications/unread-count` | 通知列表 / 未读数 |
 | DELETE | `/api/v1/notifications`、`/notifications/{id}` | 清空 / 消费单条（点击即删） |
 
@@ -113,7 +113,7 @@ Go 1.25 + net/http + SQLite（modernc，纯 Go）；单个静态二进制内嵌�
 
 ### 4.1 管线
 
-两段式：`Begin/Append/Finalize` 收进临时区 → 发动态时 `Promote(token, ownerID)` 转正（校验 token 形态、sidecar 归属与 `Finalized`，他人或未收尾的上传一律拒绝）。无分片头 = 整文件上传，走 `SaveTemp` 全流程（`api/posts.go:59-93`）。
+两段式：`Begin/Append/Finalize` 收进临时区 → 发布时 `Promote(token, ownerID)` 转正（动态、评论、AI 提案共用同一入口；校验 token 形态、sidecar 归属与 `Finalized`，他人或未收尾的上传一律拒绝）。无分片头 = 整文件上传，走 `SaveTemp` 全流程（`api/posts.go:59-93`）。
 
 | 契约 | 细节 |
 |:--|:--|
@@ -306,3 +306,12 @@ SSE 事件（语义事件，无带内信令）：`session`（仅懒创建）、`
 | 瓦片上游 body 有上限（声明超限直接 502，chunked 截断） | `api/mapconfig_limit_test.go:11` |
 | 瓦片模板 URL 只允许 http/https 且主机不得落在内网/保留段，创建、启用与探测都要校验 | `api/mapconfig_ssrf_test.go:18,52` |
 | 瓦片取数拨号前按解析出的 IP 复判内网/保留段（302 跳转目标同样受控） | `api/mapconfig_ssrf_test.go:110,128,138` |
+| 媒体归属走 `(owner_type, owner_id)` 两列。**时间轴是全部媒体的全景视图**（含评论图）；动态九宫格、**相册选图器**、相册候选池、后台照片统计只认 `owner_type='post'`；评论图不能加入相册（随评论走会留孤儿归属） | `store/albums_test.go:46`（`TestTimelineIncludesCommentMedia`）、`api/interactions_test.go:553`、`api/interactions_test.go:768`、`store/albums_test.go:127` |
+| 恢复父实体只捞回 `cascade_deleted=1` 的媒体：用户先前单独删掉的图不随父实体恢复而复活；单独删掉的评论图必须能在回收站里找到并恢复 | `store/softdelete_test.go:392`、`store/softdelete_test.go:340` |
+| 评论只收图片、单条上限与 REST 同源；非图片拒绝后已转正的文件必须清理（混合 token 时先转正的图也要清） | `api/interactions_test.go:657`、`api/interactions_test.go:684`、`api/interactions_test.go:809` |
+| 评论文字上限 500 字：501 拒、500 过 | `api/interactions_test.go:841` |
+| 媒体加入相册的四类输入错误（不存在 / 已软删 / 所属动态已删 / 是评论图）一律 400，不得落成 500 | `api/interactions_test.go:768`、`api/interactions_test.go:905` |
+| AI 的 `propose_comment` 与 REST 同口径：带图出卡显示张数、执行转正落库、纯图合法、超上限拒、非图片整条拒 | `tools/registry_test.go:882`、`tools/registry_test.go:956` |
+| 评论图可单独软删（仅评论作者）；删掉最后一张且评论无正文时评论一并进回收站，响应带 `comment_deleted`；**评论有正文时只删图、评论保留**。整条删评论时其图级联、恢复连带、不能加入相册 | `store/softdelete_test.go:181`、`store/softdelete_test.go:239`、`store/media_delete_test.go:149`、`api/interactions_test.go:707`、`api/interactions_test.go:863` |
+| 每日清理：评论图有两条上溯路径——评论自身超期、或评论所属动态超期（动态被删时评论行仍「未删」）。漏掉后者会让图变成永久孤儿（库里无引用、磁盘有文件）。待删媒体先物化成临时表，因为 comments 先于 media 删除 | `store/purge_test.go:253`、`store/purge_test.go:312` |
+| 重建表类迁移首行写 `-- migrate:no-fk-check`，由 `migrate.go` 钉在**同一条连接**上关外键、提交前跑 `foreign_key_check` 再恢复；升级后必须逐列核对旧数据无丢失、子表（`album_items`）引用与 CHECK 约束仍在 | `store/migration_test.go:329`（`TestUpgradeKeepsAlbumItemsAndConstraints`）、`store/migration_test.go:398` |

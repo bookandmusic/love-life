@@ -241,6 +241,12 @@ func (a *albumsAPI) addPhotos(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, owned.Error())
 			return
 		}
+		// 媒体不存在 / 已软删 / 所属动态已删 / 是评论图：都是调用方输入问题，不是服务端故障
+		var rejected *store.MediaRejectedError
+		if errors.As(err, &rejected) {
+			writeError(w, http.StatusBadRequest, rejected.Error())
+			return
+		}
 		writeErrorf(w, r, http.StatusInternalServerError, errInternal, err)
 		return
 	}

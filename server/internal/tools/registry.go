@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/bookandmusic/love-life/server/internal/geo"
+	"github.com/bookandmusic/love-life/server/internal/limits"
 	"github.com/bookandmusic/love-life/server/internal/lunar"
 	"github.com/bookandmusic/love-life/server/internal/media"
 	"github.com/bookandmusic/love-life/server/internal/notify"
@@ -525,7 +526,8 @@ func (f postsFilter) where(viewerID int64) (string, []any) {
 		args = append(args, f.to)
 	}
 	if f.mediaType != "" {
-		conds = append(conds, "EXISTS(SELECT 1 FROM media m WHERE m.post_id = p.id AND m.kind = ? AND m.deleted_at IS NULL)")
+		// 只认动态自己的图：评论里附的图不算「这条动态有照片」
+		conds = append(conds, "EXISTS(SELECT 1 FROM media m WHERE m.owner_type = 'post' AND m.owner_id = p.id AND m.kind = ? AND m.deleted_at IS NULL)")
 		args = append(args, f.mediaType)
 	}
 	if f.mood != "" {
@@ -720,7 +722,7 @@ func (d *Deps) mediaKinds(ctx context.Context, hits []PostHit, kind string) (map
 		args = append(args, h.ID)
 	}
 	rows, err := d.DB.QueryContext(ctx, fmt.Sprintf(
-		`SELECT DISTINCT post_id FROM media WHERE kind = ? AND deleted_at IS NULL AND post_id IN (%s)`, ph), args...)
+		`SELECT DISTINCT owner_id FROM media WHERE owner_type = 'post' AND kind = ? AND deleted_at IS NULL AND owner_id IN (%s)`, ph), args...)
 	if err != nil {
 		return nil, err
 	}
@@ -757,9 +759,7 @@ func promoteMediaTokens(ctx context.Context, d *Deps, userID int64, toks []strin
 	medias := make([]store.MediaRow, 0, len(toks))
 	var promoted []*media.Promoted
 	cleanup := func() {
-		for _, pr := range promoted {
-			d.MP.Delete(pr.FilePath, pr.ThumbPath)
-		}
+		d.MP.DiscardPromoted(promoted)
 	}
 	for _, token := range toks {
 		p, err := d.MP.Promote(token, userID)
@@ -1976,9 +1976,7 @@ func proposePostTool() *Tool {
 				}
 				postID, err := d.DB.CreatePostWithMedia(ctx, post, medias)
 				if err != nil {
-					for _, pr := range promoted {
-						d.MP.Delete(pr.FilePath, pr.ThumbPath)
-					}
+					d.MP.DiscardPromoted(promoted)
 					return nil, err
 				}
 				op := d.aiOperatorName(ctx, userID)
@@ -2028,14 +2026,22 @@ func proposePostTool() *Tool {
 	}
 }
 
+// commentPreviewBody 评论的目标形态预览（与 post 一样带附件引用，卡上显示「N 张图」）。
+type commentPreviewBody struct {
+	Content     string          `json:"content,omitempty"`
+	Post        Record          `json:"post"`
+	Attachments []AttachmentRef `json:"attachments,omitempty"`
+}
+
 // proposeCommentTool 评论动态（提案）。
 func proposeCommentTool() *Tool {
 	return &Tool{
 		Name: "propose_comment", Category: "互动", ProgressLabel: "评论动态",
-		Description: "提案评论某条动态（需用户确认后生效，最多 500 字）。目标二选一：post_id，或勾选项的 source 句柄",
+		Description: "提案评论某条动态（需用户确认后生效，最多 500 字，可附图片）。目标二选一：post_id，或勾选项的 source 句柄。" +
+			"用户消息附带图片时只填文本参数，附件由系统自动挂上",
 		Schema: map[string]string{
 			"post_id": "number — 动态 ID（与 source 二选一）",
-			"content": "string — 评论内容",
+			"content": "string — 评论内容（纯图片评论可留空）",
 			"source":  "object — {result_id}：引用勾选的那条动态（每条勾选各是一个单条句柄）",
 		},
 		Params: map[string]any{"type": "object", "properties": map[string]any{
@@ -2044,14 +2050,10 @@ func proposeCommentTool() *Tool {
 			"source": map[string]any{"type": "object", "properties": map[string]any{
 				"result_id": map[string]any{"type": "string"},
 			}, "required": []string{"result_id"}},
-		}, "required": []string{"content"}},
-		IsWrite: true,
-		Validate: func(args map[string]any) error {
-			if len([]rune(str(args, "content"))) > 500 {
-				return fmt.Errorf("评论最多 500 字")
-			}
-			return nil
-		},
+			// content 不列为 required：纯图片评论合法，由 validateCommentArgs 兜住「至少一项」
+		}},
+		IsWrite:  true,
+		Validate: validateCommentArgs,
 		Run: func(ctx context.Context, d *Deps, userID int64, args map[string]any, mode ExecMode) (*ToolResult, error) {
 			// 单条目标：post_id 或勾选句柄二选一（勾选后模型手里只有句柄）
 			postID, err := singlePostID(ctx, d, userID, args)
@@ -2059,37 +2061,92 @@ func proposeCommentTool() *Tool {
 				return nil, err
 			}
 			content := str(args, "content")
+			atts := attachmentsFromRefs(args)
 			// 点选优先：勾选存在时评论只能落在勾选的那条动态上（不能评论别的）
 			if err := checkQuotedSubset(ctx, "post", []int64{postID}); err != nil {
 				return nil, err
 			}
 			if mode == ModeExecute {
+				if err := validateCommentArgs(args); err != nil {
+					return nil, err
+				}
 				post, err := d.DB.GetPost(ctx, postID)
 				if err != nil {
 					return nil, fmt.Errorf("动态不存在")
 				}
-				commentID, err := d.DB.CreateComment(ctx, postID, userID, content)
+				toks := tokens(args, "media_tokens")
+				medias, promoted, err := promoteMediaTokens(ctx, d, userID, toks)
 				if err != nil {
+					return nil, err
+				}
+				// 评论只收图片：非 photo 整条拒掉并清理已转正文件
+				for _, m := range medias {
+					if m.Kind != "photo" {
+						d.MP.DiscardPromoted(promoted)
+						return nil, fmt.Errorf("评论只支持图片，不支持视频或音频")
+					}
+				}
+				commentID, err := d.DB.CreateCommentWithMedia(ctx, postID, userID, content, medias)
+				if err != nil {
+					d.MP.DiscardPromoted(promoted)
 					return nil, err
 				}
 				operator := d.aiOperatorName(ctx, userID)
 				d.notifyPartners(ctx, userID, "post_commented", "post", postID,
-					map[string]any{"content": textutil.Trunc(content, 50), "operator": operator, "author_id": post.AuthorID, "via": "ai"},
+					map[string]any{"content": textutil.Trunc(content, 50), "operator": operator, "author_id": post.AuthorID, "via": "ai", "media_count": len(toks)},
 					"收到评论", notify.Commented(operator+"（AI）", post.AuthorNickname.String, content, post.AuthorID == userID))
-				return &ToolResult{Text: fmt.Sprintf("评论 #%d 已发表。", commentID),
+				text := fmt.Sprintf("评论 #%d 已发表。", commentID)
+				if len(toks) > 0 {
+					text = fmt.Sprintf("评论 #%d 已发表（含 %d 张图片）。", commentID, len(toks))
+				}
+				return &ToolResult{Text: text,
 					UserText: "评论已发表", Record: &RecordRef{Kind: "comment", ID: commentID}}, nil
 			}
 			post, _, ok := d.postSummaryRecord(ctx, postID)
 			if !ok {
 				return nil, fmt.Errorf("动态不存在")
 			}
+			summary := "发表评论"
+			switch {
+			case content == "" && len(atts) > 0:
+				summary = fmt.Sprintf("发表一条含 %d 张图片的评论", len(atts))
+			case content != "":
+				summary = "发表评论：「" + truncateRunes(content, 20) + "」"
+			}
+			params := map[string]any{"post_id": postID}
+			if content != "" {
+				params["content"] = content
+			}
 			return proposalResult(&Proposal{
-				Intent: "propose_comment", Summary: "发表评论",
-				Preview: ProposalPreview{Kind: "comment", Body: map[string]any{"post": post, "content": content}},
-				Params:  map[string]any{"post_id": postID, "content": content},
+				Intent: "propose_comment", Summary: summary,
+				Preview:     ProposalPreview{Kind: "comment", Body: commentPreviewBody{Content: content, Post: post, Attachments: atts}},
+				Attachments: atts, Params: params,
 			}, "准备发表评论，请确认"), nil
 		},
 	}
+}
+
+// validateCommentArgs 评论的成立条件：文字与图片至少一项（纯图片评论合法，
+// 与「纯媒体动态」同口径）。卡阶段媒体只有 media_refs，执行阶段才是 media_tokens。
+func validateCommentArgs(args map[string]any) error {
+	if len([]rune(str(args, "content"))) > 500 {
+		return fmt.Errorf("评论最多 500 字")
+	}
+	// 上限与 REST 评论接口同源（limits/media.json）：chat 层的 MaxChatMedia 是聊天附件口径，
+	// 与「单条评论最多几张图」不是同一个数，这里必须单独校验。
+	if n := len(tokens(args, "media_tokens")); n > limits.MaxMediaPerComment {
+		return fmt.Errorf("单条评论最多 %d 张图片", limits.MaxMediaPerComment)
+	}
+	if refs, ok := args["media_refs"].([]any); ok && len(refs) > limits.MaxMediaPerComment {
+		return fmt.Errorf("单条评论最多 %d 张图片", limits.MaxMediaPerComment)
+	}
+	if str(args, "content") != "" || len(tokens(args, "media_tokens")) > 0 {
+		return nil
+	}
+	if refs, ok := args["media_refs"].([]any); ok && len(refs) > 0 {
+		return nil
+	}
+	return fmt.Errorf("评论内容与图片至少填一项")
 }
 
 // proposeAlbumTool 新建相册（可带首批媒体 = 一次确认）。
@@ -2506,13 +2563,13 @@ func getSpaceStatsTool() *Tool {
 					COUNT(CASE WHEN m.kind = 'photo' THEN 1 END),
 					COUNT(CASE WHEN m.kind = 'video' THEN 1 END),
 					COUNT(CASE WHEN m.kind = 'audio' THEN 1 END)
-				 FROM media m JOIN posts p ON p.id = m.post_id
-				 WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL`).Scan(&mediaTotal, &photoN, &videoN, &audioN); err != nil {
+				 FROM media m JOIN posts p ON p.id = m.owner_id
+				 WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND m.owner_type = 'post'`).Scan(&mediaTotal, &photoN, &videoN, &audioN); err != nil {
 				return nil, err
 			}
 			if err := d.DB.QueryRowContext(ctx,
-				`SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.post_id
-				 WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL
+				`SELECT COUNT(*) FROM media m JOIN posts p ON p.id = m.owner_id
+				 WHERE m.deleted_at IS NULL AND p.deleted_at IS NULL AND m.owner_type = 'post'
 				   AND NOT EXISTS (SELECT 1 FROM album_items i JOIN albums a ON a.id = i.album_id
 				     WHERE i.media_id = m.id AND a.deleted_at IS NULL)`).Scan(&unfiled); err != nil {
 				return nil, err

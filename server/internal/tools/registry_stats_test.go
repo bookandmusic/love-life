@@ -45,8 +45,8 @@ func TestSpaceStatsCardDimensions(t *testing.T) {
 	for _, k := range []string{"photo", "photo", "video", "audio", "photo"} {
 		seedMedia(t, db, postID, k, "")
 	}
-	if _, err := db.Exec(`UPDATE media SET deleted_at = datetime('now') WHERE post_id = ? AND kind = 'photo' AND id =
-		(SELECT id FROM media WHERE post_id = ? AND kind = 'photo' ORDER BY id DESC LIMIT 1)`, postID, postID); err != nil {
+	if _, err := db.Exec(`UPDATE media SET deleted_at = datetime('now') WHERE owner_type = 'post' AND owner_id = ? AND kind = 'photo' AND id =
+		(SELECT id FROM media WHERE owner_type = 'post' AND owner_id = ? AND kind = 'photo' ORDER BY id DESC LIMIT 1)`, postID, postID); err != nil {
 		t.Fatal(err)
 	}
 	// 纪念日「下一个」：明天那条最近（含 lunar 之外的常规公历）

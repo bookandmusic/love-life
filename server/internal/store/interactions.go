@@ -140,15 +140,37 @@ type Comment struct {
 	Content        string
 	CreatedAt      string
 	AuthorNickname sql.NullString
+	// Media 评论附带的图片（评论只收 photo；纯文字评论为空）。
+	Media []*MediaRow
 }
 
-func (d *DB) CreateComment(ctx context.Context, postID, authorID int64, content string) (int64, error) {
-	res, err := d.ExecContext(ctx,
+// CreateCommentWithMedia 建评论及其图片（同一事务）：评论与媒体要么都成、要么都不留。
+// 媒体归属写成 ('comment', 评论 id)，与动态自己的图以 owner_type 区分。
+func (d *DB) CreateCommentWithMedia(ctx context.Context, postID, authorID int64, content string, medias []MediaRow) (int64, error) {
+	tx, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	res, err := tx.ExecContext(ctx,
 		`INSERT INTO comments (post_id, author_id, content) VALUES (?, ?, ?)`, postID, authorID, content)
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	commentID, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	for _, m := range medias {
+		if err := insertMediaTx(ctx, tx, MediaOwnerComment, commentID, m); err != nil {
+			return 0, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return commentID, nil
 }
 
 func (d *DB) ListComments(ctx context.Context, postID int64, limit, offset int) ([]*Comment, error) {
@@ -169,7 +191,21 @@ func (d *DB) ListComments(ctx context.Context, postID int64, limit, offset int) 
 		}
 		list = append(list, &c)
 	}
-	return list, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	ids := make([]int64, 0, len(list))
+	for _, c := range list {
+		ids = append(ids, c.ID)
+	}
+	byComment, err := d.ListMediaByCommentIDs(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range list {
+		c.Media = byComment[c.ID]
+	}
+	return list, nil
 }
 
 func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
@@ -185,11 +221,18 @@ func (d *DB) GetComment(ctx context.Context, id int64) (*Comment, error) {
 	if err != nil {
 		return nil, err
 	}
+	byComment, err := d.ListMediaByCommentIDs(ctx, []int64{id})
+	if err != nil {
+		return nil, err
+	}
+	c.Media = byComment[id]
 	return &c, nil
 }
 
+// SoftDeleteComment 软删评论并级联软删其图——两条 UPDATE 必须同事务，
+// 否则「评论已删、图还在」会让图失去归属却仍占着磁盘与相册配额。
 func (d *DB) SoftDeleteComment(ctx context.Context, id int64, actorType string, actorID int64) error {
-	return softDeleteKind(ctx, d, "comment", id, actorType, actorID)
+	return d.softDeleteKindTx(ctx, "comment", id, actorType, actorID)
 }
 
 // LikersByPostIDs 批量取每条动态的点赞人（昵称）：单空间只有两名用户，

@@ -547,3 +547,418 @@ func TestNotificationNamePrefersNickname(t *testing.T) {
 		t.Errorf("查不到用户时应回退 fallback：%q", got)
 	}
 }
+
+// 评论可附图片：带 media_tokens 发表 → 评论与图一起落库、响应与列表都带 media；
+// 图片与文字至少一项（纯图片评论合法）；超过上限 / 非图片被拒。
+func TestCommentWithMedia(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "海边的一天"})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("create post: %d", res.StatusCode)
+	}
+
+	// 上传两张图，拿 media_token
+	imgBytes := genJPEG(t)
+	tok1, code := uploadMedia(t, ts.URL, girlToken, "a.jpg", imgBytes)
+	if code != http.StatusOK || tok1 == "" {
+		t.Fatalf("upload 1: code=%d token=%q", code, tok1)
+	}
+	tok2, code := uploadMedia(t, ts.URL, girlToken, "b.jpg", imgBytes)
+	if code != http.StatusOK || tok2 == "" {
+		t.Fatalf("upload 2: code=%d token=%q", code, tok2)
+	}
+
+	// 文字 + 两张图
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "好看", "media_tokens": []string{tok1, tok2},
+	})
+	var created struct {
+		ID    int64 `json:"id"`
+		Media []struct {
+			ID     int64  `json:"id"`
+			Kind   string `json:"kind"`
+			URL    string `json:"url"`
+			Author int64  `json:"author_id"`
+		} `json:"media"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("comment with media: %d", res.StatusCode)
+	}
+	if len(created.Media) != 2 {
+		t.Fatalf("响应应带 2 张图，实得 %d", len(created.Media))
+	}
+	for _, m := range created.Media {
+		if m.Kind != "photo" {
+			t.Fatalf("评论图 kind 应为 photo，实得 %s", m.Kind)
+		}
+		if m.URL == "" {
+			t.Fatal("评论图应带签名 URL")
+		}
+	}
+
+	// 列表回显同样带 media
+	res = doJSON(t, "GET", ts.URL+"/api/v1/posts/1/comments", boyToken, nil)
+	var list struct {
+		Items []struct {
+			ID    int64 `json:"id"`
+			Media []struct {
+				ID int64 `json:"id"`
+			} `json:"media"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&list)
+	res.Body.Close()
+	if len(list.Items) != 1 || len(list.Items[0].Media) != 2 {
+		t.Fatalf("列表应回显 2 张图，实得 %+v", list.Items)
+	}
+
+	// 动态自己的九宫格不含评论图
+	res = doJSON(t, "GET", ts.URL+"/api/v1/posts", boyToken, nil)
+	var posts struct {
+		Items []struct {
+			ID    int64 `json:"id"`
+			Media []struct {
+				ID int64 `json:"id"`
+			} `json:"media"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&posts)
+	res.Body.Close()
+	if len(posts.Items) != 1 || len(posts.Items[0].Media) != 0 {
+		t.Fatalf("动态 media 不应含评论图，实得 %+v", posts.Items)
+	}
+
+	// 纯图片评论（content 为空）合法
+	tok3, code := uploadMedia(t, ts.URL, girlToken, "c.jpg", imgBytes)
+	if code != http.StatusOK {
+		t.Fatalf("upload 3: %d", code)
+	}
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "", "media_tokens": []string{tok3},
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("纯图片评论应成功，实得 %d", res.StatusCode)
+	}
+
+	// 文字与图片都没有 → 400
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{"content": ""})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空评论应 400，实得 %d", res.StatusCode)
+	}
+}
+
+// 评论只收图片：非 photo 的 token 被拒，且已转正的文件要被清理（不留孤儿）。
+func TestCommentRejectsNonPhoto(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	tok, code := uploadMedia(t, ts.URL, girlToken, "voice.mp3", []byte("fake-audio-bytes"))
+	if code != http.StatusOK {
+		t.Fatalf("upload audio: %d", code)
+	}
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "听这个", "media_tokens": []string{tok},
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("音频评论应 400，实得 %d", res.StatusCode)
+	}
+	// 评论未落库
+	var n int
+	if err := ts.db.QueryRow(`SELECT COUNT(*) FROM comments`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("拒绝后不应留下评论，实得 %d 条", n)
+	}
+}
+
+// 超过单条评论图片上限 → 400。
+func TestCommentMediaLimit(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	toks := make([]string, 0, 10)
+	for i := 0; i < 10; i++ {
+		tok, code := uploadMedia(t, ts.URL, girlToken, fmt.Sprintf("p%d.jpg", i), genJPEG(t))
+		if code != http.StatusOK {
+			t.Fatalf("upload %d: %d", i, code)
+		}
+		toks = append(toks, tok)
+	}
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "太多了", "media_tokens": toks,
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("超过上限应 400，实得 %d", res.StatusCode)
+	}
+}
+
+// 评论图可单独删除：作者能删、对方不能删；删掉纯图评论的最后一张时响应带 comment_deleted。
+func TestDeleteCommentMedia(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	tok1, _ := uploadMedia(t, ts.URL, girlToken, "a.jpg", genJPEG(t))
+	tok2, _ := uploadMedia(t, ts.URL, girlToken, "b.jpg", genJPEG(t))
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "", "media_tokens": []string{tok1, tok2},
+	})
+	var created struct {
+		ID    int64 `json:"id"`
+		Media []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if len(created.Media) != 2 {
+		t.Fatalf("应创建 2 张图，实得 %d", len(created.Media))
+	}
+
+	// 对方（动态作者 boy）不能删 girl 评论里的图
+	res = doJSON(t, "DELETE", fmt.Sprintf("%s/api/v1/media/%d", ts.URL, created.Media[0].ID), boyToken, nil)
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("删他人评论图应 403，实得 %d", res.StatusCode)
+	}
+
+	// 本人删第一张：评论仍有图 → comment_deleted=false
+	res = doJSON(t, "DELETE", fmt.Sprintf("%s/api/v1/media/%d", ts.URL, created.Media[0].ID), girlToken, nil)
+	var delRes struct {
+		PostDeleted    bool `json:"post_deleted"`
+		CommentDeleted bool `json:"comment_deleted"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&delRes)
+	res.Body.Close()
+	if res.StatusCode != http.StatusOK || delRes.CommentDeleted || delRes.PostDeleted {
+		t.Fatalf("删一张图：code=%d comment_deleted=%v post_deleted=%v", res.StatusCode, delRes.CommentDeleted, delRes.PostDeleted)
+	}
+
+	// 本人删最后一张（评论无正文）→ comment_deleted=true
+	res = doJSON(t, "DELETE", fmt.Sprintf("%s/api/v1/media/%d", ts.URL, created.Media[1].ID), girlToken, nil)
+	_ = json.NewDecoder(res.Body).Decode(&delRes)
+	res.Body.Close()
+	if !delRes.CommentDeleted {
+		t.Fatalf("删掉纯图评论最后一张应连带评论，实得 comment_deleted=%v", delRes.CommentDeleted)
+	}
+	// 评论列表已空
+	res = doJSON(t, "GET", ts.URL+"/api/v1/posts/1/comments", girlToken, nil)
+	var list struct {
+		Items []any `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&list)
+	res.Body.Close()
+	if len(list.Items) != 0 {
+		t.Fatalf("评论应已被删，实得 %d 条", len(list.Items))
+	}
+}
+
+// 评论图不能加进相册：这是调用方输入问题，必须 400 而不是 500。
+func TestCommentMediaCannotJoinAlbumAPI(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	tok, _ := uploadMedia(t, ts.URL, girlToken, "c.jpg", genJPEG(t))
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "", "media_tokens": []string{tok},
+	})
+	var created struct {
+		Media []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	if len(created.Media) != 1 {
+		t.Fatalf("评论应带 1 张图，实得 %d", len(created.Media))
+	}
+
+	res = doJSON(t, "POST", ts.URL+"/api/v1/albums", girlToken, map[string]any{"name": "相册"})
+	var album struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&album)
+	res.Body.Close()
+
+	res = doJSON(t, "POST", fmt.Sprintf("%s/api/v1/albums/%d/photos", ts.URL, album.ID), girlToken,
+		map[string]any{"media_ids": []int64{created.Media[0].ID}})
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("评论图加入相册应 400，实得 %d：%s", res.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "评论里的图片") {
+		t.Fatalf("错误文案应说明是评论图，实得：%s", body)
+	}
+}
+
+// 非图片被拒后，已转正的文件必须清理（不留磁盘孤儿）。
+// 混合 token（先图后音频）时，先前转正的图也要一起清掉。
+func TestCommentRejectsNonPhotoCleansPromoted(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	imgTok, _ := uploadMedia(t, ts.URL, girlToken, "ok.jpg", genJPEG(t))
+	audioTok, _ := uploadMedia(t, ts.URL, girlToken, "bad.mp3", []byte("fake-audio"))
+
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "混合", "media_tokens": []string{imgTok, audioTok},
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("应 400，实得 %d", res.StatusCode)
+	}
+
+	var n int
+	if err := ts.db.QueryRow(`SELECT COUNT(*) FROM media`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("拒绝后不应留下 media 行，实得 %d", n)
+	}
+	if err := ts.db.QueryRow(`SELECT COUNT(*) FROM comments`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("拒绝后不应留下评论，实得 %d", n)
+	}
+}
+
+// REST 评论接口的字数上限（500 字）必须与服务端契约一致。
+func TestCommentContentLengthLimit(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": strings.Repeat("字", 501),
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("超 500 字应 400，实得 %d", res.StatusCode)
+	}
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": strings.Repeat("字", 500),
+	})
+	res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("500 字应通过，实得 %d", res.StatusCode)
+	}
+}
+
+// 删掉最后一张图但评论有正文时，评论必须保留（只删图）。
+func TestDeleteLastCommentMediaKeepsCommentWithContent(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	tok, _ := uploadMedia(t, ts.URL, girlToken, "only.jpg", genJPEG(t))
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "有正文", "media_tokens": []string{tok},
+	})
+	var created struct {
+		ID    int64 `json:"id"`
+		Media []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+
+	res = doJSON(t, "DELETE", fmt.Sprintf("%s/api/v1/media/%d", ts.URL, created.Media[0].ID), girlToken, nil)
+	var delRes struct {
+		CommentDeleted bool `json:"comment_deleted"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&delRes)
+	res.Body.Close()
+	if delRes.CommentDeleted {
+		t.Fatal("评论有正文，删最后一张图不应连带删评论")
+	}
+	res = doJSON(t, "GET", ts.URL+"/api/v1/posts/1/comments", girlToken, nil)
+	var list struct {
+		Items []struct {
+			Content string `json:"content"`
+			Media   []any  `json:"media"`
+		} `json:"items"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&list)
+	res.Body.Close()
+	if len(list.Items) != 1 || list.Items[0].Content != "有正文" || len(list.Items[0].Media) != 0 {
+		t.Fatalf("评论应保留且无图，实得 %+v", list.Items)
+	}
+}
+
+// 另外三类「媒体不能进相册」的拒绝同样必须是 400（不是 500）。
+func TestAlbumRejectionsAre400(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{"content": "动态"})
+	res.Body.Close()
+
+	res = doJSON(t, "POST", ts.URL+"/api/v1/albums", girlToken, map[string]any{"name": "相册"})
+	var album struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&album)
+	res.Body.Close()
+
+	// 1) 媒体不存在
+	res = doJSON(t, "POST", fmt.Sprintf("%s/api/v1/albums/%d/photos", ts.URL, album.ID), girlToken,
+		map[string]any{"media_ids": []int64{99999}})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("不存在的媒体应 400，实得 %d", res.StatusCode)
+	}
+
+	// 2) 媒体已软删
+	tok, _ := uploadMedia(t, ts.URL, girlToken, "del.jpg", genJPEG(t))
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "x", "media_tokens": []string{tok},
+	})
+	var created struct {
+		Media []struct {
+			ID int64 `json:"id"`
+		} `json:"media"`
+	}
+	_ = json.NewDecoder(res.Body).Decode(&created)
+	res.Body.Close()
+	doJSON(t, "DELETE", fmt.Sprintf("%s/api/v1/media/%d", ts.URL, created.Media[0].ID), girlToken, nil)
+	res = doJSON(t, "POST", fmt.Sprintf("%s/api/v1/albums/%d/photos", ts.URL, album.ID), girlToken,
+		map[string]any{"media_ids": []int64{created.Media[0].ID}})
+	res.Body.Close()
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("已软删的媒体应 400，实得 %d", res.StatusCode)
+	}
+}
+
+// 给不存在的动态发评论 → 404（不是 500，也不能静默建出孤儿评论）。
+func TestCommentOnMissingPost(t *testing.T) {
+	ts, _, girlToken := newPostTestEnv(t)
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts/99999/comments", girlToken, map[string]any{
+		"content": "评论一条不存在的动态",
+	})
+	body, _ := io.ReadAll(res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("应对不存在的动态返回 404，实得 %d：%s", res.StatusCode, body)
+	}
+	var n int
+	if err := ts.db.QueryRow(`SELECT COUNT(*) FROM comments`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("不应留下孤儿评论，实得 %d 条", n)
+	}
+}

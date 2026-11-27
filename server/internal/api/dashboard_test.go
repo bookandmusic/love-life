@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
@@ -175,7 +176,7 @@ func TestDashboardActivityAllBranches(t *testing.T) {
 	if _, err := ts.db.Exec(`INSERT INTO posts (author_id, content) VALUES (1,'p')`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ts.db.Exec(`INSERT INTO media (post_id, kind, file_path) VALUES (1,'photo','a.jpg')`); err != nil {
+	if _, err := ts.db.Exec(`INSERT INTO media (owner_type, owner_id, kind, file_path) VALUES ('post',1,'photo','a.jpg')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ts.db.Exec(`INSERT INTO comments (post_id, author_id, content) VALUES (1,1,'c')`); err != nil {
@@ -330,5 +331,54 @@ func TestDashboardActivityExcludesSoftDeletedContent(t *testing.T) {
 	}
 	if after["发布了一条新动态"] != 1 {
 		t.Fatalf("保留的动态仍应可见：%+v", after)
+	}
+}
+
+// 后台「照片数量」只统计动态里的图：评论图属于评论，不是相册/照片库的资产。
+// 这与时间轴（收录全部媒体）是两种口径，两者都锁住，防止有人「统一」掉其中一边。
+func TestDashboardPhotoCountExcludesCommentMedia(t *testing.T) {
+	ts, boyToken, girlToken := newPostTestEnv(t)
+	adminToken, code := loginToken(t, ts.URL, "admin", "admin-pw", "admin")
+	if code != http.StatusOK {
+		t.Fatalf("admin login: %d", code)
+	}
+
+	// 一条带 1 张图的动态
+	postTok, _ := uploadMedia(t, ts.URL, boyToken, "p.jpg", genJPEG(t))
+	res := doJSON(t, "POST", ts.URL+"/api/v1/posts", boyToken, map[string]any{
+		"content": "", "media_tokens": []string{postTok},
+	})
+	res.Body.Close()
+	// 评论里再带 2 张图
+	cmtTok1, _ := uploadMedia(t, ts.URL, girlToken, "c1.jpg", genJPEG(t))
+	cmtTok2, _ := uploadMedia(t, ts.URL, girlToken, "c2.jpg", genJPEG(t))
+	res = doJSON(t, "POST", ts.URL+"/api/v1/posts/1/comments", girlToken, map[string]any{
+		"content": "", "media_tokens": []string{cmtTok1, cmtTok2},
+	})
+	res.Body.Close()
+
+	photoCount := func() int {
+		res := doJSON(t, "GET", ts.URL+"/api/v1/admin/dashboard/stats", adminToken, nil)
+		defer res.Body.Close()
+		var stats []struct {
+			Label string `json:"label"`
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&stats); err != nil {
+			t.Fatalf("decode stats: %v", err)
+		}
+		for _, s := range stats {
+			if s.Label == "照片数量" {
+				var n int
+				fmt.Sscanf(s.Value, "%d", &n)
+				return n
+			}
+		}
+		t.Fatal("统计里没有「照片数量」")
+		return 0
+	}
+
+	if got := photoCount(); got != 1 {
+		t.Fatalf("照片数量应只算动态图（1 张），实得 %d——评论图被计入统计了", got)
 	}
 }
